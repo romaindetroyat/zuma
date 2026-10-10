@@ -18,5 +18,24 @@ Première baseline issue d'une session de jeu réelle sur R2.0.13 (phase 4, « P
 - `tests/r214.test.mjs` (nouveau) : insertion progressive (largeur 0 → 0,5 → 1 sur 12 ticks, bille devant poussée progressivement puis exactement d'une case, aucune destruction pour une couleur absente) ; détection différée (`destroy` à `atterrissage + mergeTicks`, `hits` compté à ce moment seulement) ; `insert()` instantané ; `muzzleOffset` (position du projectile après un tick, valeur par défaut égale à `ballRadius`, `mergeTicks = 12`) ; `rollFrame` (monotonie avant/arrière, couverture des 50 trames, enroulement, circonférence personnalisée) ; recul inverse sur la fixture « local recoil » de r213 (trame décroissante).
 - `tests/r213.test.mjs` : deux budgets de ticks relevés, assertions inchangées — « matching neighbours attract across the gap… » (`run(g, 20)` → `run(g, 24)`) et « ZUMA mode stops the feed… » (`run(g, 20)` → `run(g, 30)`). Dans les deux cas le projectile atterrit au tick 10 et la destruction n'est plus évaluée qu'au tick 22 (atterrissage + `mergeTicks`), donc après l'ancien budget de 20 ticks. r206 et r211 passent sans modification.
 
-## Présentation, audio et outils
-- Complétée par le plan 04-03 (vague 2).
+## Présentation (`src/render.ts`, `src/feedback.ts`, `src/original.ts`, `src/main.ts`)
+- Fond de niveau dessiné 1:1 (`drawImage` 640×480 sans mise à l'échelle ; recadré s'il est plus grand, marges noires s'il est plus petit). Les calques `BackgroundAlpha` (mosaïques) sont dessinés juste après le fond, **sous** les billes, avec une dérive lente le long de leur vecteur (≤ 3 px) ; les `Cutout` (tunnels) restent au-dessus des billes.
+- Backing store du canvas = `min(4, échelle CSS × devicePixelRatio)` appliqué par `ctx.setTransform` : texte, vecteurs et sprites nets sur écran haute densité, logique inchangée en 640×480. Option de menu « Pixels nets » (clé `zuma.pixelated`) : échelle entière ×1/×2/×3 et `image-rendering: pixelated`.
+- Insertion interpolée : une bille dont `width < 1` est dessinée entre son point d'atterrissage (`enterFrom`) et sa position sur la piste selon `insertionPose(width, from, to)` (ease-out, grossissement ≤ 15 % à mi-course), au-dessus de ses voisines.
+- Trame de roulement des sprites fournie par `rollFrame(s, frames)` : un recul fait tourner les billes en sens inverse.
+- Grenouille : offsets mesurés sur `SMALLFROGonPAD` — bille courante dans la bouche à `FROG_FRONT = 24` px devant le centre, suivante dans l'écoutille à `FROG_BACK = 26` px derrière ; `EngineConfig.muzzleOffset` est câblé sur `FROG_FRONT` quand le sprite est présent (le tir part de la bouche). Langue (`Tongue` + masque) sortie pendant 10 ticks après chaque tir ; clignement (`EYEBLINK`, deux trames 58×20 rendues transparentes par la couleur de coin via `OriginalPack.keyed()`) toutes les 240 images.
+
+## Audio (`src/audio.ts`, `src/main.ts`)
+- `sounds/manifest.json` format 2 (`{ format: 2, sounds: { clé: ["ogg", "m4a"] } }`, l'ancien tableau de clés reste accepté) ; `pickFormat()` retient par clé le premier conteneur que `canPlayType` accepte : Ogg Vorbis sur Chrome/Firefox, AAC/MP4 sur Safari.
+- Tous les sons du pack sont décodés en parallèle dès le premier geste (`unlock()`), de sorte que la première occurrence de chaque son est l'original ; une clé dont le décodage échoue repasse en synthèse, une clé encore en cours de décodage reste muette plutôt que de doubler l'original.
+- Boucles : `rolling` jouée tant qu'une chaîne bouge (gain proportionnel à la vitesse mesurée, 0 à l'arrêt, 1 à `feedSpeed`), `warning` quand la bille de tête est à moins de `WARNING_DISTANCE = 160` px du crâne ; les deux sont coupées en vidange, pause, menu, STATS et changement de niveau (`stopLoops()`), et une boucle laissée à 0 plus de 2 s est libérée.
+- Aucun son ajouté au recul (l'original n'en a pas) ; `gap` et les autres événements gardent leurs sons.
+- Paramètre d'URL `?level=S-L` (ex. `?level=1-3`) pour ouvrir directement un niveau du pack (relecture) ; ignoré sans pack ou hors limites.
+
+## Outils (`tools/`)
+- `import-original.mjs` : le fond 640×480 n'est plus écrasé par la vignette (copiée sous `levels/<id>/thumb.jpg`) ; seules les extensions image sont copiées (plus de `.dat`) ; transcodage AAC optionnel (`ffmpeg`, 96 kb/s, `+faststart`) de chaque `.ogg` en `.m4a` à côté, désactivable par `ZUMA_NO_TRANSCODE=1` ; `sounds/manifest.json` au format 2.
+- `build.mjs` (standalone) et `serve.mjs` servent `.m4a` en `audio/mp4` ; `guard.mjs` bannit aussi `.m4a`/`.aac`.
+
+## Tests (plans 04-01 et 04-03)
+- `tests/r214-import.test.mjs` : importateur (fond préservé, `thumb.jpg`, extensions, manifest format 2, transcodage désactivable).
+- `tests/r214-presentation.test.mjs` : `insertionPose` (extrémités, monotonie, grossissement ≤ 15 %), `FROG_FRONT`/`FROG_BACK`, `pickFormat` (Safari/Chrome/aucun format), `loopLevels` (vitesse, borne, `feedSpeed ≤ 0`, distance au crâne, vidange) et `WARNING_DISTANCE`, sons `gap`/`powerback` inchangés.
