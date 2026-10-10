@@ -54,6 +54,7 @@ L'utilisateur ne peut pas lancer le jeu original (macOS) : les décisions ci-des
 - **D-27:** Vies : une grenouille supplémentaire à chaque multiple de 50 000 points (chaîne `GET_AN_EXTRA_FROG` ; seuil confirmé par le spike 03), événement `extra-life`, son `extralife`, texte `EXTRA_LIFE_BONUS` à l'écran, HUD mis à jour ; plafond éventuel selon le spike.
 - **D-28:** Pièces : cadence d'apparition reprise de l'exécutable (spike 03) ; à défaut intervalle 18–30 s ; `coinappear` joué une seule fois par apparition.
 - **D-29:** Roulement : gain 0,35, montée 100 ms, fondu 400 ms à l'arrêt.
+- **D-30:** Décompte de fin de niveau à plusieurs chaînes : un marqueur par chaîne, parti de la dernière destruction de cette chaîne (à défaut du début de sa piste), tous avancés en même temps (pas de 60 px / 4 maj, +100 chacun), pops partagés toutes les 10 maj, `won` 50 maj après le dernier pas du marqueur le plus long ; `lastDestroy` mémorisé par chaîne. Choix de l'utilisateur (simultané) plutôt que le +50 maj séquentiel lu dans la recherche §7.
 
 ### Claude's Discretion
 - Échelle exacte du dialogue, courbes d'animation, volumes.
