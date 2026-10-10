@@ -37,6 +37,11 @@ const SYNTH: Record<string, Synth> = {
   warning: { type: 'sine', from: 180, to: 110, duration: 0.14, gain: 0.3 },
 };
 
+/** Start offset of a cue, seconds: `SoundCue.delay` bounded to 0..1, absent or non-finite → 0 (T-05-24). */
+export function clampDelay(delay: number | undefined): number {
+  return clamp01(Number(delay));
+}
+
 /** MIME types probed with `canPlayType` for each container shipped by the importer (D-06). */
 const MIME: Record<string, string> = {
   ogg: 'audio/ogg; codecs="vorbis"',
@@ -191,8 +196,10 @@ export class AudioManager {
     await Promise.all([...this.available].map(key => this.load(key)));
   }
 
+  /** Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` of a double / triple gap). */
   play(cue: SoundCue): void {
     if (!this.enabled || !this.ctx || !this.master) return;
+    const delay = clampDelay(cue.delay);
     if (this.available.has(cue.key)) {
       const buffer = this.buffers.get(cue.key);
       if (buffer) {
@@ -202,14 +209,15 @@ export class AudioManager {
         const gain = this.ctx.createGain();
         gain.gain.value = cue.gain;
         src.connect(gain).connect(this.master);
-        src.start();
+        const now = this.ctx.currentTime;
+        src.start(now + delay);
         return;
       }
       // Still decoding: stay silent rather than doubling the original with the synth.
       void this.load(cue.key);
       return;
     }
-    this.synth(cue);
+    this.synth(cue, delay);
   }
 
   /**
@@ -313,12 +321,13 @@ export class AudioManager {
     }
   }
 
-  private synth(cue: SoundCue): void {
+  /** Synthesised fallback; `delay` shifts the whole envelope (the simplest equivalent of a delayed start). */
+  private synth(cue: SoundCue, delay = 0): void {
     const ctx = this.ctx;
     const master = this.master;
     if (!ctx || !master) return;
     const spec = SYNTH[cue.key] ?? SYNTH.insert;
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + delay;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(spec.gain * cue.gain, now + 0.01);

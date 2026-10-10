@@ -1,6 +1,6 @@
 /** Browser entry point: game flow, input, HUD/STATS panels and PWA wiring. */
 import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
-import { EXPLOSION_RGB, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
+import { EXPLOSION_RGB, ballCss, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
@@ -394,19 +394,27 @@ class Game {
             const p = chain.track.pointAt(ball.s);
             this.fx.bursts.push(makeColorBurst({ id: ball.id, x: p.x, y: p.y, color: ball.color }, engine.tick) as ColorBurst);
           }
+          // 0x420b80 (spike 02): « +total » in the colour of the ball (ballCss, hypothesis: table 0x587408
+          // not extracted), then « COMBO x{combo + 1} » for a chain reaction; the texts stack upwards
+          // from the ball (0x412b10 not read) — gap and chain texts follow at −32 / −48.
           const depth = Number(e.depth);
-          const label = depth > 1 ? `ENCHAÎNEMENT x${depth}  +${e.points}` : `+${e.points}`;
-          this.float(label, Number(e.x), Number(e.y), depth > 1 ? '#ffd166' : '#ffffff', engine.tick);
+          const x = Number(e.x);
+          const y = Number(e.y);
+          this.float(`+${e.points}`, x, y, ballCss(Number(e.color)), engine.tick);
+          if (depth > 1) this.float(`${this.strings?.COMBO ?? 'COMBO'} x${depth}`, x, y - 16, '#ffd166', engine.tick);
           break;
         }
         case 'gap': {
+          // « BONUS SAUT / BONUS DOUBLE SAUT / BONUS TRIPLE SAUT » (GAP_BONUS strings, 0x420da8–0x420ec4), no amount: it is in the « +N ».
           const n = Number(e.count);
-          const label = n >= 3 ? 'BONUS TRIPLE SAUT' : n === 2 ? 'BONUS DOUBLE SAUT' : 'BONUS SAUT';
-          this.float(`${label} +${100 * n}`, Number(e.x), Number(e.y) - 20, '#7ee8fa', engine.tick);
+          const s = this.strings;
+          const label = n >= 3 ? s?.TRIPLE_GAP_BONUS ?? 'BONUS TRIPLE SAUT' : n === 2 ? s?.DOUBLE_GAP_BONUS ?? 'BONUS DOUBLE SAUT' : s?.GAP_BONUS ?? 'BONUS SAUT';
+          this.float(label, Number(e.x), Number(e.y) - 32, '#7ee8fa', engine.tick);
           break;
         }
         case 'streak':
-          this.float(`COMBO x${e.streak}`, Number(e.x), Number(e.y) - 36, '#ff9f68', engine.tick);
+          // « ENCHAÎNEMENT x{chain} » (CHAIN_BONUS, 0x420f12–0x420f5a) for the consecutive hits.
+          this.float(`${this.strings?.CHAIN_BONUS ?? 'ENCHAÎNEMENT'} x${e.streak}`, Number(e.x), Number(e.y) - 48, '#ff9f68', engine.tick);
           break;
         case 'power-activate': {
           const names: Record<string, string> = { bomb: 'BOMBE', slow: 'Balle RALENTIR', backwards: 'Balle RETOUR', accuracy: 'Balle VISÉE' };

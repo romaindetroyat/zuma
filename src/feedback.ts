@@ -2,7 +2,13 @@
  * Timing in ticks is static evidence; the conversion to seconds follows the still-candidate engine Hz. */
 import { SeededRandom, type GameEvent, type Point } from './core.js';
 
-export interface SoundCue { key: string; gain: number; rate: number }
+export interface SoundCue {
+  key: string;
+  gain: number;
+  rate: number;
+  /** Seconds before the cue starts (0 by default; clamped to 0..1 by audio.play). */
+  delay?: number;
+}
 
 const SIMPLE_CUES: Record<string, string> = {
   fire: 'fire',
@@ -47,16 +53,24 @@ export function soundCues(event: GameEvent): SoundCue[] {
     return [{ key: 'bonuspop', gain: 0.5, rate: 1 }];
   }
   if (event.kind === 'gap') {
+    // 0x420db1–0x420f10: `gapbonus1` at once, then again 15 maj (150 ms) later at +2 semitones for a
+    // double gap and 30 maj (300 ms) later at +3 for a triple; never more than three.
     const count = Math.max(1, Math.trunc(Number(event.count) || 1));
-    return Array.from({ length: Math.min(3, count) }, (_, i) => ({ key: 'gap', gain: 1, rate: Math.pow(2, (i === 0 ? 0 : i + 1) / 12) }));
+    return Array.from({ length: Math.min(3, count) }, (_, i) => ({ key: 'gap', gain: 1, rate: Math.pow(2, (i === 0 ? 0 : i + 1) / 12), delay: GAP_CUE_DELAYS[i] }));
   }
   if (event.kind !== 'destroy') return [];
+  // 0x4214b7–0x421514: BALLDESTROYED1..5 by combo, then `chime1` at 2 × combo semitones and volume
+  // min(1, 0.4 + 0.2 × combo). The original skips both when the group triggered a power-up
+  // (`curve+0x7c`, hypothesis B4): not implemented.
   const index = Math.max(0, Math.trunc(Number(event.depth) || 1) - 1);
   return [
     { key: 'destroy' + Math.min(5, index + 1), gain: 1, rate: 1 },
     { key: 'combo', gain: Math.min(1, 0.4 + 0.2 * index), rate: Math.pow(2, Math.min(index, 24) / 6) },
   ];
 }
+
+/** Start of the 1st / 2nd / 3rd `gapbonus1`, seconds (0, 15 and 30 maj at 100 Hz). */
+const GAP_CUE_DELAYS = [0, 0.15, 0.3] as const;
 
 export const EXPLOSION_RGB = [0x80ffff, 0xffff40, 0xffaaaa, 0x80ff80, 0xff80ff, 0xffffff] as const;
 export const PARTICLE_RGB = [0x1980ff, 0xffff00, 0xff0000, 0x00ff00, 0xff00ff, 0xffffff] as const;
@@ -113,6 +127,16 @@ export function insertionPose(width: number, from: Point, to: Point): { x: numbe
 
 export function particleAlpha(counter: number): number {
   return Math.max(0, Math.min(1, (PARTICLE_LIFE_TICKS - counter) / 20));
+}
+
+/**
+ * `#rrggbb` of a ball colour for the floating « +N » of a match (the original tints it from the
+ * per-colour table 0x587408, not extracted: the colour of the ball as rendered is used — hypothesis
+ * for 05-09); white outside the table.
+ */
+export function ballCss(color: number): string {
+  const rgb = PARTICLE_RGB[color] ?? 0xffffff;
+  return '#' + rgb.toString(16).padStart(6, '0');
 }
 
 export function particleColor(color: number): string {
