@@ -241,3 +241,67 @@ test('shell and bundle: no DOM menu panel, .menu-picture without url(, menudialo
   assert.match(open, /stopLoops\(\)/, 'loops cut at the opening');
   assert.doesNotMatch(main, /syncPixelsLabel|menu-sound|menu-resume/);
 });
+
+// ---------------------------------------------------------------- entrées sur toute la fenêtre, taille d'écran (D-25, D-26)
+import { stagePoint, fitScale } from '../.compiled/render.js';
+
+test('stagePoint: client coordinates → logical 640 × 480, clamped to the stage; degenerate input → the centre', () => {
+  const rect = { left: 100, top: 50, width: 1280, height: 960 };
+  assert.deepEqual(stagePoint(100, 50, rect), { x: 0, y: 0 });
+  assert.deepEqual(stagePoint(1380, 1010, rect), { x: 640, y: 480 });
+  assert.deepEqual(stagePoint(740, 530, rect), { x: 320, y: 240 });
+  assert.deepEqual(stagePoint(0, 0, rect), { x: 0, y: 0 }, 'page frame left / top → clamped');
+  assert.deepEqual(stagePoint(5000, 300, rect), { x: 640, y: 125 }, 'right of the page: x clamped, y proportional');
+  assert.deepEqual(stagePoint(10, 10, { left: 0, top: 0, width: 0, height: 0 }), { x: 320, y: 240 });
+  assert.deepEqual(stagePoint(NaN, 10, rect), { x: 320, y: 240 });
+  assert.deepEqual(stagePoint(10, 10, { left: 0, top: 0, width: Infinity, height: 480 }), { x: 320, y: 240 });
+});
+
+test('fitScale: the window is filled in 4:3; « Pixels nets » rounds to whole device pixels, never under one device pixel per logical pixel', () => {
+  assert.equal(fitScale(1000, 750, 2, false), 1.5625);
+  assert.equal(fitScale(1000, 750, 2, true), 1.5);
+  assert.equal(fitScale(1440, 900, 2, true), 1.5, 'fit 1.875 → ⌊3.75⌋ / 2');
+  assert.equal(fitScale(1440, 900, 2, false), 1.875);
+  assert.equal(fitScale(1440, 900, 1, true), 1);
+  assert.equal(fitScale(1920, 1080, 1, true), 2);
+  assert.equal(fitScale(600, 450, 1, true), 1, 'never less than one device pixel');
+  assert.equal(fitScale(600, 450, 2, true), 0.5, 'one device pixel per logical pixel');
+  assert.equal(fitScale(NaN, 750, 2, false), 1);
+  assert.equal(fitScale(1000, 750, NaN, true), 1, 'dpr defaults to 1');
+  assert.equal(fitScale(Infinity, Infinity, 1, false), 1);
+});
+
+test('main.js: aim and shots on the whole window through stagePoint, right click swaps, keys Space / Enter / Escape = menu, Tab = STATS, P = pause; HUD buttons only by touch', () => {
+  const main = read('.compiled/main.js');
+  const input = body(main, '    bindInput() {');
+  assert.match(input, /window\.addEventListener\('pointermove'/);
+  assert.match(input, /window\.addEventListener\('pointerdown'/);
+  assert.match(input, /window\.addEventListener\('contextmenu'/);
+  assert.match(input, /stagePoint\(/);
+  assert.doesNotMatch(main, /canvas\.addEventListener\('(mousemove|mousedown|touchstart)'/, 'no canvas-only listeners');
+  assert.match(input, /button === 2[^;]*\n?[^;]*kind: 'swap'/, 'right click = swap');
+  assert.doesNotMatch(main, /p\.y < HUD_HEIGHT/, 'a click in the HUD band shoots');
+  assert.doesNotMatch(input, /'Space'[^;]*swap/, 'Space no longer swaps');
+  assert.match(input, /'Space'/);
+  assert.match(input, /'Enter'/);
+  assert.match(input, /'NumpadEnter'/);
+  assert.match(input, /'Escape'/);
+  assert.match(input, /toggleMenu\(\)/);
+  assert.match(input, /'Tab'[\s\S]*?openStats\('live'\)/);
+  assert.match(input, /preventDefault\(\)/);
+  assert.match(input, /'KeyP'[\s\S]*?togglePause\(\)/);
+  assert.match(input, /pointerType === 'touch'[\s\S]*?hitTest\(/, 'HUD buttons for touch only');
+  assert.equal((input.match(/hitTest\(/g) || []).length, 1);
+  const scaling = body(main, '    applyScaling() {');
+  assert.match(scaling, /fitScale\(/);
+  assert.match(scaling, /--k/);
+});
+
+test('style.css: the stage is sized by --k in both modes (4:3 fallback before the first layout); smoothing off only in « Pixels nets »', () => {
+  const css = read('public/style.css');
+  assert.match(css, /\.stage \{[^}]*width: min\(100vw, calc\(100vh \* 4 \/ 3\)\)/, 'fallback before --k');
+  assert.match(css, /\.stage\.sized \{[^}]*width: calc\(640px \* var\(--k\)\);[^}]*height: calc\(480px \* var\(--k\)\)/);
+  assert.match(css, /\.stage\.pixelated #game \{ image-rendering: pixelated; \}/);
+  assert.doesNotMatch(css, /\.stage\.pixelated \{[^}]*width/, 'no integer-CSS-only rule left');
+  assert.doesNotMatch(css, /var\(--k, 1\)/);
+});
