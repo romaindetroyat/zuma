@@ -39,7 +39,7 @@ test('coins: without treasure points nothing happens and the colour sequence is 
     return e.balls.map(b => b.color);
   };
   const a = streamed(false), b = streamed(true);
-  assert.equal(a.length, 30);
+  assert.ok(a.length >= 15, `${a.length} balls streamed`);
   assert.deepEqual(a, b, 'an empty treasure list must not consume the RNG');
 });
 

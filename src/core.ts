@@ -185,7 +185,15 @@ export type Command =
   | { kind: 'swap' }
   | { kind: 'aim'; x: number; y: number };
 
-export type EngineState = 'playing' | 'draining' | 'lost' | 'gameover' | 'won';
+/** `clearing` = board emptied in ZUMA mode, end-of-level tally running along the track (D-10). */
+export type EngineState = 'playing' | 'clearing' | 'draining' | 'lost' | 'gameover' | 'won';
+
+/** A coin spot from the original `levels.xml` (`TreasurePoint`): `curve` = chain index, `dist` = clearance in px (0 = always free). */
+export interface TreasurePoint { x: number; y: number; curve: number; dist: number }
+/** The single coin currently on the board; `until` = tick at which it vanishes. */
+export interface Coin { id: number; x: number; y: number; curve: number; until: number }
+/** End-of-level tally marker: `s` walks from the last explosion to the skull one ball per `cleanupStepTicks`. */
+export interface Cleanup { chain: number; s: number; step: number; steps: number; nextTick: number }
 
 export interface EngineConfig {
   /** Simulation rate. Timings below are expressed in ticks or in px/s. */
@@ -235,6 +243,25 @@ export interface EngineConfig {
   powerVisibleTicks: number;
   lives: number;
   levelBonus: number;
+  /** Points for a grabbed coin (hypothesis D-09). */
+  coinPoints: number;
+  /** Ticks a coin stays on its treasure point (6 s, D-07). */
+  coinVisibleTicks: number;
+  /** Minimum / maximum ticks between a coin leaving and the next one appearing (9–15 s, D-07). */
+  coinMinGapTicks: number;
+  coinMaxGapTicks: number;
+  /** Projectile centre to coin centre distance that grabs the coin (D-09). */
+  coinRadius: number;
+  /** Points per ball slot of the end-of-level tally (hypothesis D-10). */
+  cleanupPoints: number;
+  /** Ticks between two tally steps (D-10). */
+  cleanupStepTicks: number;
+  /** Expert time in seconds (original `partime`); 0 = no time bonus. */
+  parTime: number;
+  /** Ticks the chain rolls back when ZUMA mode starts (original `zumaback` × 0.6; hypothesis GAME-01). */
+  zumaBackTicks: number;
+  /** Ticks the chain rolls slowed when ZUMA mode starts (original `zumaslow` × 0.6; hypothesis GAME-01). */
+  zumaSlowTicks: number;
 }
 
 export const CANDIDATE: EngineConfig = {
@@ -272,6 +299,16 @@ export const CANDIDATE: EngineConfig = {
   powerVisibleTicks: 480,
   lives: 3,
   levelBonus: 1000,
+  coinPoints: 100,
+  coinVisibleTicks: 360,
+  coinMinGapTicks: 540,
+  coinMaxGapTicks: 900,
+  coinRadius: 18,
+  cleanupPoints: 10,
+  cleanupStepTicks: 4,
+  parTime: 0,
+  zumaBackTicks: 0,
+  zumaSlowTicks: 0,
 };
 
 export interface Fixture {
@@ -292,6 +329,8 @@ export interface Stats {
   gaps: number;
   /** Destructions caused by a previous destruction (combo depth > 1) — the STATS « COMBOS » line. */
   combos: number;
+  /** Coins grabbed by a projectile — the STATS « PIÈCES » line. */
+  coins: number;
   powers: Record<PowerKind, number>;
 }
 
@@ -335,8 +374,18 @@ export class ZumaEngine {
   backwardsTicks = 0;
   accuracyTicks = 0;
   aim: Point;
+  /** Coin spots of the level (empty = no coins, no extra RNG draws). */
+  treasure: readonly TreasurePoint[] = [];
+  /** The coin on the board, if any (one at a time, D-07). */
+  coin: Coin | null = null;
+  /** End-of-level tally in progress while `state === 'clearing'`. */
+  cleanup: Cleanup | null = null;
+  /** Expert time bonus granted at the end of the level (0 until won). */
+  timeBonus = 0;
+  /** Points scored by the end-of-level tally. */
+  cleanupScore = 0;
   stats: Stats = {
-    shots: 0, hits: 0, misses: 0, matches: 0, destroyed: 0, maxCombo: 0, maxStreak: 0, gaps: 0, combos: 0,
+    shots: 0, hits: 0, misses: 0, matches: 0, destroyed: 0, maxCombo: 0, maxStreak: 0, gaps: 0, combos: 0, coins: 0,
     powers: { bomb: 0, slow: 0, backwards: 0, accuracy: 0 },
   };
 
@@ -344,6 +393,7 @@ export class ZumaEngine {
   private nextId = 1;
   private lastShotTick = -Infinity;
   private lastPowerTick = -Infinity;
+  private nextCoinTick = Infinity;
 
   constructor(track: Track | Track[], readonly frog: Point, config: Partial<EngineConfig> = {}, seed = 1) {
     const tracks = Array.isArray(track) ? track : [track];
@@ -460,6 +510,34 @@ export class ZumaEngine {
     this.activatePower(ball, chain);
   }
 
+  /**
+   * Declares the coin spots of the level (pack `treasure[]`). Points with a
+   * non-numeric position are dropped, `curve` is clamped to an existing chain and a
+   * non-finite or negative `dist` becomes 0. Schedules the first coin; an empty
+   * list schedules nothing and never touches the RNG.
+   */
+  setTreasure(points: TreasurePoint[]): void {
+    const last = this.chains.length - 1;
+    const clean: TreasurePoint[] = [];
+    for (const p of points) {
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const curve = Number.isFinite(p.curve) ? Math.max(0, Math.min(last, Math.trunc(p.curve))) : 0;
+      const dist = Number.isFinite(p.dist) && p.dist > 0 ? p.dist : 0;
+      clean.push({ x: p.x, y: p.y, curve, dist });
+    }
+    this.treasure = clean;
+    this.coin = null;
+    this.nextCoinTick = Infinity;
+    if (clean.length > 0) this.scheduleCoin();
+  }
+
+  /** Test hook: places the coin of `treasure[index]` right now (same event as a natural appearance). */
+  spawnCoinForTest(index: number): void {
+    const point = this.treasure[index];
+    if (!point) throw new Error(`no treasure point at index ${index}`);
+    this.placeCoin(point);
+  }
+
   // -------------------------------------------------------------------- step
 
   step(): void {
@@ -469,6 +547,7 @@ export class ZumaEngine {
     for (const chain of this.chains) this.spawnBalls(chain);
     for (const chain of this.chains) this.moveChain(chain);
     this.moveProjectiles();
+    this.tickCoin();
     this.processRemovals();
     this.maybeSpawnPower();
     this.checkEnd();
@@ -863,10 +942,59 @@ export class ZumaEngine {
     for (const { ball, chain } of chained) this.activatePower(ball, chain);
   }
 
+  // ------------------------------------------------------------------ coins
+
+  /** Next coin appears `coinMinGapTicks`..`coinMaxGapTicks` from now (RNG draw, only with treasure points). */
+  private scheduleCoin(): void {
+    const { coinMinGapTicks, coinMaxGapTicks } = this.config;
+    const span = Math.max(0, coinMaxGapTicks - coinMinGapTicks);
+    this.nextCoinTick = this.tick + coinMinGapTicks + this.rng.int(span + 1);
+  }
+
+  private placeCoin(point: TreasurePoint): void {
+    this.coin = { id: this.nextId++, x: point.x, y: point.y, curve: point.curve, until: this.tick + this.config.coinVisibleTicks };
+    this.emit('coin-appear', { id: this.coin.id, x: point.x, y: point.y });
+  }
+
+  /** Removes the coin from the board without scoring (timeout, lost chain, level cleared). */
+  private dropCoin(): void {
+    if (!this.coin) return;
+    this.emit('coin-vanish', { id: this.coin.id, x: this.coin.x, y: this.coin.y });
+    this.coin = null;
+  }
+
+  /** A treasure point is free when no alive ball of its chain lies closer than `dist` (0 = always free). */
+  private treasureFree(point: TreasurePoint): boolean {
+    if (!(point.dist > 0)) return true;
+    const chain = this.chains[Math.min(point.curve, this.chains.length - 1)];
+    for (const b of this.alive(chain)) {
+      if (b.s < 0 || b.s > chain.track.length) continue;
+      const p = chain.track.pointAt(b.s);
+      if (Math.hypot(p.x - point.x, p.y - point.y) < point.dist) return false;
+    }
+    return true;
+  }
+
+  /** Coin timeout and appearance (D-07); nothing runs without treasure points. */
+  private tickCoin(): void {
+    if (this.treasure.length === 0 || this.state !== 'playing') return;
+    if (this.coin) {
+      if (this.tick >= this.coin.until) {
+        this.dropCoin();
+        this.scheduleCoin();
+      }
+      return;
+    }
+    if (this.tick < this.nextCoinTick) return;
+    const candidates = this.treasure.filter(p => this.treasureFree(p));
+    if (candidates.length === 0) return; // retry next tick, no draw
+    this.placeCoin(candidates[this.rng.int(candidates.length)]);
+  }
+
   // ------------------------------------------------------------ projectiles
 
   private moveProjectiles(): void {
-    const { width, height, ballRadius, ballSpacing } = this.config;
+    const { width, height, ballRadius, ballSpacing, coinRadius, coinPoints } = this.config;
     const margin = ballSpacing * 2;
     const keep: Projectile[] = [];
     for (const p of this.projectiles) {
@@ -877,6 +1005,15 @@ export class ZumaEngine {
         this.stats.misses++;
         this.emit('miss', { id: p.id });
         continue;
+      }
+      // Coin grab (D-09): scores, keeps the streak and lets the projectile fly on.
+      const coin = this.coin;
+      if (coin && Math.hypot(p.x - coin.x, p.y - coin.y) < coinRadius) {
+        this.coin = null;
+        this.stats.coins++;
+        this.addScore(coinPoints);
+        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints });
+        this.scheduleCoin();
       }
       let hit: Ball | undefined;
       let hitChain: Chain | undefined;
@@ -982,6 +1119,7 @@ export class ZumaEngine {
             this.state = 'draining';
             this.projectiles = [];
             for (const c of this.chains) c.recoils = [];
+            this.dropCoin();
             this.emit('lost', { lives: this.lives, chain: chain.index });
             return;
           }
