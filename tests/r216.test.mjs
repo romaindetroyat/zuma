@@ -567,8 +567,9 @@ test('tally: a board emptied without an explosion has no step and wins 12 + 30 t
 
 // ------------------------------------------------------------ configFromSettings (GAME-01, T-05-13), baseline
 
-test('baseline R2.0.16', () => {
-  assert.equal(ENGINE_VERSION, '2.0.16');
+test('baseline R2.0.16 — superseded', () => {
+  // R2.0.17: the baseline moved on (r217 locks '2.0.17'); this test keeps the manifest / engine agreement and the ordering.
+  assert.ok(ENGINE_VERSION > '2.0.16', 'the R2.0.16 rules below still hold in the newer baseline');
   assert.equal(ENGINE_VERSION, JSON.parse(fs.readFileSync('package.json', 'utf8')).version);
 });
 

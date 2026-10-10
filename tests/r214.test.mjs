@@ -195,7 +195,8 @@ test('ZUMA mode starts when the level score reaches target (points), not after a
   assert.equal(g.destroyedCount, 6, 'destroyedCount keeps counting balls for the statistics');
   assert.equal(g.zumaMode, false, '60 points < target 100');
   assert.ok(!g.events.some(e => e.kind === 'zuma'));
-  // Gap on the lower segment (s 132 → 500), then a run of four on the upper segment: 100 + 40 + 10 points.
+  // Gap on the lower segment (s 132 → 500), then a run of four on the upper segment.
+  // R2.0.17 (D-22): the 336 px gap pays 40 with the match and four balls pay 10 × 4 = 40 (no bonus beyond three): 80 points.
   g.loadFixture({
     balls: [{ color: 1, s: 100 }, { color: 2, s: 132 }, { color: 3, s: 500 }, { color: 1, s: 532 }, { color: 0, s: 1058 }, { color: 0, s: 1090 }, { color: 0, s: 1122 }],
     current: 0, next: 1, stream: false,
@@ -204,14 +205,14 @@ test('ZUMA mode starts when the level score reaches target (points), not after a
   run(g, 60);
   assert.ok(g.events.some(e => e.kind === 'gap'), 'gap bonus');
   assert.ok(g.events.some(e => e.kind === 'destroy' && e.count === 4), 'four balls destroyed');
-  assert.equal(g.levelScore, 210);
-  assert.equal(g.score, 5210);
-  assert.ok(g.zumaMode);
+  assert.equal(g.levelScore, 140);
+  assert.equal(g.score, 5140);
+  assert.ok(g.zumaMode, '140 ≥ target 100');
   assert.equal(g.events.filter(e => e.kind === 'zuma').length, 1, 'zuma emitted once');
   // Further points never re-emit the event.
   g.loadFixture({ balls: [{ color: 0, s: 304 }, { color: 0, s: 336 }], current: 0, next: 1, stream: false });
   g.command({ kind: 'shoot', x: 320, y: 240 });
   run(g, 40);
-  assert.equal(g.levelScore, 240);
+  assert.equal(g.levelScore, 170);
   assert.equal(g.events.filter(e => e.kind === 'zuma').length, 0, 'loadFixture cleared events; no second zuma');
 });

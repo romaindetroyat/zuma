@@ -1,9 +1,9 @@
 {
   "name": "zuma-pwa",
-  "version": "2.0.16",
+  "version": "2.0.17",
   "private": true,
   "type": "module",
-  "description": "Zuma R2.0.16 — fidelity reconstruction, PWA shell and regression-locked test bench",
+  "description": "Zuma R2.0.17 — fidelity reconstruction, PWA shell and regression-locked test bench",
   "engines": {
     "node": ">=22.0.0"
   },
