@@ -238,9 +238,10 @@ test('procedural levels keep the frog clear of every track and cycle with rising
 });
 
 test('CURV importer decodes control points, sampled deltas and tunnel flags', () => {
+  // R2.0.18: first point A/B after x, y, then dx, dy, A, B (0x4178c0); flags = A | B << 1 (A = tunnel, B = draw priority).
   const controls = [[10, 20], [60, 20]];
-  const samples = [[0, 0, 100, 0], [0, 0, 100, 0], [1, 0, 0, 100], [0, 1, -100, 0]];
-  const size = 12 + 8 + controls.length * 10 + 12 + samples.length * 4 + 2;
+  const samples = [[100, 0, 0, 0], [100, 0, 0, 0], [0, 100, 1, 0], [-100, 0, 0, 1]];
+  const size = 12 + 8 + controls.length * 10 + 12 + 2 + samples.length * 4;
   const buf = Buffer.alloc(size);
   buf.write('CURV', 0, 'latin1');
   buf.writeInt32LE(2, 4);
@@ -252,8 +253,10 @@ test('CURV importer decodes control points, sampled deltas and tunnel flags', ()
   buf.writeInt32LE(samples.length + 1, pos);
   buf.writeFloatLE(10, pos + 4);
   buf.writeFloatLE(20, pos + 8);
-  pos += 12;
-  for (const [a, b, dx, dy] of samples) { buf.writeUInt8(a, pos); buf.writeUInt8(b, pos + 1); buf.writeInt8(dx, pos + 2); buf.writeInt8(dy, pos + 3); pos += 4; }
+  buf.writeUInt8(0, pos + 12);
+  buf.writeUInt8(0, pos + 13);
+  pos += 14;
+  for (const [dx, dy, a, b] of samples) { buf.writeInt8(dx, pos); buf.writeInt8(dy, pos + 1); buf.writeUInt8(a, pos + 2); buf.writeUInt8(b, pos + 3); pos += 4; }
   const curve = parseCurve(buf);
   assert.equal(curve.version, 2);
   assert.deepEqual(curve.controls, controls);

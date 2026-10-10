@@ -288,9 +288,10 @@ test('chain bonus: a match from a chain reaction (depth > 1) during a chain ≥ 
 
 // ------------------------------------------------------------ baseline
 
-test('baseline 2.0.17: ENGINE_VERSION and package.json agree; the old rules are gone from the compiled core', () => {
-  assert.equal(ENGINE_VERSION, '2.0.17');
-  assert.equal(JSON.parse(fs.readFileSync('package.json', 'utf8')).version, '2.0.17');
+test('baseline 2.0.17 (superseded): ENGINE_VERSION and package.json agree; the old rules are gone from the compiled core', () => {
+  // R2.0.18: the baseline moved on (r218 locks '2.0.18'); this test keeps the manifest / engine agreement and the ordering.
+  assert.ok(ENGINE_VERSION > '2.0.17');
+  assert.equal(JSON.parse(fs.readFileSync('package.json', 'utf8')).version, ENGINE_VERSION);
   const core = fs.readFileSync('.compiled/core.js', 'utf8');
   assert.match(core, /export function gapBonusPoints\(/);
   assert.match(core, /gapMinWidth/);
