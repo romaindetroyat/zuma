@@ -2,7 +2,7 @@
 
 Reconstruction web/PWA d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
-Baseline : **R2.0.17**.
+Baseline : **R2.0.18**.
 
 ## Contenu du dépôt
 
@@ -13,9 +13,9 @@ Baseline : **R2.0.17**.
 | `src/levels.ts` | Niveaux procéduraux utilisés quand aucune ressource originale n'est fournie. |
 | `src/original.ts` | Chargeur du pack de ressources privé (courbes, fonds, sprites, sons). |
 | `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
-| `src/bitmapfont.ts`, `src/statsdialog.ts` | Polices bitmap PopCap et composition de l'écran STATS natif. |
+| `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu). |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
-| `src/main.ts` | Boucle de jeu, progression, menus, enregistrement du service worker. |
+| `src/main.ts` | Boucle de jeu, progression, entrées, menu de jeu, enregistrement du service worker. |
 | `tools/` | Build, serveur local, garde-fou de publication, extraction et import des ressources originales. |
 | `tests/` | Suite de non-régression (`node --test`). |
 
@@ -27,7 +27,20 @@ npm test        # build + tests de non-régression + garde-fou de publication
 npm run dev     # build local (avec ressources privées si présentes) puis http://localhost:8080
 ```
 
-Commandes : clic pour tirer, clic droit ou Espace pour échanger la bille, `P` pause, `Échap` menu, `M` son. L'option de menu « Pixels nets » force une échelle entière (×1, ×2, ×3) sans lissage et désactive les copies 2 × (voir « Netteté ») ; le choix est persisté.
+Commandes (R2.0.18) :
+
+| Action | Commande |
+| --- | --- |
+| Viser | Souris n'importe où dans la fenêtre (marges et barre du haut comprises) |
+| Tirer | Clic gauche, partout, y compris sur le cadre et la barre du haut |
+| Échanger la bille | Clic droit |
+| Menu | Espace, Entrée ou Échap — le jeu est en pause tant qu'il est ouvert |
+| Statistiques | Tab |
+| Pause | P |
+| Son | M |
+| Tactile | Toucher pour viser et tirer ; toucher MENU / STATS dans la barre pour les ouvrir |
+
+Dans l'original, Espace met le jeu en pause et l'échange au clic droit n'a pas été localisé (hypothèse C1) ; Entrée, Échap, Tab et P sont des ajouts. L'option de menu « Pixels nets » arrondit l'échelle à un **nombre entier de pixels d'appareil** par pixel du jeu (par exemple 1,5 × en pixels CSS sur un écran Retina, soit 3 pixels physiques), sans lissage, et désactive les copies 2 × (voir « Netteté ») ; sans elle le jeu remplit la fenêtre en 4:3. Le choix est persisté.
 
 Relecture : le paramètre d'URL `?level=1-3` ouvre directement un niveau (temple-niveau, ici le troisième niveau du premier temple) ; il est ignoré sans pack ou si le couple est hors limites. `?debug=1` expose `window.__zuma.game.debugState()` (moteur et niveau en lecture, pour les scripts de capture).
 
@@ -44,7 +57,7 @@ npm run standalone                                                        # stan
 
 `private_assets/`, `dist/`, `.compiled/` et `standalone/` sont ignorés par Git et `npm run guard` refuse tout fichier propriétaire suivi.
 
-L'import décode les fichiers de courbes (`CURV` : points de contrôle puis polyligne échantillonnée au pixel avec drapeaux de tunnel), `levels.xml` (positions de la grenouille, découpes, réglages de difficulté, progression par temples) et renomme les sons selon les clés de `feedback.ts`.
+L'import décode les fichiers de courbes (`CURV` : points de contrôle puis polyligne échantillonnée au pixel, chaque point portant un octet de tunnel et un octet de priorité de dessin — voir « Tunnels et calques »), `levels.xml` (positions de la grenouille, découpes, réglages de difficulté, progression par temples) et renomme les sons selon les clés de `feedback.ts`.
 
 ### Réglages originaux (`levels.xml` → `configFromSettings`)
 
@@ -64,17 +77,41 @@ Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`confi
 | `partime` | 25 → 240 (s) | Temps d'expert en secondes : affiché en OBJECTIF ; bonus ACE TIME `100 × (1 + ⌊250 × (1 − t / partime)⌋)` (t = secondes entières, 0 si t > partime : 1-1 en 24 s → 1 100, en 20 s → 5 100), compté dans l'écran STATS. Absent → `defaultParTime` = `⌈score × 35 / 1000⌉₅` (× 0,95 × courbes si plusieurs). | vérifié (unité, formule) ; `defaultParTime` = hypothèse A7 |
 | `zumaslow`, `zumaback` | 500 / 200 (`lvl35`) ; défauts 1100 / 300 maj | Au passage en mode ZUMA, **si la tête couvre plus de 50 % de la piste** : recul pendant `zumaback` maj puis vitesse cible × 0,25 pendant `zumaslow` maj (× 0,6 → `zumaBackTicks` 180, `zumaSlowTicks` 660 par défaut) ; un recul plus long déjà actif est conservé. | vérifié ; application à toutes les chaînes d'après la couverture maximale = hypothèse |
 | `colors` | 4 (1-1 à 1-3 seulement) | Nombre de couleurs, borné 3..6 ; sinon déduit du temple (4 pour les temples 1–3, 5 pour 4–6, 6 ensuite). | vérifié (`Rand() % colors`) ; déduction par temple = hypothèse, verrouillée par test |
-| `mergespeed`, `reloaddelay`, `treasurefreq`, `maxspeed`, `accrate` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks` ; `treasurefreq` (défaut 300, unité non vérifiée) n'est pas câblé ; `maxspeed` / `accrate` sont inopérants sans `accrate` dans `levels.xml`. | à confirmer |
+| `treasurefreq` | jamais défini (défaut 300) | Probabilité `1 / treasurefreq` par maj d'une tentative d'apparition de pièce (≈ 1/180 par tick, `coinChance`), 13 s après l'apparition précédente ; voir « Pièces et fin de niveau ». | vérifié (R2.0.18) |
+| `mergespeed`, `reloaddelay`, `maxspeed`, `accrate` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks` ; `maxspeed` / `accrate` sont inopérants sans `accrate` dans `levels.xml`. | à confirmer |
+
+### Tunnels et calques
+
+Chaque point d'une courbe originale (`CURV`, chargeur 0x4178c0) porte deux octets, décodés depuis R2.0.18 selon le troisième spike (`05-RESEARCH-03.md`) :
+
+- **octet A = tunnel** (bit 0 des `flags` du pack, `Track.tunnelAt`) : segment injouable — un projectile **traverse** une bille en tunnel sans la toucher (0x408f52) et la recherche du point de courbe le plus proche l'ignore (0x414d6e) ;
+- **octet B = priorité de dessin 0..3** (bits 1–2, `Track.priorityAt`) ; la priorité d'une bille est le maximum des priorités à ses deux bords (± 16 px, 0x405c10).
+
+Le plateau se dessine en **cinq passes** `L = 0..4` (0x40c470) : découpes du décor de priorité `L`, étincelles de ce calque, puis billes de priorité `L`. Toutes les découpes du pack ont la priorité 1 : les billes de priorité 0 passent **sous** les découpes, celles de priorité ≥ 1 **par-dessus**. Aucune bille n'est jamais omise (jusqu'en R2.0.17, 64 % des billes du 2-2 disparaissaient). Les découpes sont des pochoirs du fond (masques `_<nom>.gif`, hypothèse C2).
+
+Un pack importé avant R2.0.18 garde l'ancien décodage (octets décalés d'un point) et n'a pas les images du menu de jeu : relancer `npm run import`.
 
 ### Pièces et fin de niveau
 
-Depuis R2.0.16, les montants et les cadences de la fin de niveau sont ceux lus dans l'exécutable original ; ce qui est marqué *hypothèse* reste à confirmer en jeu (voir `.planning/codebase/CONCERNS.md`).
+Depuis R2.0.16, les montants et les cadences de la fin de niveau sont ceux lus dans l'exécutable original, et depuis R2.0.18 la cadence des pièces aussi ; ce qui est marqué *hypothèse* reste à confirmer en jeu (voir `.planning/codebase/CONCERNS.md`).
 
-- **Pièces** (`TreasurePoint` de `levels.xml` : `x`, `y`, courbe, `dist1`|`dist2`) : une seule pièce à la fois, qui apparaît 9–15 s après le début du niveau puis après chaque disparition ou ramassage (*hypothèse* : `treasurefreq` n'est pas câblé), sur un point tiré au hasard parmi ceux qui sont dégagés — aucune bille de la courbe concernée à moins de `dist` px du point (`dist = 0` = toujours libre ; règle de dégagement : *hypothèse*). Elle reste visible 6 s. Rendu : `COIN.gif` (30 trames, 20 trames/s) avec le scintillement `sparkle.gif` périodique. Un projectile passant à moins de 18 px la ramasse : **`max(500, 100 × ⌊score / 600⌋)` points** (500 au temple 1, vérifié), texte flottant « +500 », compteur PIÈCES des STATS, **la série (ENCH.) est conservée** et le projectile continue sa course. Sons : `jewelappear` à l'apparition, `gemvanishes` à la disparition, `coingrab` au ramassage.
-- **Décompte de fin de niveau** : quand la dernière bille explose en mode ZUMA, le tir est bloqué, **10 000 points par courbe** sont crédités (*hypothèse A3*), et un marqueur part de la dernière destruction vers le crâne par pas de **60 px toutes les 4 maj** (2,4 ticks), le premier 20 maj après le vidage ; chaque pas rapporte **+100** avec un texte flottant jaune « +100 » et cinq étincelles sur la piste, le son `endoflevelpop1` (gain 0,5, hauteur fixe) joue toutes les 10 maj. 50 maj après le dernier pas : `chant5` et l'écran STATS s'ouvre immédiatement, où le bonus ACE TIME (voir `partime`) est compté.
+- **Pièces** (`TreasurePoint` de `levels.xml` : `x`, `y`, courbe, `dist1`|`dist2` ; objet « pièces » 0x417580) : une seule pièce à la fois, **visible 10 s** (600 ticks). Première tentative 3 s après le début du niveau, puis au plus tôt **13 s après l'apparition précédente** (qu'elle ait été ramassée ou non) ; à partir de là une chance sur 180 par tick (`1 / treasurefreq` par maj), soit **≈ 16 s en moyenne** entre deux apparitions. **Aucune pièce une fois la jauge ZUMA pleine.** Le point est tiré au hasard (jusqu'à `2 × n` tirages) parmi ceux dont la tête de chaîne de la courbe a dépassé **`dist` % de la piste** (`dist = 0` = toujours libre ; ce n'est pas un dégagement en px). Rendu : `COIN.gif` (30 trames, 20 trames/s) avec le scintillement `sparkle.gif` périodique. Un projectile passant à moins de 18 px la ramasse : **`max(500, 100 × ⌊score / 600⌋)` points** (500 au temple 1, vérifié), texte flottant « +500 », compteur PIÈCES des STATS, **la série (ENCH.) est conservée** et le projectile continue sa course. Sons : `jewelappear` à l'apparition (**gain 0,40**, comme dans `resources.xml`), `gemvanishes` à la disparition, tous deux **panoramiques** selon la position de la pièce (`(x − 320) / 320 × 0,3`, unité : hypothèse C3), `coingrab` au ramassage.
+- **Décompte de fin de niveau** : quand la dernière bille explose en mode ZUMA, le tir est bloqué, **10 000 points par courbe** sont crédités (*hypothèse A3*), et **un marqueur par chaîne** part de la dernière destruction de sa chaîne (à défaut, du début de sa piste) vers son crâne par pas de **60 px toutes les 4 maj** (2,4 ticks), le premier 20 maj après le vidage ; **tous les marqueurs avancent en même temps** et chaque pas rapporte **+100** par marqueur avec un texte flottant jaune « +100 » et cinq étincelles sur la piste, le son `endoflevelpop1` (gain 0,5, hauteur fixe) joue toutes les 10 maj (pops partagés). 50 maj après le dernier pas du marqueur le plus long : `chant5` et l'écran STATS s'ouvre immédiatement, où le bonus ACE TIME (voir `partime`) est compté. Le décompte **simultané** sur plusieurs chaînes est une **déviation volontaire** (D-30, demandée en UAT) : l'original décompte courbe par courbe, avec 50 maj entre deux courbes.
 - **Chronomètre** : TEMPS, OBJECTIF et le bonus ACE TIME se mesurent depuis « PARTEZ », pas depuis le chargement du niveau.
 - **Début de niveau** : « Attention » (`GET_READY`, police `NativeAlienExtended18` avec le pack) pendant l'arrivée rapide de la chaîne, puis « PARTEZ » (`GO`) quand la vitesse de croisière est atteinte (≈ 1,5 s sur la spirale) ; `chant1` au début.
-- **Fin de piste** : l'alerte `warning1` commence 600 px avant le crâne avec un intervalle qui passe de 4,1 s à 0,6 s sans monter en volume ; le couvercle du crâne s'ouvre sur la même distance ; la chaîne ralentit jusqu'à `speed / slowfactor` (voir le tableau). Le roulement (`rolling`) joue à volume constant dès que la chaîne bouge et s'éteint en 150 ms. L'atteinte de la jauge affiche « ZUMA ! » en police titre pendant 2 s avec la jauge qui pulse.
+- **Fin de piste** : l'alerte `warning1` commence 600 px avant le crâne avec un intervalle qui passe de 4,1 s à 0,6 s sans monter en volume ; le couvercle du crâne s'ouvre sur la même distance ; la chaîne ralentit jusqu'à `speed / slowfactor` (voir le tableau). Le roulement (`rolling`) joue à volume constant (gain 0,35, montée 50 ms) dès que la chaîne bouge et s'éteint par un fondu linéaire de 500 ms (l'original : ≈ 0,5 s) ; il est coupé en pause, sous le menu et le STATS. L'atteinte de la jauge affiche « ZUMA ! » en police titre pendant 2 s avec la jauge qui pulse.
+
+### Vies
+
+Comme dans l'original (`AddScore` 0x417380), **une grenouille supplémentaire tous les 50 000 points** (chaîne du pack `GET_AN_EXTRA_FROG`) : une vie par multiple de 50 000 franchi, plusieurs d'un coup si besoin, **sans plafond**, y compris pendant le compte à rebours du bonus dans l'écran STATS. Le son `extralife` est joué **trois fois** (0, 0,3 et 0,6 s) ; aucun texte n'apparaît en jeu (comme l'original). Le compteur de la barre du haut montre **trois grenouilles puis « +N »** (plafond d'affichage seulement).
+
+### Menu de jeu
+
+Espace, Entrée ou Échap ouvrent le menu de jeu, **composé comme les dialogues du jeu original** : l'original n'a pas de dialogue MENU distinct, c'est son dialogue OPTIONS construit en mode « en jeu » (0x445310). Le jeu est **en pause** dessous.
+
+- Titre « MENU » ; curseurs « Musique » (grisé : pas de musique avant les phases 6–7) et « Sons » (volume général, persisté) ; cases « Plein écran » et « Pixels nets » ; « Aide » (commandes, astuces du pack, version) ; « Retour au menu principal » (confirmation « Quitter la partie ? » puis **nouvelle partie** tant que le menu principal n'existe pas) ; « Retour à la partie ».
+- Avec le pack : cadre `dialogbox`, tête de divinité, boutons `DialogButton`, curseurs `slidertrack` / `sliderthumb`, cases `checkbutton` et polices bitmap, composés sur un canvas à l'échelle réelle de l'écran (copies 2 × EPX au-delà de 1,5 ×) ; sans pack, même disposition en dessin vectoriel. Plus aucun panneau HTML.
+- Souris : survol, pression, glissement du curseur ; clavier : Haut / Bas pour se déplacer, Gauche / Droite pour le volume, Entrée ou Espace pour valider, Échap pour revenir ou fermer.
 
 ### Score (règles originales)
 
@@ -113,7 +150,7 @@ Le jeu est simulé et dessiné en 640×480 logiques ; le canvas est mis à l'éc
 - l'écran STATS est composé **une seule fois à l'échelle réelle** du canvas (plus d'image 640×480 étirée une seconde fois) ;
 - dès que l'échelle atteint **1,5 pixel physique par pixel logique** (`HD_MIN_SCALE`), les polices bitmap (HUD et STATS), le cadre, la tête et le bouton du dialogue, les feuilles de billes, l'ombre, les icônes de power-up et la barre de menu sont remplacés par des copies **2 × EPX** (`src/upscale.ts`, filtre Scale2x pur, aucune dépendance) construites en mémoire au chargement et dessinées à leur taille logique avec lissage ;
 - le fond de niveau, les découpes, les trous, le couvercle, la grenouille, la pièce, la jauge et les explosions restent en 1 × bilinéaire ;
-- « Pixels nets » reste inchangé (échelle entière, sans lissage, actifs 1 ×) ; la bascule se fait sans rechargement ;
+- « Pixels nets » choisit une échelle entière **en pixels d'appareil** (`fitScale` : `max(1, ⌊ajustement × dpr⌋) / dpr`, soit 960 × 720 px CSS dans une fenêtre de 1 000 × 750 sur un écran Retina, contre 640 × 480 jusqu'en R2.0.17), sans lissage, actifs 1 × ; sans elle le canvas remplit la fenêtre en 4:3 ; la bascule se fait sans rechargement ;
 - coût mémoire mesuré avec le pack : ≈ 16,3 Mio d'images 2 × (dont 4,7 pour la barre de menu et 4,4 pour les six feuilles de billes), construites uniquement au-dessus de 1,5 ×.
 
 ## Verrous de non-régression
@@ -132,7 +169,8 @@ Le jeu est simulé et dessiné en 640×480 logiques ; le canvas est mis à l'éc
 - HUD natif 640×480 et écran STATS monolithique à bouton OK unique (structure R2.0.12 ; avec le pack, écran STATS natif composé depuis les ressources originales : cadre 9 tranches, polices bitmap, chaînes, record de temps par niveau) ;
 - décodeur de courbes originales vérifié sur un fichier synthétique ;
 - arrêt du pousseur et zone lente de fin de piste ; décompte original ; bonus ACE TIME (`tests/r216*.test.mjs`) ;
-- bonus de saut payé au match (barème 500 … 10 × brèches, bille en attente) ; score `10n + 100·combo` ; enchaînement `(chain + 5) × 10` ; textes et sons de score originaux ; grille du STATS, signe du bonus, astuce sur deux lignes ; compte à rebours borné avec mode rapide ; rampe du roulement armée une fois par cible ; `upscale2x`, composition à l'échelle du canvas et actifs 2 × dès 1,5 × (`tests/r217*.test.mjs`).
+- bonus de saut payé au match (barème 500 … 10 × brèches, bille en attente) ; score `10n + 100·combo` ; enchaînement `(chain + 5) × 10` ; textes et sons de score originaux ; grille du STATS, signe du bonus, astuce sur deux lignes ; compte à rebours borné avec mode rapide ; rampe du roulement armée une fois par cible ; `upscale2x`, composition à l'échelle du canvas et actifs 2 × dès 1,5 × (`tests/r217*.test.mjs`) ;
+- décodage CURV aligné (tunnel, priorité 0..3), priorité d'une bille aux deux bords, projectile qui traverse une bille en tunnel, cinq passes de dessin sans bille omise ; vies tous les 50 000 points (sans plafond, aussi pendant le compte à rebours) avec triple `extralife` et compteur de grenouilles ; cadence originale des pièces (10 s, 13 s, 1/180 par tick, rien après ZUMA, `dist` en %), `coinappear` à 0,40 et panoramique ; décompte simultané sur plusieurs chaînes ; menu de jeu (disposition, aide, confirmation, composition, pause, volume) ; visée et tir sur toute la fenêtre, liaisons clavier, `stagePoint`, `fitScale` ; roulement 0,35 / 50 ms / 500 ms (`tests/r218*.test.mjs`).
 
 ## Fournir ses propres graphismes de niveau
 
@@ -147,4 +185,6 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.17 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Sont désormais vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS, et depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original. Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A6 (`treasurefreq`, pièce toutes les 9–15 s et règle de dégagement `dist`), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, l'arrêt du pousseur à chaque insertion arrière, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions et le roulement à gain constant ; et une déviation volontaire, D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure).
+R2.0.18 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement.
+
+Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), C1 (clic droit = échange), C2 (découpes = pochoirs du fond), C3 (unité du panoramique des pièces), C4 (police des libellés du menu), la tête de divinité et les marges du menu, la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, l'arrêt du pousseur à chaque insertion arrière, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions, la condition exacte du rafraîchissement du roulement ; et des choix assumés : Espace = menu (l'original : pause), Échap / Entrée / Tab / P sans équivalent original, gain 0,35 du roulement sur un seul canal (l'original : 1,0, un canal par courbe), curseur Musique inerte, « Retour au menu principal » qui lance une nouvelle partie, boutons du HUD actifs au toucher seulement. Deux déviations volontaires sont documentées : D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure) et D-30 (décompte de fin de niveau simultané sur toutes les chaînes, là où l'original les décompte l'une après l'autre).
