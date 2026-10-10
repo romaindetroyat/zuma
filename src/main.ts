@@ -5,7 +5,7 @@ import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont } from './bitmapfont.js';
-import { STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsKit, type StatsValues } from './statsdialog.js';
+import { STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountUp, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
@@ -558,6 +558,13 @@ class Game {
   }
 
   private statsOutcome: 'live' | 'won' | 'lost' | 'gameover' = 'live';
+  /** Input of the displayed values, kept so the count-up can refresh POINTS / BONUS. */
+  private statsInput: StatsInput | null = null;
+  /**
+   * ACE TIME count-up in the dialog (0x440b00, §8): `total` = the uncredited bonus when the dialog
+   * opened, `shown` = the share already credited through engine.creditBonus() (T-05-15).
+   */
+  private statsBonus: { total: number; shown: number } | null = null;
 
   /**
    * Opens the STATS dialog. The ten values go to the `strong#result-*` of the structure
@@ -582,11 +589,15 @@ class Game {
     if (won && best !== stored) {
       try { localStorage.setItem(key, String(best)); } catch { /* storage unavailable */ }
     }
-    const values = statsValues({
+    // The time bonus is not in the score at `won`: it is counted up here, bounded by what is still uncredited.
+    const total = won ? Math.max(0, engine.timeBonus - engine.timeBonusCredited) : 0;
+    this.statsBonus = total > 0 ? { total, shown: 0 } : null;
+    this.statsInput = {
       levelScore: engine.levelScore, combos: s.combos, coins: s.coins, gaps: s.gaps, maxStreak: s.maxStreak, maxCombo: s.maxCombo,
-      seconds, parTime: this.level?.parTime ?? 0, timeBonus: engine.timeBonus, won, bestSeconds: best,
+      seconds, parTime: this.level?.parTime ?? 0, timeBonus: total, timeBonusShown: 0, won, bestSeconds: best,
       noBonusLabel: strings?.NO_TIME_BONUS ?? 'PAS DE BONUS',
-    });
+    };
+    const values = statsValues(this.statsInput);
     this.statsValues = values;
     const title = document.getElementById('results-title');
     if (title) title.textContent = strings?.STATS ?? 'STATISTIQUES';
@@ -610,7 +621,49 @@ class Game {
       const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
       if (dialog) dialog.style.backgroundImage = '';
     }
+    this.scheduleBonusCountUp();
     panel?.classList.add('open');
+  }
+
+  /**
+   * Arms the ACE TIME count-up (U17, §8): from 1 s after the opening, +100 every 100 ms with
+   * `endoflevelpop1` at a rising pitch, each step credited to the engine so POINTS and the HUD
+   * score climb live; the schedule is `bonusCountUp`. Timers share `statsTimers` (purged on close).
+   */
+  private scheduleBonusCountUp(): void {
+    const bonus = this.statsBonus;
+    if (!bonus) return;
+    const steps = Math.ceil(bonus.total / 100);
+    for (let k = 1; k <= steps; k++) {
+      const at = 1000 + 100 * (k - 1);
+      this.statsTimers.push(window.setTimeout(() => this.bonusStep(bonusCountUp(bonus.total, at)), at));
+    }
+  }
+
+  /** One count-up step: credits `target − shown` (never more than the remainder), pops, refreshes POINTS / BONUS. */
+  private bonusStep(target: number): void {
+    const engine = this.engine;
+    const bonus = this.statsBonus;
+    if (!engine || !bonus || !this.statsOpen) return;
+    const step = Math.max(0, Math.min(target, bonus.total) - bonus.shown);
+    if (step <= 0) return;
+    engine.creditBonus(step);
+    bonus.shown += step;
+    this.audio.play({ key: 'bonuspop', gain: 0.5, rate: bonusPopRate(bonus.shown, bonus.total) });
+    this.refreshStatsValues(engine.levelScore, bonus.shown);
+  }
+
+  /** Recomputes the displayed values after a count-up step (vector panel and composed dialog). */
+  private refreshStatsValues(levelScore: number, timeBonusShown: number): void {
+    if (!this.statsInput) return;
+    this.statsInput = { ...this.statsInput, levelScore, timeBonusShown };
+    const values = statsValues(this.statsInput);
+    this.statsValues = values;
+    for (const field of ['points', 'bonus'] as const) {
+      const el = document.getElementById(RESULT_IDS[field]);
+      if (el) el.textContent = values[field];
+    }
+    this.renderStats();
   }
 
   /** Composes the dialog for the current reveal / button state and lays it as the inline background. */
@@ -651,6 +704,13 @@ class Game {
   private async closeStats(): Promise<void> {
     document.getElementById('stats')?.classList.remove('open');
     this.clearStatsTimers();
+    // OK before the end of the count-up: the remainder is credited at once, exactly once (T-05-15).
+    const bonus = this.statsBonus;
+    if (bonus && this.engine && bonus.shown < bonus.total) {
+      this.engine.creditBonus(bonus.total - bonus.shown);
+      bonus.shown = bonus.total;
+    }
+    this.statsBonus = null;
     this.statsOpen = false;
     this.statsShown = ++this.statsRender; // drop any composition still being encoded
     const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
