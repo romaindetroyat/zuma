@@ -65,28 +65,17 @@ Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`confi
 
 ### Écran STATS d'origine
 
-Avec le pack, l'écran STATS est le dialogue original lui-même (tête de divinité, titre, libellés, astuce et bouton OK peints) : les chiffres figés de l'image sont effacés au chargement par clonage de la texture voisine, puis les valeurs vivantes s'inscrivent exactement aux mêmes emplacements, dans la même typographie et les mêmes couleurs, sans aucun panneau superposé ; le bandeau HUD figé de l'image est rendu transparent pour laisser le HUD vivant du canvas. L'image vient d'un standalone R2.0.12 et n'entre jamais dans le dépôt :
+Avec le pack, l'écran STATS est **composé à l'exécution** (`src/statsdialog.ts`) à partir des briques du jeu original, sur un canvas 640×480 posé en fond inline de `.zuma-stats` (la feuille de style ne référence aucune image) :
 
-```bash
-node tools/import-r212-stats.mjs chemin/vers/Zuma_R2_0_12_Local_Autonome.html   # → private_assets/original/extra/stats_bg.png + stats_layout.json
-npm run import                                                                  # copie stats_bg dans pack/images/ et stats_layout.json dans pack/
-```
+- `images/dialogbox.jpg` + `_dialogbox.gif` : cadre dessiné en 9 tranches (coins non étirés, bords étirés dans une dimension, centre étiré) sur le rectangle mesuré de la référence R2.0.12 (x 109–531, y 91–446) ;
+- `images/GodHead.gif` + masque : tête de divinité centrée, chevauchant le bord supérieur ;
+- `images/DialogButton.jpg` + `_Dialogbutton.gif` : bouton OK, trois états peints (normal / survol / pressé) suivis par le contrôle transparent `#result-continue` ; son `button1` au clic ;
+- polices bitmap PopCap lues depuis leurs scripts `fonts/*.txt` (`src/bitmapfont.ts`) : titre en `NativeAlienExtended18` (teinte du gif), libellés et valeurs en `Cancun12` teinté (libellés jaunes, valeurs crème, TEMPS et BONUS verts, OBJECTIF orange, RECORD or), astuce en `Arial12Bold` ;
+- libellés et astuces = chaînes originales de `properties/default.xml` (`pack/strings.json` : STATS, POINTS, COMBOS, COINS, GAPS, MAX_CHAIN, MAX_COMBO, YOUR_TIME, ACE_TIME, BONUS, BEST_TIME, NO_TIME_BONUS, TIP, OK et les sept astuces).
 
-`stats_layout.json` (hors Git : il décrit une image propriétaire) donne, en fractions de la largeur/hauteur de l'image (4 décimales) :
+Colonne gauche : POINTS (score du niveau), COMBOS, PIÈCES (pièces touchées), SAUTS, ENCH. MAX., COMBO MAX. Colonne droite : TEMPS (durée du niveau), OBJECTIF (`partime`), BONUS (`+N` = bonus de temps d'expert accordé par le moteur en fin de niveau, sinon « PAS DE BONUS » à la place du libellé), RECORD = **meilleur temps du niveau**, persisté dans `localStorage` sous `zuma.best.<id>` (id du niveau du pack ou `proc-N`), mis à jour sur victoire et affiché dès la première partie (alors égal au temps courant). Les dix valeurs se révèlent ligne par ligne (90 ms, son `pop`). Chaque état (ligne révélée, survol, pressé) recompose le canvas, encodé en PNG de façon synchrone (`toDataURL`, ~10 ms) et exposé en URL d'objet ; l'image précédente n'est révoquée qu'une fois la nouvelle décodée.
 
-```
-{ "format": 1, "image": { "width": 1445, "height": 1089 },
-  "hudStrip": { "x", "y", "w", "h" },          // bandeau HUD figé, rendu transparent
-  "title":    { "x", "y", "w", "h" },          // titre peint (repère)
-  "ok":       { "x", "y", "w", "h" },          // bouton OK peint, reçoit le contrôle transparent
-  "slots": { "points" | "combos" | "coins" | "gaps" | "chain" | "comboMax" | "time" | "objective" | "bonus" | "record":
-    { "box":   { "x", "y", "w", "h" },         // bande où s'écrit la valeur vivante (alignée à droite)
-      "erase": { "x", "y", "w", "h" },         // chiffres figés (avec leur ombre) à effacer
-      "patch": { "x", "y", "w", "h" },         // texture propre de même taille, clonée sur `erase`
-      "align": "right", "color": "#rrggbb", "fontSize": <fraction de la hauteur> } } }
-```
-
-Sans pack, l'écran STATS reste le panneau vectoriel (même structure, mêmes valeurs).
+Sans pack (ou tant que les polices ne sont pas chargées), l'écran STATS reste le panneau vectoriel (même structure, mêmes valeurs, mêmes identifiants).
 
 ## Verrous de non-régression
 
@@ -101,7 +90,7 @@ Sans pack, l'écran STATS reste le panneau vectoriel (même structure, mêmes va
 - filtrage des munitions sur les couleurs présentes ;
 - quatre familles de power-ups (Bombe, Ralentir, Retour, Visée) avec leurs sons dédiés ;
 - bonus saut, enchaînements, mode ZUMA, perte de vie et victoire ;
-- HUD natif 640×480 et écran STATS monolithique à bouton OK unique (structure R2.0.12, valeurs incrustées dans le dialogue original avec le pack) ;
+- HUD natif 640×480 et écran STATS monolithique à bouton OK unique (structure R2.0.12 ; avec le pack, écran STATS natif composé depuis les ressources originales : cadre 9 tranches, polices bitmap, chaînes, record de temps par niveau) ;
 - décodeur de courbes originales vérifié sur un fichier synthétique.
 
 ## Fournir ses propres graphismes de niveau

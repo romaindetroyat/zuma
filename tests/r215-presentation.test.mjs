@@ -118,3 +118,14 @@ test('the importer no longer emits statsLayout nor copies original/extra/', () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('main.js opens the native STATS through composeStatsDialog / bestTimeKey and never references the R2.0.12 picture', () => {
+  const main = fs.readFileSync('.compiled/main.js', 'utf8');
+  assert.match(main, /composeStatsDialog\(/);
+  assert.match(main, /bestTimeKey\(/);
+  assert.match(main, /key: 'pop'/, 'one pop per revealed line');
+  assert.match(main, /key: 'button'/, 'button1 on OK');
+  assert.doesNotMatch(main, /stats_bg/);
+  assert.doesNotMatch(main, /statsArt|STATS_SLOT_IDS|'zuma\.best'/);
+  assert.match(fs.readFileSync('index.html', 'utf8'), /id="result-expert">PAS DE BONUS</);
+});
