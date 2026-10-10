@@ -256,6 +256,17 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     const copied = copyImage(path.join(src, 'images'), name, path.join(out, 'images'));
     if (copied) images[name.toLowerCase()] = `images/${copied}`;
   }
+  // Extras produced by the other importers (tools/import-r212-stats.mjs → stats_bg.png):
+  // every image under original/extra/ is registered under its lower-cased stem.
+  const extraDir = path.join(src, 'extra');
+  if (fs.existsSync(extraDir)) {
+    for (const f of fs.readdirSync(extraDir).sort()) {
+      if (!IMAGE_EXTS.includes(path.extname(f).toLowerCase())) continue;
+      const stem = f.replace(/\.[^.]+$/, '');
+      const copied = copyImage(extraDir, stem, path.join(out, 'images'));
+      if (copied) images[stem.toLowerCase()] = `images/${copied}`;
+    }
+  }
 
   const pack = {
     format: 1,
