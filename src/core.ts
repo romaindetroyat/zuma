@@ -200,7 +200,7 @@ export interface EngineConfig {
   start: number;
   /** Total balls streamed per chain (Infinity streams until ZUMA mode). */
   total: number;
-  /** Destroyed balls needed to enter ZUMA mode (feed stops). */
+  /** Points scored in the level needed to enter ZUMA mode (feed stops) — original `score` setting. */
   target: number;
   /** Probability that a streamed ball repeats the previous colour (original `repeat` %, 0..1). */
   repeatChance: number;
@@ -246,7 +246,7 @@ export const CANDIDATE: EngineConfig = {
   colors: 4,
   start: 20,
   total: 60,
-  target: 40,
+  target: 400,
   repeatChance: 0.5,
   singleChance: 0,
   speed: 24,
@@ -323,9 +323,12 @@ export class ZumaEngine {
   feeding = true;
   /** New balls are streamed from the spawn holes. */
   stream = true;
+  /** Balls destroyed in the level (statistics only; the gauge is driven by `levelScore`). */
   destroyedCount = 0;
   zumaMode = false;
   score = 0;
+  /** Points scored since the start of the level; the score carried over from previous levels is excluded. */
+  levelScore = 0;
   lives: number;
   streak = 0;
   slowTicks = 0;
@@ -734,7 +737,7 @@ export class ZumaEngine {
       this.destroyRun(chain, alive, run, 1, ball.id);
       if (this.streak >= 5) {
         const pos = this.ballPosition(ball, chain);
-        this.score += 50 * (this.streak - 4);
+        this.addScore(50 * (this.streak - 4));
         this.emit('streak', { streak: this.streak, x: pos.x, y: pos.y });
       }
     } else {
@@ -767,19 +770,25 @@ export class ZumaEngine {
 
     const centre = this.ballPosition(run[Math.floor(run.length / 2)], chain);
     const points = 10 * run.length + 10 * Math.max(0, run.length - 3) + (depth > 1 ? 100 * (depth - 1) : 0);
-    this.score += points;
     this.stats.matches++;
     this.stats.maxCombo = Math.max(this.stats.maxCombo, depth);
     if (depth > 1) this.stats.combos++;
     this.emit('destroy', { depth, count: run.length, color: run[0].color, x: centre.x, y: centre.y, points, ids: run.map(b => b.id), chain: chain.index });
     this.registerDestroyed(run.length);
+    this.addScore(points);
     for (const b of run) if (b.power) this.activatePower(b, chain);
   }
 
   private registerDestroyed(count: number): void {
     this.destroyedCount += count;
     this.stats.destroyed += count;
-    if (!this.zumaMode && this.destroyedCount >= this.config.target) {
+  }
+
+  /** Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points. */
+  private addScore(points: number): void {
+    this.score += points;
+    this.levelScore += points;
+    if (!this.zumaMode && this.levelScore >= this.config.target) {
       this.zumaMode = true;
       this.emit('zuma');
     }
@@ -847,8 +856,8 @@ export class ZumaEngine {
       total += victims.length;
     }
     if (total > 0) {
-      this.score += 10 * total;
       this.registerDestroyed(total);
+      this.addScore(10 * total);
     }
     this.emit('power-bomb', { x: centre.x, y: centre.y, count: total });
     for (const { ball, chain } of chained) this.activatePower(ball, chain);
@@ -925,7 +934,7 @@ export class ZumaEngine {
     this.emit('insert', { id: ball.id, color: ball.color, x: bp.x, y: bp.y, chain: chain.index });
     if (p.gaps > 0) {
       this.stats.gaps += p.gaps;
-      this.score += 100 * p.gaps;
+      this.addScore(100 * p.gaps);
       this.emit('gap', { count: p.gaps, x: bp.x, y: bp.y });
     }
     // The run check is deferred to `settle`, once the slot is fully open (mergeTicks later).
@@ -981,7 +990,7 @@ export class ZumaEngine {
       const empty = this.chains.every(c => c.balls.length === 0 && c.removals.length === 0);
       if (this.zumaMode && empty) {
         this.state = 'won';
-        this.score += this.config.levelBonus;
+        this.addScore(this.config.levelBonus);
         this.emit('won', { score: this.score });
       }
     } else if (this.state === 'draining' && this.chains.every(c => c.balls.length === 0)) {

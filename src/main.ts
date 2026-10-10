@@ -331,7 +331,7 @@ class Game {
       levelLabel: this.level?.label ?? '',
       lives: Math.max(0, engine.lives),
       score: engine.score,
-      progress: engine.zumaMode ? 1 : engine.destroyedCount / engine.config.target,
+      progress: engine.zumaMode ? 1 : Math.min(1, engine.levelScore / engine.config.target),
       zuma: engine.zumaMode,
       message: this.paused && !msg ? 'PAUSE' : msg?.text ?? null,
       subMessage: msg?.sub ?? null,
@@ -621,7 +621,12 @@ export function formatSeconds(seconds: number): string {
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/** Maps original level settings (100 Hz update units) onto the engine configuration. */
+/**
+ * Maps original level settings (100 Hz update units) onto the engine configuration.
+ * Interpretation (documented in README « Réglages originaux »): `score` = points to fill the
+ * gauge (ZUMA mode), `repeat` = % chance of repeating the previous colour, `single` = % chance
+ * of an isolated ball. The level bonus stays a fixed 1000 points: `score` is an objective, not a bonus.
+ */
 export function configFromSettings(settings: PackSettings | undefined, stage: number): Partial<EngineConfig> {
   const s = settings ?? { id: 'default' };
   const colors = s.colors ?? (stage < 3 ? 4 : stage < 6 ? 5 : 6);
@@ -630,13 +635,15 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
     colors: Math.max(3, Math.min(6, colors)),
     start: s.start ?? 35,
     total: Number.POSITIVE_INFINITY,
-    target: s.repeat ?? 50,
+    target: s.score ?? 1000,
+    repeatChance: Math.max(0, Math.min(1, (s.repeat ?? 50) / 100)),
+    singleChance: Math.max(0, Math.min(1, (s.single ?? 0) / 100)),
     speed: (s.speed ?? 0.5) * 100,
     slowFactor: Math.max(1, s.slowfactor ?? 4),
     projectileSpeed: ((s.firespeed ?? 6) * 100) / 60,
     powerGuardTicks: Math.round(powerfreq * 0.3),
     powerChance: 1 / Math.max(60, powerfreq * 0.3),
-    levelBonus: s.score ?? 1000,
+    levelBonus: 1000,
   };
 }
 

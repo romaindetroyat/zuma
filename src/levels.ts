@@ -8,6 +8,7 @@ export interface LevelDef {
   colors: number;
   start: number;
   total: number;
+  /** Points to score in the level to enter ZUMA mode (≈ 10 per destroyed ball). */
   target: number;
   speed: number;
 }
@@ -72,7 +73,7 @@ export const LEVELS: LevelDef[] = [
     colors: 4,
     start: 18,
     total: 56,
-    target: 36,
+    target: 360,
     speed: 22,
   },
   {
@@ -87,7 +88,7 @@ export const LEVELS: LevelDef[] = [
     colors: 4,
     start: 20,
     total: 64,
-    target: 42,
+    target: 420,
     speed: 24,
   },
   {
@@ -97,7 +98,7 @@ export const LEVELS: LevelDef[] = [
     colors: 5,
     start: 22,
     total: 72,
-    target: 48,
+    target: 480,
     speed: 26,
   },
   {
@@ -112,7 +113,7 @@ export const LEVELS: LevelDef[] = [
     colors: 5,
     start: 24,
     total: 80,
-    target: 54,
+    target: 540,
     speed: 28,
   },
   {
@@ -122,7 +123,7 @@ export const LEVELS: LevelDef[] = [
     colors: 6,
     start: 26,
     total: 90,
-    target: 60,
+    target: 600,
     speed: 30,
   },
   {
@@ -137,7 +138,7 @@ export const LEVELS: LevelDef[] = [
     colors: 6,
     start: 28,
     total: 100,
-    target: 68,
+    target: 680,
     speed: 32,
   },
 ];
@@ -152,7 +153,7 @@ export function levelFor(index: number): LevelDef {
     name: `${base.name} ${'I'.repeat(Math.min(3, lap + 1))}`,
     colors: Math.min(6, base.colors + lap),
     total: base.total + 12 * lap,
-    target: base.target + 8 * lap,
+    target: base.target + 80 * lap,
     speed: base.speed + 4 * lap,
   };
 }

@@ -43,6 +43,7 @@ export interface PackSettings {
   start?: number;
   score?: number;
   repeat?: number;
+  single?: number;
   colors?: number;
   slowfactor?: number;
   firespeed?: number;
