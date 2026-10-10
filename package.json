@@ -1,0 +1,17 @@
+{
+  "name": "zuma-pwa",
+  "version": "2.0.7",
+  "private": true,
+  "type": "module",
+  "description": "Zuma R2.0.7 — fidelity reconstruction and regression-locked test bench",
+  "engines": {"node": ">=22.0.0"},
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node tools/build.mjs && node --test tests/r2.test.mjs tests/r2_regression.test.mjs tests/r201.test.mjs tests/r202.test.mjs tests/r203.test.mjs tests/r204.test.mjs tests/r206.test.mjs && node tools/guard.mjs",
+    "dev": "node tools/build.mjs --local && node tools/serve.mjs",
+    "check": "tsc --noEmit",
+    "standalone": "node tools/build.mjs --standalone",
+    "guard": "node tools/guard.mjs"
+  },
+  "devDependencies": {"typescript": "5.8.3"}
+}
