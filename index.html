@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#120c06">
+<meta name="description" content="Zuma PWA — reconstruction web d'un jeu de billes de type Zuma.">
+<title>Zuma PWA</title>
+<link rel="manifest" href="public/manifest.webmanifest">
+<link rel="icon" href="public/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="public/icon.svg">
+<link rel="stylesheet" href="public/style.css">
+</head>
+<body>
+<main class="stage">
+  <canvas id="game" width="640" height="480" aria-label="Zone de jeu Zuma"></canvas>
+  <section id="menu" class="overlay" aria-label="Menu">
+    <div class="panel menu-panel">
+      <h2>Zuma PWA</h2>
+      <button id="menu-resume" type="button">Retour à la partie</button>
+      <button id="menu-new" type="button">Nouvelle partie</button>
+      <button id="menu-sound" type="button">Son : activé</button>
+      <button id="menu-fullscreen" type="button">Plein écran</button>
+      <p class="hint">Clic : tirer · Clic droit / Espace : échanger · P : pause · Échap : menu</p>
+      <p id="build" class="hint"></p>
+    </div>
+  </section>
+  <section id="stats" class="overlay" aria-label="Statistiques">
+    <div class="panel zuma-stats">
+      <h2 id="stats-title">Statistiques</h2>
+      <dl id="stats-data"></dl>
+      <p id="stats-tip" class="tip"></p>
+      <button id="result-continue" class="stats-ok" type="button">OK</button>
+    </div>
+  </section>
+</main>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

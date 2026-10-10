@@ -1,0 +1,16 @@
+{
+  "name": "Zuma PWA",
+  "short_name": "Zuma",
+  "description": "Reconstruction web d'un jeu de billes de type Zuma.",
+  "lang": "fr",
+  "start_url": "../index.html",
+  "scope": "../",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#120c06",
+  "theme_color": "#120c06",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
