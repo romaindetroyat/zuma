@@ -65,7 +65,7 @@ Plans:
   1. `configFromSettings` couvre `single`, `zumaslow`, `zumaback`, couleurs par temple et `partime`, documentés dans le README et testés
   2. Les pièces bonus apparaissent aux TreasurePoints, disparaissent après délai et rapportent des points avec leur son
   3. Chaque niveau démarre par « Attention / PARTEZ » et se termine par la vidange, le pop et le bonus de temps
-**Plans:** 4 plans
+**Plans:** 9 plans
 
 Plans:
 - [x] 05-01-PLAN.md — Importateur (polices bitmap, strings.json, sons pièces/pop, garde) + `src/bitmapfont.ts` (parseur/mise en page PopCap testés en Node)
@@ -75,6 +75,8 @@ Plans:
 - [x] 05-05-PLAN.md — Moteur conforme à Zuma.exe : rampe de vitesse, arrêt du pousseur, zone lente, arrivée rapide (`start` %), repeat/single originaux, munitions immédiates, décompte 60 px/+100, ACE TIME, pièces 500, R2.0.16
 - [x] 05-06-PLAN.md — Présentation : alerte à 600 px (4,1 s → 0,6 s), roulement à gain constant, bannière ZUMA, « +100 » du décompte, STATS (couleurs, interlignes, décompte du BONUS dans le dialogue)
 - [x] 05-07-PLAN.md — Notes R2.0.16, README, CONCERNS, UAT, standalone et preuves Playwright, vérification finale
+- [ ] 05-08-PLAN.md — UAT 5 : bonus de saut et score originaux (spike 02), libellés COMBO / ENCHAÎNEMENT, grille du STATS (D-20), compte à rebours borné + mode rapide (D-21), fondu du roulement, netteté 2 × EPX et STATS à l'échelle du canvas (D-19), R2.0.17
+- [ ] 05-09-PLAN.md — Notes R2.0.17, README (score, netteté), CONCERNS, UAT (U22–U25, sixième session), standalone et preuves Playwright, vérification finale
 
 #### Phase 6: Progression et menus
 **Goal**: Aventure par temples, sauvegarde et menu principal
