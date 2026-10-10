@@ -135,6 +135,30 @@ export class OriginalPack {
     return applyMask(color, alpha, tile);
   }
 
+  /**
+   * Sprites shipped without a `_name` mask use their corner colour as transparency
+   * (EYEBLINK): every pixel whose RGB equals pixel (0, 0) becomes fully transparent.
+   * Returns null when the image is missing or its pixels cannot be read.
+   */
+  async keyed(key: string): Promise<Bitmap | null> {
+    const image = await this.image(key);
+    if (!image) return null;
+    try {
+      const out = canvasOf(image.width, image.height);
+      const ctx = out.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(image, 0, 0);
+      const pixels = ctx.getImageData(0, 0, out.width, out.height);
+      const d = pixels.data;
+      const kr = d[0], kg = d[1], kb = d[2];
+      for (let i = 0; i < d.length; i += 4) if (d[i] === kr && d[i + 1] === kg && d[i + 2] === kb) d[i + 3] = 0;
+      ctx.putImageData(pixels, 0, 0);
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
   /** Black drop shadow whose alpha follows the mask luminance. */
   async shadow(maskKey: string, strength = 0.55): Promise<Bitmap | null> {
     const mask = await this.image(maskKey);

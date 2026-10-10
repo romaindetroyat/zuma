@@ -4,7 +4,7 @@
  * tests never depend on proprietary media.
  */
 import { type Ball, type Chain, type Point, type PowerKind, type Track, type ZumaEngine } from './core.js';
-import { EXPLOSION_FRAME_TICKS, EXPLOSION_RGB, PARTICLE_LIFE_TICKS, PARTICLE_RGB, explosionFrame, particleAlpha, particleColor, type ColorBurst } from './feedback.js';
+import { EXPLOSION_FRAME_TICKS, EXPLOSION_RGB, PARTICLE_LIFE_TICKS, PARTICLE_RGB, explosionFrame, insertionPose, particleAlpha, particleColor, rollFrame, type ColorBurst } from './feedback.js';
 import type { Bitmap, LevelArt, Sheet } from './original.js';
 
 export interface RenderAssets {
@@ -15,6 +15,8 @@ export interface RenderAssets {
   explosions: Array<Sheet | null>;
   frogPad: Bitmap | null;
   tongue: Bitmap | null;
+  /** EYEBLINK: two 58×20 frames (half-closed, closed) keyed on the corner colour. */
+  eyeblink: Bitmap | null;
   menubar: Bitmap | null;
   gauge: Bitmap | null;
   gaugeGreen: Bitmap | null;
@@ -31,7 +33,8 @@ export interface LevelView {
 
 export interface FloatingText { text: string; x: number; y: number; start: number; color: string }
 
-export interface Fx { bursts: ColorBurst[]; floats: FloatingText[] }
+/** Presentation state: particle bursts, floating texts and the tick of the last shot (tongue flick). */
+export interface Fx { bursts: ColorBurst[]; floats: FloatingText[]; tongueStart: number }
 
 export interface HudState {
   levelLabel: string;
@@ -46,6 +49,17 @@ export interface HudState {
 export const WIDTH = 640;
 export const HEIGHT = 480;
 export const HUD_HEIGHT = 44;
+/**
+ * Measured on SMALLFROGonPAD (108×108, drawn centred, +y = aim direction after
+ * `rotate(angle − π/2)`): the mouth band sits 24 px ahead of the centre, the
+ * dark hatch on the back 26 px behind it. The projectile leaves from the mouth.
+ */
+export const FROG_FRONT = 24;
+export const FROG_BACK = 26;
+/** Ticks the tongue stays out after a shot, and the blink period/length in frames. */
+const TONGUE_TICKS = 10;
+const BLINK_PERIOD = 240;
+const BLINK_FRAMES = 8;
 const BALL_CSS = PARTICLE_RGB.map(rgb => `#${rgb.toString(16).padStart(6, '0')}`);
 interface HudButtonBox { x: number; y: number; w: number; h: number; label: string }
 const VECTOR_BUTTONS: Record<'menu' | 'stats', HudButtonBox> = {
@@ -120,7 +134,7 @@ export class Renderer {
     for (const chain of engine.chains) this.drawChain(engine, chain, frame);
     this.drawProjectiles(engine, frame);
     this.drawCutouts(view);
-    this.drawFrog(engine, view, frame);
+    this.drawFrog(engine, view, fx, frame);
     this.drawEffects(engine, fx);
     this.drawHud(hud, frame);
     ctx.restore();
@@ -266,10 +280,16 @@ export class Renderer {
     const track = chain.track;
     const r = engine.config.ballRadius;
     const ordered = [...chain.balls].sort((a, b) => (track.layerAt(b.s) & 1) - (track.layerAt(a.s) & 1));
-    for (const ball of ordered) {
+    // A ball still opening its slot is drawn last so it stays visible above its neighbours.
+    const entering = (b: Ball): boolean => b.width < 1 && b.enterFrom !== undefined;
+    const settled = ordered.filter(b => !entering(b));
+    const growing = ordered.filter(entering);
+    for (const ball of settled.concat(growing)) {
       if (ball.s < -r || ball.s > track.length + r) continue;
       if (track.layerAt(ball.s) & 2) continue;
       const p = track.pointAt(ball.s);
+      let x = p.x;
+      let y = p.y;
       let alpha = 1;
       let scale = 1;
       if (ball.destroyingUntil !== undefined) {
@@ -277,7 +297,14 @@ export class Renderer {
         alpha = remaining;
         scale = 0.6 + 0.4 * remaining;
       }
-      this.drawBall(ball.color, p.x, p.y, ball.s, alpha, scale, ball.power, frame);
+      if (ball.width < 1 && ball.enterFrom) {
+        // D-11: slide from the landing point into the slot that is opening.
+        const pose = insertionPose(ball.width, ball.enterFrom, p);
+        x = pose.x;
+        y = pose.y;
+        scale *= pose.scale;
+      }
+      this.drawBall(ball.color, x, y, ball.s, alpha, scale, ball.power, frame);
     }
   }
 
@@ -290,8 +317,8 @@ export class Renderer {
     ctx.scale(scale, scale);
     if (sheet) {
       if (this.assets?.ballShadow) ctx.drawImage(this.assets.ballShadow, -15, -13);
-      const circumference = 2 * Math.PI * 16;
-      const f = Math.floor((((roll % circumference) + circumference) % circumference) / circumference * sheet.frames) % sheet.frames;
+      // D-12: the frame follows the arc length, so recoil visibly rolls the ball backwards.
+      const f = rollFrame(roll, sheet.frames);
       ctx.drawImage(sheet.image, 0, f * sheet.frameHeight, sheet.frameWidth, sheet.frameHeight, -16, -16, 32, 32);
       if (power) {
         const icon = this.assets?.powers[power][color] ?? null;
@@ -352,7 +379,7 @@ export class Renderer {
 
   // ------------------------------------------------------------------ frog
 
-  private drawFrog(engine: ZumaEngine, view: LevelView, frame: number): void {
+  private drawFrog(engine: ZumaEngine, view: LevelView, fx: Fx, frame: number): void {
     const ctx = this.ctx;
     const f = view.frog;
     const angle = Math.atan2(engine.aim.y - f.y, engine.aim.x - f.x);
@@ -361,8 +388,27 @@ export class Renderer {
     ctx.save();
     ctx.translate(f.x, f.y);
     if (this.assets?.frogPad) {
+      // Local frame: +y points along the aim, the sprite is centred on the pad.
       ctx.rotate(angle - Math.PI / 2);
       ctx.drawImage(this.assets.frogPad, -54, -54);
+      // Tongue flick: grows out of the mouth then retracts over TONGUE_TICKS (tip of the sprite is at +y).
+      const t = engine.tick - fx.tongueStart;
+      if (this.assets.tongue && t >= 0 && t < TONGUE_TICKS) {
+        const e = Math.sin((Math.PI * t) / TONGUE_TICKS);
+        ctx.save();
+        ctx.translate(0, FROG_FRONT - 6);
+        ctx.scale(1, Math.max(0.05, e));
+        ctx.drawImage(this.assets.tongue, -16, 0);
+        ctx.restore();
+      }
+      // Periodic blink: EYEBLINK holds two 58×20 frames, frame 0 (half-closed) matches the eyes at local (−29, −12).
+      const blink = frame % BLINK_PERIOD;
+      if (this.assets.eyeblink && blink < BLINK_FRAMES) {
+        const eb = this.assets.eyeblink;
+        const fh = Math.max(1, Math.floor(eb.height / 2));
+        const bf = blink < 2 || blink >= BLINK_FRAMES - 2 ? 0 : 1;
+        ctx.drawImage(eb, 0, bf * fh, eb.width, fh, -29, -12, eb.width, fh);
+      }
     } else {
       ctx.rotate(angle + Math.PI / 2);
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -391,9 +437,9 @@ export class Renderer {
       }
     }
     ctx.restore();
-    // Next ball rides on the frog's back; the current one sits in its mouth.
-    const back = this.assets?.frogPad ? 20 : 8;
-    const front = this.assets?.frogPad ? 16 : 26;
+    // Next ball rides in the hatch on the frog's back; the current one sits in its mouth.
+    const back = this.assets?.frogPad ? FROG_BACK : 8;
+    const front = this.assets?.frogPad ? FROG_FRONT : 26;
     this.drawBall(engine.next, f.x - dir.x * back, f.y - dir.y * back, frame * 0.2, 1, 0.55, undefined, frame);
     if (engine.state === 'playing') this.drawBall(engine.current, f.x + dir.x * front, f.y + dir.y * front, 0, 1, 1, undefined, frame);
   }

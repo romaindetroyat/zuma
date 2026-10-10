@@ -4,7 +4,7 @@ import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './fee
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager } from './audio.js';
 import { OriginalPack, tintSheet, type PackGraphics, type PackSettings } from './original.js';
-import { HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -49,7 +49,7 @@ class Game {
   private frame = 0;
   private accumulator = 0;
   private lastTime = 0;
-  private fx: Fx = { bursts: [], floats: [] };
+  private fx: Fx = { bursts: [], floats: [], tongueStart: -Infinity };
   private message: { text: string; sub: string | null; until: number } | null = null;
   private endAt: number | null = null;
   private seed = Date.now() >>> 0;
@@ -131,7 +131,7 @@ class Game {
   // ----------------------------------------------------------------- assets
 
   private async loadAssets(pack: OriginalPack): Promise<RenderAssets> {
-    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, grey, frogPad, tongue, menubar, gauge, gaugeGreen, lives] = await Promise.all([
+    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives] = await Promise.all([
       pack.ballSheets(),
       pack.shadow('_ballshadow'),
       pack.powerIcons('bomb'),
@@ -142,13 +142,14 @@ class Game {
       pack.sheet('grayplosion', 86),
       pack.masked('smallfrogonpad'),
       pack.masked('tongue'),
+      pack.keyed('eyeblink'),
       pack.masked('menubar'),
       pack.masked('gauge'),
       pack.masked('gaugegreen', '_gauge'),
       pack.masked('toadlives'),
     ]);
     const explosions = grey ? EXPLOSION_RGB.map(rgb => tintSheet(grey, rgb)) : EXPLOSION_RGB.map(() => null);
-    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, explosions, frogPad, tongue, menubar, gauge, gaugeGreen, lives };
+    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives };
   }
 
   // ----------------------------------------------------------------- levels
@@ -196,10 +197,15 @@ class Game {
   private async startLevel(): Promise<void> {
     this.level = await this.resolveLevel();
     this.seed = (this.seed * 1664525 + 1013904223) >>> 0;
-    const engine = new ZumaEngine(this.level.tracks, this.level.frog, { ...this.level.config, lives: this.lives }, this.seed);
+    // With the original sprite the projectile leaves from the measured mouth offset (ROADMAP SC2).
+    const engine = new ZumaEngine(this.level.tracks, this.level.frog, {
+      ...this.level.config,
+      lives: this.lives,
+      muzzleOffset: this.renderer.assets?.frogPad ? FROG_FRONT : CANDIDATE.muzzleOffset,
+    }, this.seed);
     engine.score = this.carriedScore;
     this.engine = engine;
-    this.fx = { bursts: [], floats: [] };
+    this.fx = { bursts: [], floats: [], tongueStart: -Infinity };
     this.endAt = null;
     this.paused = false;
     const art = this.pack && this.level.graphics ? await this.pack.levelArt(this.level.graphics) : null;
@@ -280,6 +286,9 @@ class Game {
     for (const e of events) {
       for (const cue of soundCues(e)) this.audio.play(cue);
       switch (e.kind) {
+        case 'fire':
+          this.fx.tongueStart = engine.tick;
+          break;
         case 'destroy': {
           const ids = e.ids as number[];
           const chain = engine.chains[Number(e.chain) || 0];

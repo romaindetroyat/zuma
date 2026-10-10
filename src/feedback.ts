@@ -1,6 +1,6 @@
 /** Presentation rules anchored to M11_*.asm.txt. Never consume the simulation RNG here.
  * Timing in ticks is static evidence; the conversion to seconds follows the still-candidate engine Hz. */
-import { SeededRandom, type GameEvent } from './core.js';
+import { SeededRandom, type GameEvent, type Point } from './core.js';
 
 export interface SoundCue { key: string; gain: number; rate: number }
 
@@ -67,6 +67,21 @@ export function rollFrame(s: number, frames: number, circumference = BALL_CIRCUM
   if (!(frames > 1) || !(circumference > 0)) return 0;
   const c = circumference;
   return Math.floor((((s % c) + c) % c) / c * frames) % frames;
+}
+
+/**
+ * Where a ball still opening its slot (`Ball.width` 0..1) is drawn: it slides
+ * from its landing point `from` to its track position `to` with an ease-out,
+ * swelling by at most 15 % half-way so the insertion reads as a movement (D-11).
+ */
+export function insertionPose(width: number, from: Point, to: Point): { x: number; y: number; scale: number } {
+  const w = Math.max(0, Math.min(1, width));
+  const e = 1 - (1 - w) * (1 - w);
+  return {
+    x: from.x + (to.x - from.x) * e,
+    y: from.y + (to.y - from.y) * e,
+    scale: 1 + 0.15 * Math.sin(Math.PI * w),
+  };
 }
 
 export function particleAlpha(counter: number): number {
