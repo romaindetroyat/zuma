@@ -47,7 +47,7 @@ export const STATS_LAYOUT = {
   left: { labelX: 135, valueRight: 299, baselines: [219, 238, 257, 276, 294, 313] },
   right: { labelX: 335, valueRight: 489, baselines: { time: 219, objective: 238, rule: 250, bonus: 269, record: 293 } },
   /** Tip inset: « ASTUCE : » at `labelX`, text lines centred on `x`, wrapped on `maxWidth`. */
-  tip: { x: 355, labelX: 165, baseline: 345, maxWidth: 240, lineHeight: 15, box: { x: 133, y: 326, w: 374, h: 50 } as Rect },
+  tip: { x: 363, labelX: 150, baseline: 350, maxWidth: 270, lineHeight: 14, maxLines: 4, box: { x: 133, y: 320, w: 374, h: 60 } as Rect },
   ok: { x: 260, y: 382, w: 120, h: 48 } as Rect,
   okLabelBaseline: 412,
 };
@@ -182,32 +182,29 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   rule(ctx, L.separator.x, L.separator.y1, L.separator.x, L.separator.y2);
   rule(ctx, L.right.labelX, L.right.baselines.rule, L.right.valueRight, L.right.baselines.rule);
 
-  const leftLabels = ['POINTS', 'COMBOS', 'COINS', 'GAPS', 'MAX_CHAIN', 'MAX_COMBO'];
-  const leftFallback = ['POINTS', 'COMBOS', 'PIÈCES', 'SAUTS', 'ENCH. MAX.', 'COMBO MAX.'];
-  leftLabels.forEach((key, i) => text.draw(ctx, str(key, leftFallback[i]), L.left.labelX, L.left.baselines[i], { tint: C.label }));
-  const rightRows: Array<{ key: keyof StatsValues; label: string; fallback: string; baseline: number; color: string }> = [
-    { key: 'time', label: 'YOUR_TIME', fallback: 'TEMPS', baseline: L.right.baselines.time, color: C.time },
-    { key: 'objective', label: 'ACE_TIME', fallback: 'OBJECTIF', baseline: L.right.baselines.objective, color: C.objective },
-    { key: 'bonus', label: 'BONUS', fallback: 'BONUS', baseline: L.right.baselines.bonus, color: C.bonus },
-    { key: 'record', label: 'BEST_TIME', fallback: 'RECORD', baseline: L.right.baselines.record, color: C.record },
+  // The ten rows in STATS_ORDER: label (yellow) at labelX, value right-aligned at `right`.
+  const leftLabels: Array<[string, string]> = [['POINTS', 'POINTS'], ['COMBOS', 'COMBOS'], ['COINS', 'PIÈCES'], ['GAPS', 'SAUTS'], ['MAX_CHAIN', 'ENCH. MAX.'], ['MAX_COMBO', 'COMBO MAX.']];
+  const rows: Array<{ key: keyof StatsValues; label: string; labelX: number; right: number; baseline: number; color: string }> = [
+    ...leftLabels.map(([k, fb], i) => ({ key: STATS_ORDER[i], label: str(k, fb), labelX: L.left.labelX, right: L.left.valueRight, baseline: L.left.baselines[i], color: C.value })),
+    { key: 'time', label: str('YOUR_TIME', 'TEMPS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.time, color: C.time },
+    { key: 'objective', label: str('ACE_TIME', 'OBJECTIF'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.objective, color: C.objective },
+    { key: 'bonus', label: str('BONUS', 'BONUS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.bonus, color: C.bonus },
+    { key: 'record', label: str('BEST_TIME', 'RECORD'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.record, color: C.record },
   ];
-  for (const row of rightRows) text.draw(ctx, str(row.label, row.fallback), L.right.labelX, row.baseline, { tint: C.label });
-
   const revealed = Math.max(0, Math.min(STATS_ORDER.length, Math.floor(options.revealed)));
-  for (let i = 0; i < revealed; i++) {
-    const key = STATS_ORDER[i];
-    if (i < 6) {
-      text.draw(ctx, values[key], L.left.valueRight, L.left.baselines[i], { tint: C.value, align: 'right' });
-    } else {
-      const row = rightRows[i - 6];
-      text.draw(ctx, values[key], L.right.valueRight, row.baseline, { tint: row.color, align: 'right' });
-    }
-  }
+  rows.forEach((row, i) => {
+    const value = values[row.key];
+    const shown = i < revealed;
+    // A value too wide to sit beside its label (« PAS DE BONUS ») replaces the label on its row, as in the original.
+    const fits = row.right - text.measure(value) >= row.labelX + text.measure(row.label) + 6;
+    if (!shown || fits) text.draw(ctx, row.label, row.labelX, row.baseline, { tint: C.label });
+    if (shown) text.draw(ctx, value, row.right, row.baseline, { tint: row.color, align: 'right' });
+  });
 
   // Tip inset (a darker band as in the reference), label and wrapped lines.
   insetBox(ctx, L.tip.box);
   text.draw(ctx, `${str('TIP', 'ASTUCE')} :`, L.tip.labelX, L.tip.baseline, { tint: C.label });
-  const lines = wrapText(options.tip, L.tip.maxWidth, s => tipFont.measure(s)).slice(0, 3);
+  const lines = wrapText(options.tip, L.tip.maxWidth, s => tipFont.measure(s)).slice(0, L.tip.maxLines);
   const firstBaseline = L.tip.baseline - (lines.length > 1 ? Math.round(((lines.length - 1) * L.tip.lineHeight) / 2) : 0);
   lines.forEach((line, i) => tipFont.draw(ctx, line, L.tip.x, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'center' }));
 

@@ -48,8 +48,9 @@ class Game {
   private statsButton: ButtonState = 'normal';
   private statsTip = '';
   private statsValues: StatsValues | null = null;
-  /** Composition sequence: a blob URL that arrives after a newer composition (or after closing) is dropped. */
+  /** Composition sequence and the sequence currently displayed: an encoded picture is applied only if it is newer than the one shown (monotonic), never dropped just because a newer composition started. */
   private statsRender = 0;
+  private statsShown = 0;
   private statsTimers: number[] = [];
   private engine: ZumaEngine | null = null;
   private level: ResolvedLevel | null = null;
@@ -588,11 +589,13 @@ class Game {
     if (!kit || !values || !dialog || !this.statsOpen) return;
     this.statsCanvas = composeStatsDialog(kit, values, { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip }, this.statsCanvas ?? undefined);
     const seq = ++this.statsRender;
-    void bitmapUrl(this.statsCanvas).then(url => {
-      if (seq !== this.statsRender || !this.statsOpen) { revokeUrl(url); return; }
-      revokeUrl(this.statsUrl);
+    void preload(bitmapUrl(this.statsCanvas)).then(url => {
+      if (!this.statsOpen || seq <= this.statsShown) { revokeUrl(url); return; }
+      this.statsShown = seq;
+      const previous = this.statsUrl;
       this.statsUrl = url;
       dialog.style.backgroundImage = `url("${url}")`;
+      revokeUrl(previous);
     });
   }
 
@@ -617,7 +620,7 @@ class Game {
     document.getElementById('stats')?.classList.remove('open');
     this.clearStatsTimers();
     this.statsOpen = false;
-    this.statsRender++; // drop any composition still being encoded
+    this.statsShown = ++this.statsRender; // drop any composition still being encoded
     const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
     if (dialog) dialog.style.backgroundImage = '';
     revokeUrl(this.statsUrl);
@@ -654,6 +657,16 @@ function readBestTime(key: string): number | null {
   } catch {
     return null;
   }
+}
+
+/** Resolves once the browser has decoded the picture, so the background swap never paints an empty frame. */
+function preload(url: string): Promise<string> {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(url);
+    img.onerror = () => resolve(url);
+    img.src = url;
+  });
 }
 
 function revokeUrl(url: string | null): void {

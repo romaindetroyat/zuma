@@ -294,15 +294,23 @@ export function applyMask(color: Bitmap, alpha: Bitmap, tile: boolean): HTMLCanv
   return out;
 }
 
-/** Object URL of the canvas as PNG (data URL when `toBlob` is unavailable): keeps the composed picture out of the style attribute. */
-export function bitmapUrl(canvas: HTMLCanvasElement): Promise<string> {
-  return new Promise(resolve => {
-    if (typeof canvas.toBlob !== 'function' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
-      resolve(canvas.toDataURL('image/png'));
-      return;
-    }
-    canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : canvas.toDataURL('image/png')), 'image/png');
-  });
+/**
+ * Object URL of the canvas as PNG, encoded synchronously: `toDataURL` takes ~10 ms for a
+ * 640×480 frame where `toBlob`'s asynchronous encoder needs up to a second in a
+ * software-rendered Chromium (measured, plan 05-03). The bytes are rewrapped in a Blob so the
+ * style attribute only carries a short `blob:` URL; the data URL itself is the fallback.
+ */
+export function bitmapUrl(canvas: HTMLCanvasElement): string {
+  const dataUrl = canvas.toDataURL('image/png');
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function' || typeof atob !== 'function') return dataUrl;
+  try {
+    const bin = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+  } catch {
+    return dataUrl;
+  }
 }
 
 function cutFromBackground(background: Bitmap, alpha: Bitmap, x: number, y: number): HTMLCanvasElement {
