@@ -3,7 +3,7 @@
 // repeat / single, munitions (D-14), décompte de fin de niveau, ACE TIME, pièce, configFromSettings.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Track, ZumaEngine, CANDIDATE, endZoneFactor, feedSpeed } from '../.compiled/core.js';
+import { Track, ZumaEngine, CANDIDATE, endZoneFactor, feedSpeed, aceTimeBonus, defaultParTime } from '../.compiled/core.js';
 
 const straight = (length = 640) => new Track([[0, 240], [length, 240]]);
 const frog = { x: 320, y: 400 };
@@ -418,4 +418,147 @@ test('ammo (D-14): current and next are replaced on the tick a destruction is ma
   run(empty, 10);
   assert.equal(empty.current, 3, 'no present colour: current unchanged');
   assert.equal(ofKind(empty, 'recolor').length, 0);
+});
+
+// ------------------------------------------------------------ §7 décompte et bonus de niveau, §8 ACE TIME, §9 pièce (D-09)
+
+test('aceTimeBonus: original formula (0x401cb0) t > par ? 0 : 100 × (1 + ⌊250 × (1 − ⌊t⌋ / par)⌋)', () => {
+  assert.equal(aceTimeBonus(24, 25), 1100);
+  assert.equal(aceTimeBonus(20, 25), 5100);
+  assert.equal(aceTimeBonus(25, 25), 100);
+  assert.equal(aceTimeBonus(26, 25), 0);
+  assert.equal(aceTimeBonus(0, 25), 25100);
+  assert.equal(aceTimeBonus(24.9, 25), 1100, 'whole seconds');
+  assert.equal(aceTimeBonus(5, 0), 0, 'no par time');
+  assert.equal(aceTimeBonus(NaN, 25), 0);
+  assert.equal(aceTimeBonus(10, 130), 23100, '100 × (1 + ⌊250 × 120 / 130⌋)');
+});
+
+test('defaultParTime: ⌈score × 35 / 1000 × (curves > 1 ? 0.95 × curves : 1)⌉₅ (0x42ad12, hypothesis A7)', () => {
+  assert.equal(defaultParTime(1000, 1), 35);
+  assert.equal(defaultParTime(4500, 1), 160);
+  assert.equal(defaultParTime(2000, 2), 135, '70 × 1.9 = 133 → 135');
+  assert.equal(defaultParTime(0, 1), 0);
+  assert.equal(defaultParTime(NaN, 1), 0);
+  for (const [score, curves] of [[1234, 1], [999, 3], [5000, 2]]) assert.equal(defaultParTime(score, curves) % 5, 0, `${score} / ${curves}: multiple of 5`);
+});
+
+test('CANDIDATE: tally cadence, level bonus and coin value of the original', () => {
+  assert.equal(CANDIDATE.cleanupStepPx, 60);
+  assert.equal(CANDIDATE.cleanupStepTicks, 2.4, '4 maj × 0.6');
+  assert.equal(CANDIDATE.cleanupStartTicks, 12, '20 maj × 0.6');
+  assert.equal(CANDIDATE.cleanupEndTicks, 30, '50 maj × 0.6');
+  assert.equal(CANDIDATE.cleanupPopTicks, 6, '10 maj × 0.6');
+  assert.equal(CANDIDATE.cleanupPoints, 100);
+  assert.equal(CANDIDATE.levelBonus, 10000, '(100 − coverage) × 100 per curve, coverage 0 once empty (A3)');
+  assert.equal(CANDIDATE.coinPoints, 500);
+});
+
+/** r215 clearedLevel on a 2000 px track: a run of three, then the tally up to `won`. */
+const clearedLevel = (extra = {}) => {
+  const g = new ZumaEngine(straight(2000), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, parTime: 25, ...extra }, 5);
+  g.feeding = false;
+  g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
+  g.command({ kind: 'shoot', x: 336, y: 240 });
+  const destroy = stepUntil(g, 'destroy', 60);
+  g.config.total = 99;
+  const clearing = stepUntil(g, 'clearing', 60);
+  return { g, destroy, clearing };
+};
+
+test('tally: +levelBonus per curve at clearing, then 60 px steps every 2.4 ticks at +100 from +12, pops every 6 ticks, won 30 ticks after the last step', () => {
+  const { g, destroy, clearing } = clearedLevel();
+  const C = clearing.tick;
+  assert.equal(g.clearTick, C);
+  assert.equal(clearing.levelBonus, 500);
+  assert.equal(g.score, 30 + 500, 'the level bonus is credited when the board is cleared');
+  assert.equal(g.levelScore, 530);
+  const steps = Math.ceil((2000 - destroy.x) / 60);
+  assert.ok(g.cleanup && g.cleanup.steps === steps && g.cleanup.step === 0);
+  assert.equal(g.cleanup.s, 2000 - 60 * steps, 'the marker is aligned so that the last step lands on the skull');
+  assert.deepEqual([clearing.x, clearing.y], [2000 - 60 * steps, 240]);
+  const won = stepUntil(g, 'won', 400);
+  const cleanups = ofKind(g, 'cleanup');
+  assert.equal(cleanups.length, steps);
+  let score = 530;
+  cleanups.forEach((c, i) => {
+    const k = i + 1;
+    assert.equal(c.tick, C + Math.ceil(12 + 2.4 * (k - 1) - 1e-9), `step ${k} tick`);
+    assert.equal(c.points, 100);
+    assert.equal(c.step, k);
+    assert.equal(c.steps, steps);
+    assert.equal(c.chain, 0);
+    near(c.progress, k / steps, 1e-9);
+    assert.equal(c.x, 2000 - 60 * (steps - k), `step ${k} position`);
+    assert.equal(c.y, 240);
+    score += 100;
+  });
+  assert.deepEqual(cleanups.slice(0, 6).map(c => c.tick - C), [12, 15, 17, 20, 22, 24]);
+  assert.equal(cleanups[steps - 1].x, 2000, 'last step on the skull');
+  const lastStep = cleanups[steps - 1].tick;
+  const pops = ofKind(g, 'cleanup-pop');
+  const lastNominal = C + 12 + 2.4 * (steps - 1);
+  const expectedPops = [];
+  for (let t = C + 12.6; t <= lastNominal + 1e-9; t += 6) expectedPops.push(Math.ceil(t - 1e-9));
+  assert.deepEqual(pops.map(p => p.tick), expectedPops, 'pops from +12.6 every 6 ticks up to the last step');
+  assert.deepEqual(pops.map(p => p.index), expectedPops.map((_, i) => i));
+  for (const p of pops) assert.ok(p.progress >= 0 && p.progress <= 1);
+  assert.ok(pops.length >= 2 && pops[pops.length - 1].tick <= lastStep);
+  assert.equal(won.tick, lastStep + 30);
+  assert.equal(g.state, 'won');
+  assert.equal(g.cleanup, null);
+  assert.equal(g.cleanupScore, steps * 100);
+  const timeBonus = aceTimeBonus(Math.floor(g.levelTicks / 60), 25);
+  assert.ok(timeBonus >= 23100, `cleared in ${g.levelTicks} ticks: ${timeBonus}`);
+  assert.equal(won.timeBonus, timeBonus);
+  assert.equal(g.timeBonus, timeBonus);
+  assert.equal(won.levelBonus, 500);
+  assert.equal(won.seconds, g.levelTicks / 60);
+  assert.equal(g.score, score, 'the time bonus is NOT in the score at won');
+  assert.equal(won.score, 30 + 500 + steps * 100);
+  assert.equal(g.timeBonusCredited, 0);
+  const events = g.events.length;
+  g.creditBonus(100);
+  assert.equal(g.score, score + 100);
+  assert.equal(g.levelScore, score + 100);
+  assert.equal(g.timeBonusCredited, 100);
+  assert.equal(g.events.length, events, 'creditBonus emits nothing');
+  for (const bad of [NaN, -5, 0, Infinity]) g.creditBonus(bad);
+  assert.equal(g.score, score + 100, 'non-finite or non-positive points are ignored');
+  assert.equal(g.timeBonusCredited, 100);
+});
+
+test('tally: without parTime the time bonus is 0; the level bonus counts every curve', () => {
+  const { g } = clearedLevel({ parTime: 0 });
+  const won = stepUntil(g, 'won', 400);
+  assert.equal(won.timeBonus, 0);
+  assert.equal(g.timeBonus, 0);
+  assert.equal(g.score, 30 + 500 + g.cleanupScore);
+  const dual = new ZumaEngine([straight(2000), new Track([[0, 300], [1500, 300]])], frog, { ...quiet, levelBonus: 500 }, 1);
+  dual.feeding = false;
+  dual.loadFixture({ balls: [], stream: false });
+  dual.zumaMode = true;
+  dual.step();
+  const clearing = ofKind(dual, 'clearing');
+  assert.equal(clearing.length, 1);
+  assert.equal(clearing[0].levelBonus, 1000, '500 × 2 curves');
+  assert.equal(dual.score, 1000);
+});
+
+test('tally: a board emptied without an explosion has no step and wins 12 + 30 ticks after clearing', () => {
+  const g = fixture([{ color: 0, s: 100 }], {}, 0, 2000);
+  g.zumaMode = true;
+  g.balls = [];
+  g.step();
+  assert.equal(g.state, 'clearing');
+  const clearing = ofKind(g, 'clearing');
+  assert.equal(clearing.length, 1);
+  assert.equal(g.cleanup.steps, 0);
+  assert.deepEqual([clearing[0].x, clearing[0].y], [2000, 240]);
+  const won = stepUntil(g, 'won', 100);
+  assert.equal(won.tick, clearing[0].tick + 12 + 30);
+  assert.equal(ofKind(g, 'cleanup').length, 0);
+  assert.equal(ofKind(g, 'cleanup-pop').length, 0);
+  assert.equal(g.cleanupScore, 0);
+  assert.equal(g.score, CANDIDATE.levelBonus);
 });

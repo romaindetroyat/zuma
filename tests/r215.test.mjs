@@ -105,7 +105,8 @@ test('coins: setTreasure sanitises the pack data (curve clamped, dist defaulted,
   ]);
 });
 
-test('coins: a projectile within 18 px grabs the coin (+100, stats.coins), keeps the streak and flies on', () => {
+test('coins: a projectile within 18 px grabs the coin (+500, stats.coins), keeps the streak and flies on', () => {
+  // R2.0.16: coinPoints 500 = max(500, 100 × ⌊score / 600⌋) at level 1-1 (0x4233fb), no longer the D-09 hypothesis of 100.
   const g = fixture([{ color: 0, s: 100 }]);
   g.setTreasure([{ x: 320, y: 200, curve: 0, dist: 0 }]);
   g.spawnCoinForTest(0);
@@ -118,10 +119,10 @@ test('coins: a projectile within 18 px grabs the coin (+100, stats.coins), keeps
   const p = g.projectiles[0];
   assert.ok(p, 'projectile continues after the grab');
   assert.ok(Math.hypot(p.x - 320, p.y - 200) < CANDIDATE.coinRadius, 'grabbed at the tick the projectile came within coinRadius');
-  assert.equal(grab.points, 100);
+  assert.equal(grab.points, 500);
   assert.deepEqual([grab.x, grab.y], [320, 200]);
-  assert.equal(g.score, score + 100);
-  assert.equal(g.levelScore, levelScore + 100);
+  assert.equal(g.score, score + 500);
+  assert.equal(g.levelScore, levelScore + 500);
   assert.equal(g.stats.coins, 1);
   assert.equal(g.coin, null);
   assert.equal(g.streak, 3, 'the streak is preserved');
@@ -158,19 +159,22 @@ test('coins: coin points fill the ZUMA gauge', () => {
 
 // -------------------------------------------- fin de niveau : clearing, décompte, bonus de temps (D-04, D-10)
 
-test('aceTimeBonus: 0 without partime or past it, otherwise 10 points per remaining second, floor 100', () => {
-  assert.equal(aceTimeBonus(20, 25), 100);
-  assert.equal(aceTimeBonus(5, 25), 200);
+test('aceTimeBonus: original formula — 0 past the par time, otherwise 100 × (1 + ⌊250 × (1 − ⌊t⌋ / par)⌋)', () => {
+  // R2.0.16: replaces the « 10 points per remaining second, floor 100 » hypothesis (0x401cb0, r216).
+  assert.equal(aceTimeBonus(24, 25), 1100);
+  assert.equal(aceTimeBonus(20, 25), 5100);
   assert.equal(aceTimeBonus(25, 25), 100);
   assert.equal(aceTimeBonus(26, 25), 0);
+  assert.equal(aceTimeBonus(0, 25), 25100);
   assert.equal(aceTimeBonus(10, 0), 0);
   assert.equal(aceTimeBonus(NaN, 25), 0);
-  assert.equal(aceTimeBonus(0.5, 25), 240);
+  assert.equal(aceTimeBonus(0.5, 25), 25100);
 });
 
 /** r213 « ZUMA mode stops the feed… » fixture, run through the tally until `won`. */
 const clearedLevel = (extra = {}) => {
-  const g = new ZumaEngine(straight(), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
+  // R2.0.16: 2000 px track (endSlowFactor 1 in `quiet` is moot at speed 0; the tally needs room for its 60 px steps).
+  const g = new ZumaEngine(straight(2000), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
   g.feeding = false;
   g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
   g.command({ kind: 'shoot', x: 336, y: 240 });
@@ -180,14 +184,15 @@ const clearedLevel = (extra = {}) => {
   return { g, destroy, clearing };
 };
 
-test('clearing: the tally starts at the last explosion, scores 10 per ball slot every 4 ticks and wins with the bonuses', () => {
+test('clearing: the tally walks 60 px every 2.4 ticks at +100 from the last explosion, ignores input and wins with the bonuses', () => {
+  // R2.0.16: original cadence (60 px / 4 maj / +100, first step +20 maj, STATS +50 maj) and level bonus credited at clearing (r216).
   const { g, destroy, clearing } = clearedLevel({ parTime: 25 });
   assert.equal(g.state, 'clearing');
   assert.equal(clearing.tick, destroy.tick + CANDIDATE.destroyTicks, 'clearing starts the tick the run is removed');
-  assert.deepEqual([clearing.x, clearing.y, clearing.chain], [destroy.x, destroy.y, 0]);
+  assert.equal(clearing.chain, 0);
   assert.equal(g.balls.length, 0);
   assert.equal(g.projectiles.length, 0);
-  const steps = Math.ceil((g.track.length - destroy.x) / CANDIDATE.ballSpacing);
+  const steps = Math.ceil((g.track.length - destroy.x) / CANDIDATE.cleanupStepPx);
   assert.ok(g.cleanup && g.cleanup.steps === steps && g.cleanup.step === 0);
   // Input is ignored while clearing and no ball appears.
   const before = g.events.length;
@@ -197,16 +202,16 @@ test('clearing: the tally starts at the last explosion, scores 10 per ball slot 
   assert.equal(g.events.slice(before).filter(e => e.kind === 'fire' || e.kind === 'swap').length, 0);
   assert.equal(g.projectiles.length, 0);
   assert.equal(g.spawned, 2);
-  const scoreBefore = 30; // one run of three
+  const scoreBefore = 30 + 500; // one run of three + the level bonus of one curve, credited at clearing
   assert.equal(g.score, scoreBefore);
-  const won = stepUntil(g, 'won', 200);
+  assert.equal(clearing.levelBonus, 500);
+  const won = stepUntil(g, 'won', 400);
   const cleanups = ofKind(g, 'cleanup');
   assert.equal(cleanups.length, steps);
-  let s = destroy.x;
   cleanups.forEach((c, i) => {
-    s = Math.min(g.track.length, s + CANDIDATE.ballSpacing);
-    assert.equal(c.tick, clearing.tick + 4 * (i + 1), `cleanup ${i} tick`);
-    assert.equal(c.points, 10);
+    const s = g.track.length - CANDIDATE.cleanupStepPx * (steps - i - 1);
+    assert.equal(c.tick, clearing.tick + Math.ceil(CANDIDATE.cleanupStartTicks + CANDIDATE.cleanupStepTicks * i - 1e-9), `cleanup ${i} tick`);
+    assert.equal(c.points, CANDIDATE.cleanupPoints);
     assert.equal(c.step, i + 1);
     assert.equal(c.steps, steps);
     assert.equal(c.chain, 0);
@@ -218,27 +223,28 @@ test('clearing: the tally starts at the last explosion, scores 10 per ball slot 
   assert.equal(g.state, 'won');
   assert.equal(g.balls.length, 0);
   assert.equal(g.cleanup, null);
-  const timeBonus = aceTimeBonus(g.levelTicks / CANDIDATE.tickHz, 25); // R2.0.16 (D-13): level clock, frozen at clearing
+  const timeBonus = aceTimeBonus(g.levelTicks / CANDIDATE.tickHz, 25); // D-13: level clock, frozen at clearing
   assert.ok(timeBonus >= 100, 'won well under the 25 s partime');
   assert.equal(won.levelBonus, 500);
   assert.equal(won.timeBonus, timeBonus);
   assert.equal(won.seconds, g.levelTicks / CANDIDATE.tickHz);
   assert.equal(g.timeBonus, timeBonus);
-  assert.equal(g.cleanupScore, steps * 10);
-  assert.equal(g.score, scoreBefore + steps * 10 + 500 + timeBonus);
+  assert.equal(g.cleanupScore, steps * 100);
+  assert.equal(g.score, scoreBefore + steps * 100, 'the time bonus is credited later through creditBonus (STATS count-up)');
   assert.equal(won.score, g.score);
-  assert.ok(won.tick >= cleanups[cleanups.length - 1].tick);
+  assert.equal(won.tick, cleanups[cleanups.length - 1].tick + CANDIDATE.cleanupEndTicks);
 });
 
 test('clearing: without partime the time bonus is 0', () => {
   const { g } = clearedLevel({ parTime: 0 });
-  const won = stepUntil(g, 'won', 200);
+  const won = stepUntil(g, 'won', 400);
   assert.equal(won.timeBonus, 0);
   assert.equal(g.timeBonus, 0);
-  assert.equal(g.score, 30 + g.cleanupScore + 500);
+  assert.equal(g.score, 30 + 500 + g.cleanupScore);
 });
 
-test('clearing: a board emptied without an explosion wins on the next tick without any cleanup step', () => {
+test('clearing: a board emptied without an explosion wins 42 ticks later without any cleanup step', () => {
+  // R2.0.16: cleanupStartTicks (12) + cleanupEndTicks (30) after clearing (r216).
   const g = fixture([{ color: 0, s: 100 }]);
   g.zumaMode = true;
   g.balls = [];
@@ -248,8 +254,11 @@ test('clearing: a board emptied without an explosion wins on the next tick witho
   assert.equal(clearing.length, 1);
   assert.deepEqual([clearing[0].x, clearing[0].y], [g.track.pointAt(g.track.length).x, g.track.pointAt(g.track.length).y]);
   assert.equal(g.cleanup.steps, 0);
+  run(g, 41);
+  assert.equal(g.state, 'clearing');
   g.step();
   assert.equal(g.state, 'won');
+  assert.equal(ofKind(g, 'won')[0].tick, clearing[0].tick + 42);
   assert.equal(ofKind(g, 'cleanup').length, 0);
   assert.equal(ofKind(g, 'won').length, 1);
   assert.equal(g.cleanupScore, 0);
