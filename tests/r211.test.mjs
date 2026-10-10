@@ -1,0 +1,12 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
+import {Track,ZumaEngine,CANDIDATE,ENGINE_VERSION} from '../.compiled/core.js';
+import {soundCues} from '../.compiled/feedback.js';
+const track=new Track([[0,240],[640,240]]),frog={x:320,y:400};
+const make=()=>{const g=new ZumaEngine(track,frog,{...CANDIDATE,start:5,speed:80,feedSpeed:80,target:99999},123);g.loadFixture({balls:[{color:0,s:120},{color:1,s:152},{color:2,s:184},{color:3,s:216},{color:0,s:248}],current:0,next:1,stream:false});return g};
+test('R2.0.11 version',()=>assert.equal(ENGINE_VERSION,'2.0.11'));
+test('slow measurably reduces forward travel',()=>{const a=make(),b=make();a.feeding=false;b.feeding=false;const a0=a.balls[0].s,b0=b.balls[0].s;b.activatePowerForTest('slow',2);for(let i=0;i<100;i++){a.step();b.step();}assert.ok(a.balls[0].s-a0>3*(b.balls[0].s-b0));assert.ok(b.slowTicks>0);});
+test('backwards reverses all separated components',()=>{const g=make();g.feeding=false;g.balls[3].s+=80;g.balls[4].s+=80;const first=g.balls[0].s,advanced=g.balls[4].s;g.activatePowerForTest('backwards',2);for(let i=0;i<40;i++)g.step();assert.ok(g.balls[0].s<first);assert.ok(g.balls[4].s<advanced);assert.ok(g.backwardsTicks>0);});
+test('accuracy activates aim state and faster projectile',()=>{const g=make();g.activatePowerForTest('accuracy',2);assert.ok(g.accuracyTicks>0);g.command({kind:'shoot',x:320,y:0});g.step();assert.equal(g.projectiles.length,1);assert.ok(Math.hypot(g.projectiles[0].vx,g.projectiles[0].vy)>CANDIDATE.projectileSpeed);});
+test('bomb marks multiple nearby balls destroying and emits bomb event',()=>{const g=make();g.activatePowerForTest('bomb',2);const marked=g.balls.filter(b=>b.destroyingUntil!==undefined);assert.ok(marked.length>=3);assert.ok(g.events.some(e=>e.kind==='power-bomb'));});
+test('each power activation has its original dedicated sound cue',()=>{for(const [power,key] of [['bomb','powerbomb'],['slow','powerslow'],['backwards','powerback'],['accuracy','poweraccuracy']])assert.equal(soundCues({tick:1,kind:'power-activate',power})[0]?.key,key);});
+test('STATS is one opaque monolithic renderer with one OK',()=>{const html=fs.readFileSync('index.html','utf8'),css=fs.readFileSync('public/style.css','utf8');assert.equal((html.match(/id="result-continue"/g)||[]).length,1);const tail=css.slice(css.lastIndexOf('R2.0.11'));assert.match(tail,/background:radial-gradient/);assert.match(tail,/\.zuma-stats h2\{display:block/);assert.match(tail,/\.stats-ok\{display:block/);assert.doesNotMatch(tail,/url\(/);});
