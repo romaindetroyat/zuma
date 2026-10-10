@@ -401,7 +401,7 @@ class Game {
   }
 
   private checkOutcome(engine: ZumaEngine): void {
-    if (engine.state === 'playing' || engine.state === 'draining') return;
+    if (engine.state === 'playing' || engine.state === 'clearing' || engine.state === 'draining') return;
     if (this.endAt === null) this.endAt = this.frame + 90;
     if (this.frame < this.endAt) return;
     this.endAt = Infinity;

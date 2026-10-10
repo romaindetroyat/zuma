@@ -14,7 +14,12 @@ const SIMPLE_CUES: Record<string, string> = {
   lost: 'lose',
   gameover: 'gameover',
   'power-spawn': 'powerup',
+  'coin-appear': 'coinappear',
+  coin: 'coin',
+  'coin-vanish': 'coinvanish',
 };
+
+const clamp01 = (v: number): number => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
 
 const POWER_CUES: Record<string, string> = {
   bomb: 'powerbomb',
@@ -34,6 +39,10 @@ export function soundCues(event: GameEvent): SoundCue[] {
   if (event.kind === 'streak') {
     const n = Math.max(5, Math.trunc(Number(event.streak) || 5));
     return [{ key: 'streak', gain: 1, rate: Math.pow(2, (n - 5) / 12) }];
+  }
+  if (event.kind === 'cleanup') {
+    // End-of-level tally pop (D-10): pitch rises from 1 to 1.5 along the track.
+    return [{ key: 'bonuspop', gain: 1, rate: 1 + 0.5 * clamp01(Number(event.progress)) }];
   }
   if (event.kind === 'gap') {
     const count = Math.max(1, Math.trunc(Number(event.count) || 1));
@@ -67,6 +76,22 @@ export function rollFrame(s: number, frames: number, circumference = BALL_CIRCUM
   if (!(frames > 1) || !(circumference > 0)) return 0;
   const c = circumference;
   return Math.floor((((s % c) + c) % c) / c * frames) % frames;
+}
+
+/** Coin rotation frame (D-08): `COIN.gif` has 30 frames played at 20 frames/s, i.e. one frame every 3 ticks at 60 Hz. */
+export function coinFrame(tick: number, frames = 30, ticksPerFrame = 3): number {
+  if (!(frames > 0) || !(ticksPerFrame > 0)) return 0;
+  const t = Math.max(0, Math.floor(tick));
+  return Math.floor(t / ticksPerFrame) % frames;
+}
+
+/** Periodic sparkle over the coin (D-08): frames 0..13 over `frames × ticksPerFrame` ticks once per `period`, −1 otherwise. */
+export function sparkleFrame(tick: number, frames = 14, period = 90, ticksPerFrame = 2): number {
+  if (!(frames > 0) || !(period > 0) || !(ticksPerFrame > 0)) return -1;
+  const t = Math.max(0, Math.floor(tick));
+  const phase = t % period;
+  const window = frames * ticksPerFrame;
+  return phase < window ? Math.floor(phase / ticksPerFrame) : -1;
 }
 
 /**

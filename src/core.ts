@@ -311,6 +311,15 @@ export const CANDIDATE: EngineConfig = {
   zumaSlowTicks: 0,
 };
 
+/**
+ * Expert time bonus (D-04, hypothesis): nothing without a `parTime` or once it is
+ * exceeded, otherwise 10 points per whole second left, never less than 100.
+ */
+export function aceTimeBonus(seconds: number, parTime: number): number {
+  if (!(parTime > 0) || !Number.isFinite(seconds) || seconds > parTime) return 0;
+  return Math.max(100, 10 * Math.floor(parTime - seconds));
+}
+
 export interface Fixture {
   balls: Array<{ color: number; s: number; power?: PowerKind }>;
   current?: number;
@@ -394,6 +403,8 @@ export class ZumaEngine {
   private lastShotTick = -Infinity;
   private lastPowerTick = -Infinity;
   private nextCoinTick = Infinity;
+  /** Where the last explosion happened: the end-of-level tally starts there (D-10). */
+  private lastDestroy: { chain: number; s: number } | null = null;
 
   constructor(track: Track | Track[], readonly frog: Point, config: Partial<EngineConfig> = {}, seed = 1) {
     const tracks = Array.isArray(track) ? track : [track];
@@ -548,6 +559,7 @@ export class ZumaEngine {
     for (const chain of this.chains) this.moveChain(chain);
     this.moveProjectiles();
     this.tickCoin();
+    this.tickCleanup();
     this.processRemovals();
     this.maybeSpawnPower();
     this.checkEnd();
@@ -630,7 +642,10 @@ export class ZumaEngine {
       chain.balls.unshift(ball);
       chain.spawned++;
     }
-    if (this.feeding && this.chains.every(c => c.spawned >= this.config.start)) this.feeding = false;
+    if (this.feeding && this.chains.every(c => c.spawned >= this.config.start)) {
+      this.feeding = false;
+      this.emit('go'); // « PARTEZ » (D-11): the fast intro feed is over
+    }
   }
 
   /**
@@ -847,7 +862,9 @@ export class ZumaEngine {
     chain.removals.push({ ids: run.map(b => b.id), leftId: left?.id ?? null, rightId: right?.id ?? null, shotId, depth, due: until });
     if (left) chain.recoils.push({ id: left.id, ticks: this.config.recoilTicks });
 
-    const centre = this.ballPosition(run[Math.floor(run.length / 2)], chain);
+    const middle = run[Math.floor(run.length / 2)];
+    const centre = this.ballPosition(middle, chain);
+    this.lastDestroy = { chain: chain.index, s: middle.s };
     const points = 10 * run.length + 10 * Math.max(0, run.length - 3) + (depth > 1 ? 100 * (depth - 1) : 0);
     this.stats.matches++;
     this.stats.maxCombo = Math.max(this.stats.maxCombo, depth);
@@ -863,12 +880,20 @@ export class ZumaEngine {
     this.stats.destroyed += count;
   }
 
-  /** Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points. */
+  /**
+   * Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points.
+   * Entering ZUMA mode arms the original `zumaback` / `zumaslow` phases (hypothesis GAME-01:
+   * the chain rolls back for `zumaBackTicks` and is slowed for `zumaSlowTicks`, both counted
+   * from this tick; `configFromSettings` converts the 100 Hz settings). A longer power already
+   * running is kept.
+   */
   private addScore(points: number): void {
     this.score += points;
     this.levelScore += points;
     if (!this.zumaMode && this.levelScore >= this.config.target) {
       this.zumaMode = true;
+      this.backwardsTicks = Math.max(this.backwardsTicks, this.config.zumaBackTicks);
+      this.slowTicks = Math.max(this.slowTicks, this.config.zumaSlowTicks);
       this.emit('zuma');
     }
   }
@@ -921,6 +946,7 @@ export class ZumaEngine {
     const until = this.tick + this.config.destroyTicks;
     let total = 0;
     const chained: Array<{ ball: Ball; chain: Chain }> = [];
+    let front: { chain: number; s: number } | null = null; // most advanced victim: the tally starts there
     for (const chain of this.chains) {
       const victims = this.alive(chain).filter(b => {
         const p = this.ballPosition(b, chain);
@@ -930,11 +956,13 @@ export class ZumaEngine {
       for (const b of victims) {
         b.destroyingUntil = until;
         if (b.power) chained.push({ ball: b, chain });
+        if (!front || b.s > front.s) front = { chain: chain.index, s: b.s };
       }
       chain.removals.push({ ids: victims.map(b => b.id), leftId: null, rightId: null, shotId: 0, depth: 1, due: until });
       total += victims.length;
     }
     if (total > 0) {
+      if (front) this.lastDestroy = front;
       this.registerDestroyed(total);
       this.addScore(10 * total);
     }
@@ -1126,14 +1154,56 @@ export class ZumaEngine {
         }
       }
       const empty = this.chains.every(c => c.balls.length === 0 && c.removals.length === 0);
-      if (this.zumaMode && empty) {
-        this.state = 'won';
-        this.addScore(this.config.levelBonus);
-        this.emit('won', { score: this.score });
-      }
+      if (this.zumaMode && empty) this.startClearing();
     } else if (this.state === 'draining' && this.chains.every(c => c.balls.length === 0)) {
       this.state = this.lives < 0 ? 'gameover' : 'lost';
       this.emit(this.state);
     }
+  }
+
+  /**
+   * Last ball destroyed in ZUMA mode (D-10): no more input, the coin is dropped and the
+   * tally marker is set at the last explosion. `steps` is bounded by the track length
+   * and `s` is clamped to it, so the tally always terminates.
+   */
+  private startClearing(): void {
+    const index = this.lastDestroy?.chain ?? 0;
+    const chain = this.chains[Math.min(index, this.chains.length - 1)];
+    const length = chain.track.length;
+    const spacing = Math.max(1, this.config.ballSpacing);
+    const s = Math.max(0, Math.min(length, this.lastDestroy?.s ?? length));
+    this.state = 'clearing';
+    this.projectiles = [];
+    for (const c of this.chains) c.recoils = [];
+    this.dropCoin();
+    this.cleanup = { chain: chain.index, s, step: 0, steps: Math.ceil((length - s) / spacing), nextTick: this.tick + this.config.cleanupStepTicks };
+    const pos = chain.track.pointAt(s);
+    this.emit('clearing', { x: pos.x, y: pos.y, chain: chain.index });
+  }
+
+  /** One tally step every `cleanupStepTicks`; once the marker reaches the skull the level is won. */
+  private tickCleanup(): void {
+    const cleanup = this.cleanup;
+    if (this.state !== 'clearing' || !cleanup) return;
+    const chain = this.chains[cleanup.chain];
+    if (cleanup.step < cleanup.steps) {
+      if (this.tick < cleanup.nextTick) return;
+      cleanup.s = Math.min(chain.track.length, cleanup.s + this.config.ballSpacing);
+      cleanup.step++;
+      cleanup.nextTick += this.config.cleanupStepTicks;
+      const points = this.config.cleanupPoints;
+      this.cleanupScore += points;
+      this.addScore(points);
+      const pos = chain.track.pointAt(cleanup.s);
+      this.emit('cleanup', { x: pos.x, y: pos.y, points, step: cleanup.step, steps: cleanup.steps, progress: cleanup.step / cleanup.steps, chain: cleanup.chain });
+      if (cleanup.step < cleanup.steps) return;
+    }
+    const seconds = this.tick / this.config.tickHz;
+    this.timeBonus = aceTimeBonus(seconds, this.config.parTime);
+    this.addScore(this.timeBonus);
+    this.addScore(this.config.levelBonus);
+    this.state = 'won';
+    this.cleanup = null;
+    this.emit('won', { score: this.score, levelBonus: this.config.levelBonus, timeBonus: this.timeBonus, seconds });
   }
 }
