@@ -1,6 +1,6 @@
 /** Browser entry point: game flow, input, HUD/STATS panels and PWA wiring. */
 import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
-import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
+import { EXPLOSION_RGB, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
@@ -420,20 +420,19 @@ class Game {
           this.float(`+${e.points}`, Number(e.x), Number(e.y) - 20, '#ffd45a', engine.tick);
           break;
         case 'cleanup':
-          // End-of-level tally (D-10): one « +10 » per step along the track; the rising bonuspop comes from soundCues.
-          this.float(`+${e.points}`, Number(e.x), Number(e.y) - 16, '#fff1a8', engine.tick);
+          // End-of-level tally (§7): a yellow « +100 » (0xffff00; CancunFloat14 gold with the pack) and
+          // 5 sparkles per step; the pops come from the `cleanup-pop` events through soundCues.
+          this.float(`+${e.points}`, Number(e.x), Number(e.y) - 16, '#ffff00', engine.tick);
+          this.fx.bursts.push(makeSparks(Number(e.x), Number(e.y), Number(e.step) || 0, engine.tick));
           break;
         case 'zuma':
-          this.showMessage('ZUMA !', 'Videz la chaîne', 120);
+          // D-16: « ZUMA ! » banner (strings.json has no ZUMA key) for 120 ticks; the gauge pulses, chant4 plays.
+          this.showMessage(this.strings?.ZUMA ?? 'ZUMA !', null, 120);
           break;
         case 'lost':
           this.showMessage('Perdu…', engine.lives >= 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
           break;
-        case 'won': {
-          const timeBonus = Number(e.timeBonus) || 0;
-          this.showMessage('Niveau terminé !', timeBonus > 0 ? `Bonus de temps +${timeBonus}` : `Bonus ${Number(e.levelBonus) || engine.config.levelBonus}`, 180);
-          break;
-        }
+        // `won`: no message — the time bonus is counted up inside the STATS dialog (D-15 → count-up, §8).
       }
     }
   }
@@ -445,8 +444,8 @@ class Game {
 
   private checkOutcome(engine: ZumaEngine): void {
     if (engine.state === 'playing' || engine.state === 'clearing' || engine.state === 'draining') return;
-    // D-10: the STATS open 60 ticks after the tally reaches the skull, 90 after a loss.
-    if (this.endAt === null) this.endAt = this.frame + (engine.state === 'won' ? 60 : 90);
+    // The STATS open at `won` (the engine already waited 50 updates after the last step, §7), 90 frames after a loss.
+    if (this.endAt === null) this.endAt = this.frame + (engine.state === 'won' ? 0 : 90);
     if (this.frame < this.endAt) return;
     this.endAt = Infinity;
     this.openStats(engine.state === 'won' ? 'won' : engine.state === 'gameover' ? 'gameover' : 'lost');
@@ -576,7 +575,7 @@ class Game {
     const strings = kit?.strings ?? null;
     const won = outcome === 'won';
     const s = engine.stats;
-    const seconds = Math.round(engine.tick / engine.config.tickHz);
+    const seconds = Math.floor(engine.levelTicks / engine.config.tickHz); // D-13: level clock, started at « PARTEZ », frozen at clearing
     const key = bestTimeKey(this.level?.id ?? 'unknown');
     const stored = readBestTime(key);
     const best = bestTime(stored, seconds, won);

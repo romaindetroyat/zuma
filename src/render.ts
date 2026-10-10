@@ -632,7 +632,7 @@ export class Renderer {
         ctx.beginPath();
         ctx.rect(gx, gy, Math.round(62 * fill), 18);
         ctx.clip();
-        ctx.globalAlpha = hud.zuma ? 0.7 + 0.3 * Math.sin(frame / 4) : 1;
+        ctx.globalAlpha = hud.zuma ? 0.55 + 0.45 * Math.sin(frame / 4) : 1; // D-16: the full gauge pulses in ZUMA mode
         ctx.drawImage(this.assets.gaugeGreen, gx, gy);
         ctx.restore();
       }
@@ -701,6 +701,7 @@ export class Renderer {
         roundRect(ctx, gx, gy, gw, gh, 9);
         ctx.clip();
         ctx.fillStyle = hud.zuma ? `hsl(${(frame * 6) % 360},90%,60%)` : '#f0b429';
+        if (hud.zuma) ctx.globalAlpha = 0.55 + 0.45 * Math.sin(frame / 4); // D-16: same pulse as the pack gauge
         ctx.fillRect(gx, gy, gw * fill, gh);
         ctx.restore();
       }

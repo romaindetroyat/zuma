@@ -41,9 +41,10 @@ export function soundCues(event: GameEvent): SoundCue[] {
     const n = Math.max(5, Math.trunc(Number(event.streak) || 5));
     return [{ key: 'streak', gain: 1, rate: Math.pow(2, (n - 5) / 12) }];
   }
-  if (event.kind === 'cleanup') {
-    // End-of-level tally pop (D-10): pitch rises from 1 to 1.5 along the track.
-    return [{ key: 'bonuspop', gain: 1, rate: 1 + 0.5 * clamp01(Number(event.progress)) }];
+  if (event.kind === 'cleanup-pop') {
+    // End-of-level tally (0x421550, §7): `endoflevelpop1` every 10 updates at volume 0.5, pitch not
+    // modulated; the `cleanup` step itself is silent (the rising pitch belongs to the STATS count-up).
+    return [{ key: 'bonuspop', gain: 0.5, rate: 1 }];
   }
   if (event.kind === 'gap') {
     const count = Math.max(1, Math.trunc(Number(event.count) || 1));
@@ -138,4 +139,21 @@ export function makeColorBurst(ball: { id: number; x: number; y: number; color: 
     return { x: Math.fround(ball.x + offset * vx), y: Math.fround(ball.y + offset * vy), vx, vy, size: ri(10) < 2 ? 2 : 1 };
   });
   return { ...ball, start: tick, particles };
+}
+
+/**
+ * 5 random sparkles ± 10 px per tally step (0x4151e0): white (colour 5), slow drift, seeded from
+ * the step and the tick only — presentation RNG, never the simulation's.
+ */
+export function makeSparks(x: number, y: number, step: number, tick: number): ColorBurst {
+  const random = new SeededRandom((Math.imul(step + 1, 0x9e3779b1) ^ Math.imul(tick, 0x85ebca6b)) >>> 0);
+  const ri = (n: number): number => Math.floor(random.next() * n);
+  const particles = Array.from({ length: 5 }, () => ({
+    x: x + (ri(21) - 10),
+    y: y + (ri(21) - 10),
+    vx: (ri(201) - 100) / 400,
+    vy: -ri(100) / 300,
+    size: ri(10) < 3 ? 2 : 1,
+  }));
+  return { id: step, x, y, color: 5, start: tick, particles };
 }
