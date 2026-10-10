@@ -27,7 +27,14 @@ export const SOUND_MAP = {
   rolling: 'rolling', extralife: 'extralife', bonuspop: 'endoflevelpop1', button: 'button1',
   button2: 'button2', coin: 'coingrab', frogland: 'frogland2', earthquake: 'earthquake',
   lighttrail: 'lighttrail2', trailend: 'chant3', templecomplete: 'chant6', choral: 'choral1', ufo: 'ufo1',
+  coinappear: 'jewelappear', coinvanish: 'gemvanishes', pop: 'pop',
 };
+
+/**
+ * PopCap bitmap fonts copied into the pack (`fonts/<name>.txt` script, `<name>.gif` colour
+ * picture when it exists, `_<name>.gif` mask). Consumed by src/bitmapfont.ts.
+ */
+export const FONTS = ['NativeAlienExtended18', 'Cancun12', 'Cancun10', 'Arial12Bold', 'CancunFloat14'];
 
 /** Images copied as-is (lower-cased) plus their alpha masks when present. */
 const IMAGES = [
@@ -129,9 +136,9 @@ function copyImage(fromDir, name, toDir, targetStem = name.toLowerCase()) {
 /**
  * @param {string} srcDir extracted original install
  * @param {string} outDir generated pack (wiped first)
- * @param {{ transcode?: boolean }} [options] `transcode: false` (or ZUMA_NO_TRANSCODE=1) skips the AAC step
+ * @param {{ transcode?: boolean, fonts?: string[] }} [options] `transcode: false` (or ZUMA_NO_TRANSCODE=1) skips the AAC step; `fonts` overrides FONTS
  */
-export function importOriginal(srcDir = 'private_assets/original', outDir = 'private_assets/pack', { transcode = true } = {}) {
+export function importOriginal(srcDir = 'private_assets/original', outDir = 'private_assets/pack', { transcode = true, fonts: fontNames = FONTS } = {}) {
   const src = path.resolve(srcDir);
   const out = path.resolve(outDir);
   if (!fs.existsSync(path.join(src, 'levels', 'levels.xml'))) {
@@ -275,6 +282,40 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     statsLayout = 'stats_layout.json';
   }
 
+  // --------------------------------------------------------------------- fonts
+  // Scripts are latin1 in the install (accented glyph names); the pack keeps them UTF-8
+  // so `fetch().text()` reads them without a charset hint.
+  const fonts = {};
+  const fontsDir = findDir(src, 'fonts');
+  if (fontsDir) {
+    for (const name of fontNames) {
+      const scriptFile = findFile(fontsDir, name, ['.txt']);
+      if (!scriptFile) continue;
+      const stem = name.toLowerCase();
+      const fontOut = path.join(out, 'fonts');
+      fs.mkdirSync(fontOut, { recursive: true });
+      fs.writeFileSync(path.join(fontOut, `${stem}.txt`), readText(scriptFile), 'utf8');
+      const image = copyImage(fontsDir, name, fontOut);
+      const mask = copyImage(fontsDir, `_${name}`, fontOut);
+      fonts[stem] = { script: `fonts/${stem}.txt`, image: image ? `fonts/${image}` : null, mask: mask ? `fonts/${mask}` : null };
+    }
+  }
+
+  // ------------------------------------------------------------------- strings
+  // properties/default.xml (UTF-16 LE with BOM): every <String id="…">…</String>, the
+  // `STRING_ID_` prefix dropped, `&cr;` and other entities kept verbatim.
+  let strings = null;
+  const propsDir = findDir(src, 'properties');
+  const stringsFile = propsDir ? findFile(propsDir, 'default', ['.xml']) : null;
+  if (stringsFile) {
+    const table = {};
+    for (const m of readText(stringsFile).matchAll(/<String\s+id\s*=\s*"([^"]*)"\s*>([\s\S]*?)<\/String>/g)) {
+      table[m[1].replace(/^STRING_ID_/, '')] = m[2];
+    }
+    strings = 'strings.json';
+    fs.writeFileSync(path.join(out, strings), JSON.stringify(table, null, 1));
+  }
+
   const pack = {
     format: 1,
     generatedAt: new Date().toISOString(),
@@ -286,11 +327,14 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     sounds,
     images,
     statsLayout,
+    fonts,
+    strings,
     music: music ? 'zuma' + path.extname(music).toLowerCase() : null,
   };
   fs.writeFileSync(path.join(out, 'pack.json'), JSON.stringify(pack, null, 1));
   const audioNote = useFfmpeg ? `${m4aCount} m4a` : '0 m4a (ffmpeg absent : .ogg seuls)';
-  console.log(`pack written to ${out}: ${Object.keys(graphics).length} levels, ${curveCount} curves, ${sounds.length} sounds, ${audioNote}, ${Object.keys(images).length} images`);
+  const stringCount = strings ? Object.keys(JSON.parse(fs.readFileSync(path.join(out, strings), 'utf8'))).length : 0;
+  console.log(`pack written to ${out}: ${Object.keys(graphics).length} levels, ${curveCount} curves, ${sounds.length} sounds, ${audioNote}, ${Object.keys(images).length} images, ${Object.keys(fonts).length} fonts, ${stringCount} strings`);
   return pack;
 }
 

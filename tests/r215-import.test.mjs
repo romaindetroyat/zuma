@@ -74,7 +74,7 @@ test('importer copies font scripts (latin1 → UTF-8) and pictures, and extracts
       'QUIT_THE_GAME_?': 'Voulez-vous vraiment&cr;quitter la partie ?',
       DIALOG_BUTTON_OK: 'OK',
     });
-    assert.deepEqual(pack.sounds, ['pop']);
+    assert.deepEqual(pack.sounds, ['swap', 'pop'], 'pop.ogg serves both the swap and the pop key');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

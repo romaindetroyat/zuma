@@ -29,7 +29,7 @@ fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(path.join(dist, 'js'), { recursive: true });
 fs.mkdirSync(path.join(dist, 'public'), { recursive: true });
 
-const MODULES = ['core', 'feedback', 'levels', 'audio', 'original', 'render', 'main'];
+const MODULES = ['core', 'feedback', 'levels', 'audio', 'original', 'bitmapfont', 'render', 'main'];
 for (const name of MODULES) {
   const src = fs.readFileSync(path.join(compiled, `${name}.js`), 'utf8').replace(/__BUILD__/g, JSON.stringify(build));
   fs.writeFileSync(path.join(dist, 'js', `${name}.js`), src);
@@ -72,7 +72,7 @@ if (standalone) {
       }
     };
     walk(path.join(dist, 'assets'));
-    const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mo3': 'application/octet-stream' };
+    const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mo3': 'application/octet-stream', '.txt': 'text/plain;charset=utf-8' };
     const inline = Object.fromEntries(Object.entries(assets).map(([k, p]) => [k, `data:${mime[path.extname(p)] ?? 'application/octet-stream'};base64,${fs.readFileSync(p).toString('base64')}`]));
     // src/original.ts resolves every asset path through window.__ZUMA_ASSETS__ when present.
     html = html.replace('<script type="module">', `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n</script>\n<script type="module">`);
