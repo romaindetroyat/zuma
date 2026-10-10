@@ -3,7 +3,7 @@
 // repeat / single, munitions (D-14), décompte de fin de niveau, ACE TIME, pièce, configFromSettings.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Track, ZumaEngine, CANDIDATE, endZoneFactor } from '../.compiled/core.js';
+import { Track, ZumaEngine, CANDIDATE, endZoneFactor, feedSpeed } from '../.compiled/core.js';
 
 const straight = (length = 640) => new Track([[0, 240], [length, 240]]);
 const frog = { x: 320, y: 400 };
@@ -186,4 +186,126 @@ test('ZUMA slowdown: the target is speed × 0.25 while zumaSlowLeft runs, cumula
   g.zumaSlowLeft = 0;
   run(g, 120);
   assert.equal(g.chains[0].speed, 60, 'back to the nominal speed at +50 px/s²');
+});
+
+// ------------------------------------------------------------ §2 arrivée rapide (`start` %), « PARTEZ », chronomètre (D-13)
+
+test('feedSpeed: original initial speed of the fast feed (0x4050e7–0x405144), px/s, never below the cruise speed', () => {
+  near(feedSpeed(50, 0.35 * 2762), 1520, 1e-6, 'level 1-1 on the spiral: 15.2 px/maj');
+  near(feedSpeed(50, 700), 1310, 1e-6);
+  near(feedSpeed(60, 224), 810, 1e-6);
+  near(feedSpeed(0, 0), 180, 1e-6, 'd = 0: 0.1 × ⌊18⌋ px/maj');
+  for (const [v, d] of [[50, 10], [500, 50], [3000, 1], [2000, 0]]) assert.ok(feedSpeed(v, d) >= v, `feedSpeed(${v}, ${d}) ≥ ${v}`);
+  assert.equal(feedSpeed(50, Number.NaN), 0, 'non-finite distance → 0');
+  assert.equal(feedSpeed(50, -1), 0, 'negative distance → 0');
+  assert.equal(feedSpeed(50, Number.POSITIVE_INFINITY), 0);
+});
+
+test('CANDIDATE: startFraction, feedMaxTicks and goMargin replace start / feedSpeed', () => {
+  assert.equal(CANDIDATE.startFraction, 0.35);
+  assert.equal(CANDIDATE.feedMaxTicks, 300, '500 maj × 0.6');
+  assert.equal(CANDIDATE.goMargin, 10, '0.1 px/maj × 100');
+  assert.equal('feedSpeed' in CANDIDATE, false);
+  assert.equal('start' in CANDIDATE, false);
+});
+
+const feedConfig = { ...CANDIDATE, speed: 50, startFraction: 0.35, endSlowFactor: 1, total: 200, powerChance: 0, target: 99999 };
+const spacingOk = g => {
+  const s = g.balls.map(b => b.s);
+  for (let i = 1; i < s.length; i++) assert.ok(Math.abs(s[i] - s[i - 1] - CANDIDATE.ballSpacing) < 1e-6, `gap ${i} = ${s[i] - s[i - 1]}`);
+};
+
+test('fast feed: the chain arrives at feedSpeed(speed, startFraction × length), decelerates naturally and « PARTEZ » fires at speed + goMargin', () => {
+  const g = new ZumaEngine(straight(2000), frog, feedConfig, 11);
+  g.step();
+  assert.equal(g.chains[0].speed, feedSpeed(50, 700), 'v0 on the first tick');
+  assert.ok(g.feeding);
+  let previous = g.chains.every(c => c.speed <= 60);
+  let go = null;
+  for (let i = 0; i < 400 && !go; i++) {
+    const before = g.events.length;
+    g.step();
+    go = g.events.slice(before).find(e => e.kind === 'go') ?? null;
+    if (!go) {
+      previous = g.chains.every(c => c.speed <= 60);
+      assert.ok(!previous, `no go although every chain is at ≤ 60 px/s at tick ${g.tick}`);
+    }
+  }
+  assert.ok(go, 'go emitted');
+  assert.equal(g.feeding, false);
+  assert.equal(g.goTick, go.tick);
+  assert.equal(previous, false, 'the tick before go, some chain was still above speed + goMargin');
+  assert.ok(g.chains.every(c => c.speed <= 60), 'at go every chain is at ≤ speed + goMargin');
+  const head = headS(g) / 2000;
+  assert.ok(head >= 0.35 && head <= 0.5, `head at ${(head * 100).toFixed(1)} % of the track at go`);
+  spacingOk(g);
+  run(g, 100);
+  assert.equal(g.chains[0].speed, 50, 'settled on the cruise speed');
+  assert.equal(ofKind(g, 'go').length, 1, 'go emitted once');
+  spacingOk(g);
+});
+
+test('fast feed: feedMaxTicks forces « PARTEZ » after 5 s whatever the speed', () => {
+  const g = new ZumaEngine(straight(10000), frog, { ...feedConfig, chainDecel: 1 }, 11);
+  const go = stepUntil(g, 'go', 400);
+  assert.equal(go.tick, 300);
+  assert.equal(g.goTick, 300);
+  assert.ok(g.chains[0].speed > 1000, 'still fast: the guard fired, not the speed condition');
+});
+
+test('fast feed: with two chains, « PARTEZ » waits for both', () => {
+  const g = new ZumaEngine([straight(2000), new Track([[0, 300], [1500, 300]])], frog, feedConfig, 9);
+  let oneEarly = false;
+  let go = null;
+  for (let i = 0; i < 400 && !go; i++) {
+    const before = g.events.length;
+    g.step();
+    go = g.events.slice(before).find(e => e.kind === 'go') ?? null;
+    const under = g.chains.map(c => c.speed <= 60);
+    if (!go && under.some(Boolean) && !under.every(Boolean)) oneEarly = true;
+  }
+  assert.ok(go, 'go emitted');
+  assert.ok(oneEarly, 'the shorter track settled first without triggering go');
+  assert.ok(g.chains.every(c => c.speed <= 60));
+});
+
+test('level clock (D-13): levelTicks = tick − goTick, nothing without a fast feed', () => {
+  const silent = new ZumaEngine(straight(2000), frog, feedConfig, 11);
+  silent.feeding = false;
+  run(silent, 50);
+  assert.equal(ofKind(silent, 'go').length, 0);
+  assert.equal(silent.goTick, 0);
+  assert.equal(silent.levelTicks, 50);
+  const g = new ZumaEngine(straight(2000), frog, feedConfig, 11);
+  const go = stepUntil(g, 'go', 400);
+  assert.equal(g.levelTicks, 0);
+  run(g, 37);
+  assert.equal(g.levelTicks, 37);
+  assert.equal(g.levelTicks, g.tick - go.tick);
+});
+
+/** A level fed then cleared: go first (speed 0 → the chain stops), then the r215 clearedLevel scenario. */
+const fedAndCleared = (extra = {}) => {
+  const g = new ZumaEngine(straight(2000), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
+  const go = stepUntil(g, 'go', 400);
+  g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
+  g.command({ kind: 'shoot', x: 336, y: 240 });
+  const destroy = stepUntil(g, 'destroy', 60);
+  g.config.total = 99;
+  const clearing = stepUntil(g, 'clearing', 60);
+  return { g, go, destroy, clearing };
+};
+
+test('level clock (D-13): frozen at clearTick − goTick during the tally and after won', () => {
+  const { g, go, clearing } = fedAndCleared({ parTime: 25 });
+  assert.ok(go.tick > 0);
+  assert.equal(g.clearTick, clearing.tick);
+  const frozen = clearing.tick - go.tick;
+  assert.equal(g.levelTicks, frozen);
+  run(g, 10);
+  assert.equal(g.levelTicks, frozen, 'frozen during the tally');
+  const won = stepUntil(g, 'won', 400);
+  assert.equal(g.state, 'won');
+  assert.equal(g.levelTicks, frozen, 'frozen after won');
+  assert.equal(won.seconds, frozen / CANDIDATE.tickHz);
 });
