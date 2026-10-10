@@ -134,3 +134,80 @@ test('main.js: ZUMA banner, sparkles and « +100 » per tally step, STATS at won
   const render = fs.readFileSync('.compiled/render.js', 'utf8');
   assert.equal((render.match(/0\.55 \+ 0\.45 \* Math\.sin\(frame \/ 4\)/g) || []).length, 2, 'gauge pulse amplitude ≥ 0.4 in both HUD branches');
 });
+
+// ---------------------------------------------------------------- STATS (U19, D-18, §8)
+import { STATS_COLORS, STATS_LAYOUT, STATS_LINE_RATIO, statsRows, bonusCountUp, bonusPopRate, statsValues } from '../.compiled/statsdialog.js';
+
+test('STATS_COLORS: the original colours (0x4525f0) and the gold title multiplier (D-18)', () => {
+  assert.deepEqual(STATS_COLORS, { label: '#f5d65b', value: '#fcf4d0', time: '#ffff00', objective: '#ffa500', bonus: '#2aff03', noBonus: '#9dcba2', record: '#fcdc80', title: '#f0c040' });
+  assert.equal(STATS_LINE_RATIO, 1.65);
+});
+
+test('statsRows: baselines from the line height (1.65 × cap height), right column rule / bonus / record offsets', () => {
+  const rows = statsRows(19);
+  assert.deepEqual(rows.left, [219, 238, 257, 276, 295, 314]);
+  assert.deepEqual(rows.right, { time: 219, objective: 238, rule: 250, bonus: 269, record: 293 });
+  assert.equal(statsRows(20).left[5], 319);
+  assert.equal(statsRows(19, 200).left[0], 200);
+  for (const lh of [16, 18, 19, 20]) {
+    const r = statsRows(lh);
+    assert.equal(r.right.rule, r.right.objective + Math.round(0.63 * lh), `rule for ${lh}`);
+    assert.equal(r.right.bonus, r.right.objective + Math.round(1.63 * lh), `bonus for ${lh}`);
+    assert.equal(r.right.record, r.right.bonus + Math.round(1.26 * lh), `record for ${lh}`);
+    for (const y of r.left) assert.ok(y < STATS_LAYOUT.tip.box.y, `left rows above the tip box (lh ${lh}: ${y})`);
+    assert.ok(r.right.record < STATS_LAYOUT.tip.box.y, 'RECORD above the tip box');
+  }
+  assert.equal(STATS_LAYOUT.left.first, 219);
+  assert.equal(STATS_LAYOUT.right.first, 219);
+  assert.equal(STATS_LAYOUT.left.baselines, undefined, 'static baselines replaced by statsRows');
+  assert.equal(STATS_LAYOUT.right.baselines, undefined);
+  assert.equal(STATS_LAYOUT.ok.x + STATS_LAYOUT.ok.w / 2, 320, 'OK centred');
+});
+
+test('bonusCountUp: nothing before 1 s, then +100 every 100 ms up to the total (0x440b00)', () => {
+  assert.equal(bonusCountUp(1100, 0), 0);
+  assert.equal(bonusCountUp(1100, 999), 0);
+  assert.equal(bonusCountUp(1100, 1000), 100);
+  assert.equal(bonusCountUp(1100, 1099), 100);
+  assert.equal(bonusCountUp(1100, 1100), 200);
+  assert.equal(bonusCountUp(1100, 2000), 1100);
+  assert.equal(bonusCountUp(1100, 99999), 1100);
+  assert.equal(bonusCountUp(0, 5000), 0);
+  assert.equal(bonusCountUp(250, 1150), 200);
+  assert.equal(bonusCountUp(250, 1250), 250, 'last partial step');
+  assert.equal(bonusCountUp(-5, 3000), 0);
+  assert.equal(bonusCountUp(NaN, 3000), 0);
+  assert.equal(bonusCountUp(1100, NaN), 0);
+});
+
+test('bonusPopRate: pitch rises from 1 to 1.5 with the shown share of the bonus (hypothesis A5)', () => {
+  assert.equal(bonusPopRate(0, 1100), 1);
+  assert.equal(bonusPopRate(550, 1100), 1.25);
+  assert.equal(bonusPopRate(1100, 1100), 1.5);
+  assert.equal(bonusPopRate(100, 0), 1, 'no total → base pitch');
+  assert.equal(bonusPopRate(2000, 1100), 1.5, 'clamped');
+});
+
+const base = { levelScore: 1230, combos: 2, coins: 3, gaps: 1, maxStreak: 6, maxCombo: 2, seconds: 20, parTime: 25, timeBonus: 1100, won: true, bestSeconds: 20, noBonusLabel: 'PAS DE BONUS' };
+
+test('statsValues: BONUS shows the counted-up share (timeBonusShown), the total by default, the label without bonus', () => {
+  assert.equal(statsValues({ ...base, timeBonusShown: 300 }).bonus, '+300');
+  assert.equal(statsValues(base).bonus, '+1100');
+  assert.equal(statsValues({ ...base, timeBonusShown: 0 }).bonus, '+0', 'the count-up starts at +0');
+  assert.equal(statsValues({ ...base, timeBonus: 0 }).bonus, 'PAS DE BONUS');
+  assert.equal(statsValues({ ...base, won: false }).bonus, 'PAS DE BONUS');
+  assert.equal(statsValues({ ...base, timeBonusShown: 300 }).objective, '25 s');
+});
+
+test('statsdialog.js composes the title by multiplication, derives the line height from capHeight, tints « PAS DE BONUS »; bitmapfont.js supports multiply and capHeight', () => {
+  const dialog = fs.readFileSync('.compiled/statsdialog.js', 'utf8');
+  assert.match(dialog, /multiply: C\.title/, 'gold title');
+  assert.match(dialog, /capHeight/, 'line height from the cap height');
+  assert.match(dialog, /STATS_LINE_RATIO \* /, 'ratio applied');
+  assert.match(dialog, /C\.noBonus/, 'no-bonus tint');
+  assert.match(dialog, /statsRows\(/, 'rows computed');
+  const font = fs.readFileSync('.compiled/bitmapfont.js', 'utf8');
+  assert.match(font, /options\.multiply/, 'DrawOptions.multiply read');
+  assert.match(font, /this\.capHeight = /, 'capHeight defined');
+  assert.match(font, /\|mult\|/, 'multiplied atlas cached under its own key');
+});

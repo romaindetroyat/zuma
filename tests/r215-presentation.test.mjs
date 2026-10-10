@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { STATS_LAYOUT, STATS_COLORS, STATS_ORDER, statsValues, bestTime, bestTimeKey, formatSeconds, wrapText } from '../.compiled/statsdialog.js';
+import { STATS_LAYOUT, STATS_COLORS, STATS_ORDER, statsRows, statsValues, bestTime, bestTimeKey, formatSeconds, wrapText } from '../.compiled/statsdialog.js';
 import { importOriginal } from '../tools/import-original.mjs';
 
 const inside = (x, r) => x >= r.x && x <= r.x + r.w;
@@ -18,13 +18,15 @@ test('STATS_LAYOUT: frame, columns, rules, button and head follow the R2.0.12 re
   }
   assert.ok(STATS_LAYOUT.left.labelX < STATS_LAYOUT.left.valueRight && STATS_LAYOUT.left.valueRight < STATS_LAYOUT.separator.x, 'left column left of the separator');
   assert.ok(STATS_LAYOUT.right.labelX > STATS_LAYOUT.separator.x && STATS_LAYOUT.right.labelX < STATS_LAYOUT.right.valueRight, 'right column right of the separator');
-  const b = STATS_LAYOUT.left.baselines;
+  // R2.0.16 (D-18): the baselines come from statsRows(lineHeight) (1.65 × cap height, 19 px with Cancun12) instead of static values.
+  const b = statsRows(19).left;
   assert.equal(b.length, 6);
+  assert.equal(b[0], STATS_LAYOUT.left.first);
   for (let i = 1; i < b.length; i++) {
     const d = b[i] - b[i - 1];
     assert.ok(d >= 18 && d <= 20, `left baselines 18–20 px apart (${b[i - 1]} → ${b[i]})`);
   }
-  const r = STATS_LAYOUT.right.baselines;
+  const r = statsRows(19).right;
   assert.ok(r.time < r.objective && r.objective < r.rule && r.rule < r.bonus && r.bonus < r.record, 'right column order');
   assert.deepEqual(STATS_LAYOUT.ok, { x: 260, y: 382, w: 120, h: 48 }, 'OK = one DialogButton state, centred');
   assert.equal(STATS_LAYOUT.ok.x + STATS_LAYOUT.ok.w / 2, 320);
@@ -36,7 +38,8 @@ test('STATS_LAYOUT: frame, columns, rules, button and head follow the R2.0.12 re
 });
 
 test('STATS_COLORS and STATS_ORDER (D-02, D-05)', () => {
-  assert.deepEqual(STATS_COLORS, { label: '#f5d65b', value: '#fcf4d0', time: '#58d828', objective: '#f0962c', bonus: '#58d828', record: '#fcdc80', title: null });
+  // R2.0.16 (D-18, §8): the original colours read in 0x4525f0 (TEMPS 0xffff00, OBJECTIF 0xffa500, BONUS 0x2aff03, NO_TIME_BONUS 0x9dcba2) and the gold title multiplier.
+  assert.deepEqual(STATS_COLORS, { label: '#f5d65b', value: '#fcf4d0', time: '#ffff00', objective: '#ffa500', bonus: '#2aff03', noBonus: '#9dcba2', record: '#fcdc80', title: '#f0c040' });
   assert.deepEqual([...STATS_ORDER], ['points', 'combos', 'coins', 'gaps', 'chain', 'comboMax', 'time', 'objective', 'bonus', 'record']);
 });
 
