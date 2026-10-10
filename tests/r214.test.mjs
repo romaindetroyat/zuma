@@ -146,8 +146,8 @@ const longestRun = (colours) => {
 
 test('repeatChance repeats the previous colour at the configured rate and allows runs of three or more', () => {
   assert.equal(CANDIDATE.repeatChance, 0.5);
-  assert.equal(CANDIDATE.singleChance, 0);
-  const colours = streamColours(4000, { repeatChance: 0.5, singleChance: 0, colors: 4 });
+  // R2.0.16: `single` is a repair threshold (singleLimit, locked in r216), no longer a probability draw.
+  const colours = streamColours(4000, { repeatChance: 0.5, colors: 4 });
   assert.equal(colours.length, 4000);
   assert.ok(colours.every(c => c >= 0 && c < 4));
   const share = repeats(colours) / (colours.length - 1);
@@ -156,38 +156,21 @@ test('repeatChance repeats the previous colour at the configured rate and allows
 });
 
 test('repeatChance 0 never repeats the previous colour', () => {
-  const colours = streamColours(4000, { repeatChance: 0, singleChance: 0, colors: 4 });
+  const colours = streamColours(4000, { repeatChance: 0, colors: 4 });
   assert.equal(repeats(colours), 0);
-});
-
-test('singleChance 1 isolates every ball: no neighbour shares its colour', () => {
-  const colours = streamColours(4000, { repeatChance: 0.5, singleChance: 1, colors: 4 });
-  assert.equal(repeats(colours), 0);
-});
-
-test('singleChance injects isolated balls between runs', () => {
-  // A single is different from the ball before it and forces the next one to differ too.
-  // Two states: normal (single 0.5 → forced, else repeat 0.9) and forced (always differs, back to normal).
-  // Stationary share of normal = 2/3, so the expected immediate repeat share is 2/3 × 0.5 × 0.9 = 0.30.
-  const colours = streamColours(4000, { repeatChance: 0.9, singleChance: 0.5, colors: 4 });
-  const share = repeats(colours) / (colours.length - 1);
-  assert.ok(share > 0.26 && share < 0.34, `repeat share ${share.toFixed(3)}`);
-  assert.ok(longestRun(colours) >= 3);
-  // Isolated balls exist: a colour different from both neighbours.
-  assert.ok(colours.some((c, i) => i > 0 && i + 1 < colours.length && c !== colours[i - 1] && c !== colours[i + 1]));
 });
 
 test('colour generation is deterministic for a given seed', () => {
-  const a = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 42);
-  const b = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 42);
+  const a = streamColours(500, { repeatChance: 0.5, colors: 5 }, 42);
+  const b = streamColours(500, { repeatChance: 0.5, colors: 5 }, 42);
   assert.deepEqual(a, b);
-  const c = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 43);
+  const c = streamColours(500, { repeatChance: 0.5, colors: 5 }, 43);
   assert.notDeepEqual(a, c);
 });
 
 test('level 1-1 settings (repeat 50, 4 colours) show a run of three among the first 30 balls on three seeds', () => {
   for (const seed of [1, 2, 3]) {
-    const colours = streamColours(30, { repeatChance: 0.5, singleChance: 0, colors: 4 }, seed);
+    const colours = streamColours(30, { repeatChance: 0.5, colors: 4 }, seed);
     assert.ok(longestRun(colours) >= 3, `seed ${seed}: longest run ${longestRun(colours)}`);
   }
 });

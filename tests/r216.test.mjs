@@ -309,3 +309,113 @@ test('level clock (D-13): frozen at clearTick − goTick during the tally and af
   assert.equal(g.levelTicks, frozen, 'frozen after won');
   assert.equal(won.seconds, frozen / CANDIDATE.tickHz);
 });
+
+// ------------------------------------------------------------ §3 couleurs `repeat` / `single`, munitions (D-14)
+
+/**
+ * Streams `n` colours on a long straight track at exactly one ball per tick (32 px/tick) without
+ * ever emptying the chain, so the `single` repair rule sees the real rear groups; returns the
+ * colours in spawn order.
+ */
+const streamColours = (n, extra = {}, seed = 11) => {
+  const g = new ZumaEngine(straight(32 * n + 1000), frog, { ...quiet, speed: 32 * CANDIDATE.tickHz, total: n, ...extra }, seed);
+  g.feeding = false;
+  run(g, n + 5);
+  assert.equal(g.balls.length, n, 'every streamed ball is still on the track');
+  return g.balls.map(b => b.color).reverse();
+};
+const runLengths = colours => {
+  const runs = [];
+  for (let i = 0; i < colours.length; i++) {
+    if (i > 0 && colours[i] === colours[i - 1]) runs[runs.length - 1]++;
+    else runs.push(1);
+  }
+  return runs;
+};
+const repeatShare = colours => colours.filter((c, i) => i > 0 && c === colours[i - 1]).length / (colours.length - 1);
+
+test('colours: CANDIDATE keeps repeatChance 0.5, singleLimit 10 (repair off), no singleChance', () => {
+  assert.equal(CANDIDATE.repeatChance, 0.5);
+  assert.equal(CANDIDATE.singleLimit, 10);
+  assert.equal('singleChance' in CANDIDATE, false);
+});
+
+test('colours: repeatChance is the only repetition draw; singleLimit 0 repairs every isolated rear ball', () => {
+  const none = streamColours(300, { repeatChance: 0, singleLimit: 10, colors: 4 });
+  assert.ok(runLengths(none).every(l => l === 1), 'repeat 0 and repair off: no immediate repetition');
+  const pairs = streamColours(300, { repeatChance: 0, singleLimit: 0, colors: 4 });
+  assert.ok(runLengths(pairs).every(l => l === 2), `single 0: every run has exactly two balls (${runLengths(pairs).slice(0, 12)})`);
+  const share = repeatShare(streamColours(4000, { repeatChance: 0.51, singleLimit: 10, colors: 4 }));
+  assert.ok(share >= 0.47 && share <= 0.55, `repeat 50 → (50 + 1) / 100: immediate repeat share ${share.toFixed(3)}`);
+  const a = streamColours(400, { repeatChance: 0.51, singleLimit: 3, colors: 5 }, 42);
+  assert.deepEqual(a, streamColours(400, { repeatChance: 0.51, singleLimit: 3, colors: 5 }, 42), 'deterministic for a seed');
+  assert.notDeepEqual(a, streamColours(400, { repeatChance: 0.51, singleLimit: 3, colors: 5 }, 43));
+});
+
+test('colours: singleLimit between 1 and 9 repairs isolated rear balls while the ten rear groups hold at most singleLimit singles', () => {
+  const limited = runLengths(streamColours(400, { repeatChance: 0, singleLimit: 3, colors: 4 }));
+  const off = runLengths(streamColours(400, { repeatChance: 0, singleLimit: 10, colors: 4 }));
+  const singles = runs => runs.filter(l => l === 1).length;
+  assert.ok(singles(limited) < singles(off), `${singles(limited)} isolated runs with single 3 < ${singles(off)} with repair off`);
+  for (let i = 0; i + 10 <= limited.length; i++) assert.ok(singles(limited.slice(i, i + 10)) <= 4, `window ${i}: ≤ singleLimit + 1 isolated runs`);
+  // Threshold (0x414bec–0x414c1f): six isolated groups at the entrance, previous colour 0, repeat never.
+  const entrance = (singleLimit, balls) => {
+    const g = new ZumaEngine(straight(2000), frog, { ...quiet, repeatChance: 0, singleLimit, total: 100, colors: 4 }, 3);
+    g.feeding = false;
+    g.loadFixture({ balls: balls.map((b, i) => (typeof b === 'number' ? { color: b, s: 32 * i } : b)), current: 2, next: 2, stream: true });
+    g.chains[0].lastSpawnColor = 0;
+    g.step();
+    assert.equal(g.balls.length, balls.length + 1, 'one ball streamed');
+    return g.balls[0].color;
+  };
+  const sixSingles = [0, 1, 0, 1, 0, 1, 2, 2, 2];
+  assert.equal(entrance(0, sixSingles), 0, 'single 0: always repairs');
+  assert.equal(entrance(8, sixSingles), 0, '6 isolated groups ≤ 8: repairs');
+  assert.equal(entrance(6, sixSingles), 0, '6 ≤ 6: repairs');
+  assert.notEqual(entrance(3, sixSingles), 0, '6 > 3: a different colour');
+  assert.notEqual(entrance(10, sixSingles), 0, '10 = repair off');
+  assert.notEqual(entrance(0, [0, 0, 1, 0, 1]), 0, 'the rear group is not isolated: no repair');
+  assert.equal(entrance(0, [{ color: 0, s: 0 }, { color: 1, s: 32 }, { color: 1, s: 300 }]), 0, 'runs follow the list, physical gaps are ignored (0x402040)');
+  assert.notEqual(entrance(0, [{ color: 0, s: 0 }, { color: 0, s: 300 }, { color: 1, s: 332 }]), 0, 'two rear zeros across a gap form one group: no repair');
+});
+
+test('ammo (D-14): current and next are replaced on the tick a destruction is marked, every tick, the flying projectile untouched', () => {
+  const g = fixture([{ color: 0, s: 300 }, { color: 0, s: 332 }, { color: 1, s: 364 }, { color: 1, s: 396 }, { color: 1, s: 428 }], {}, 1, 2000);
+  g.next = 1;
+  g.command({ kind: 'shoot', x: 396, y: 240 });
+  g.step();
+  assert.equal(g.current, 1, 'the next ball (colour 1) is loaded');
+  run(g, CANDIDATE.fireCooldownTicks);
+  g.current = 1;
+  g.command({ kind: 'shoot', x: 320, y: 0 });
+  g.step();
+  const flying = g.projectiles.find(p => p.vy < 0 && Math.abs(p.vx) < 1e-9);
+  assert.ok(flying && flying.color === 1, 'a second colour-1 projectile flies straight up');
+  const destroy = stepUntil(g, 'destroy', 60);
+  assert.equal(destroy.count, 4);
+  assert.ok(g.balls.filter(b => b.destroyingUntil !== undefined).length === 4, 'marked, not yet removed');
+  assert.equal(g.balls.length, 6, 'nothing removed on the destroy tick');
+  assert.notEqual(g.current, 1, 'current replaced on the destroy tick');
+  assert.notEqual(g.next, 1, 'next replaced on the destroy tick');
+  assert.equal(g.current, 0);
+  assert.equal(g.next, 0);
+  const recolors = ofKind(g, 'recolor').filter(e => e.tick === destroy.tick);
+  assert.deepEqual(recolors.map(e => e.slot).sort(), ['current', 'next']);
+  assert.equal(flying.color, 1, 'the projectile in flight keeps its colour (r206)');
+  const miss = stepUntil(g, 'miss', 80);
+  assert.equal(miss.id, flying.id);
+  assert.equal(flying.color, 1);
+  // Every tick: an absent current is replaced by a present colour; an empty chain draws nothing.
+  const live = fixture([{ color: 0, s: 300 }, { color: 1, s: 332 }], {}, 0, 2000);
+  for (let i = 0; i < 20; i++) {
+    live.current = 3;
+    const before = live.events.length;
+    live.step();
+    assert.ok([0, 1].includes(live.current), `tick ${live.tick}: current ${live.current}`);
+    assert.equal(live.events.slice(before).filter(e => e.kind === 'recolor' && e.slot === 'current').length, 1);
+  }
+  const empty = fixture([], {}, 3, 2000);
+  run(empty, 10);
+  assert.equal(empty.current, 3, 'no present colour: current unchanged');
+  assert.equal(ofKind(empty, 'recolor').length, 0);
+});
