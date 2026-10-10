@@ -76,7 +76,7 @@ test('a shot completing three of a kind marks the run, keeps it 40 ticks, then r
 test('matching neighbours attract across the gap and only merge after contact, producing a depth-2 chain', () => {
   const g = fixture([{ color: 1, s: 200 }, { color: 1, s: 232 }, { color: 0, s: 264 }, { color: 0, s: 296 }, { color: 1, s: 328 }]);
   g.command({ kind: 'shoot', x: 280, y: 240 });
-  run(g, 20);
+  run(g, 24); // R2.0.14: landing + mergeTicks (12) before the run is evaluated
   assert.ok(g.events.some(e => e.kind === 'destroy' && e.depth === 1));
   const front = g.balls.find(b => b.color === 1 && b.s > 300);
   const before = front.s;
@@ -155,7 +155,7 @@ test('ZUMA mode stops the feed and clearing the board wins the level with its bo
   g.feeding = false;
   g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
   g.command({ kind: 'shoot', x: 336, y: 240 });
-  run(g, 20);
+  run(g, 30); // R2.0.14: landing + mergeTicks (12) before the run is evaluated
   assert.ok(g.zumaMode);
   assert.ok(g.events.some(e => e.kind === 'zuma'));
   g.config.total = 99;

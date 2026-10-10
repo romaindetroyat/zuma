@@ -3,9 +3,10 @@
  *
  * Deterministic, DOM-free and tick based. Every rule that the regression suite
  * locks lives here: stable ball identities, insertion without replacement or
- * recolouring, 40-tick destruction persistence, local recoil propagated from
- * segment to segment, attraction that only reconnects after physical contact,
- * immutable projectile colour and the four power-up families.
+ * recolouring, progressive insertion over mergeTicks (run detection deferred
+ * until the slot is fully open), 40-tick destruction persistence, local recoil
+ * propagated from segment to segment, attraction that only reconnects after
+ * physical contact, immutable projectile colour and the four power-up families.
  *
  * A level may run several chains at once (the original "dual" boards); the
  * first chain is exposed through `balls`, `removals` and `track` for the
@@ -137,6 +138,14 @@ export interface Ball {
   id: number;
   color: number;
   s: number;
+  /**
+   * Share of the slot the ball occupies, 0..1. A shot ball lands at 0 and grows by
+   * 1 / mergeTicks per tick, pushing its neighbours apart progressively; every
+   * other ball is created at 1. Spacing constraints weigh neighbours by width.
+   */
+  width: number;
+  /** Landing point of a shot ball while it is still opening its slot (width < 1). */
+  enterFrom?: Point;
   /** Tick at which the logical removal is due. Present only while the ball is exploding. */
   destroyingUntil?: number;
   power?: PowerKind;
@@ -198,6 +207,10 @@ export interface EngineConfig {
   drainSpeed: number;
   /** Projectile speed in px per tick. */
   projectileSpeed: number;
+  /** Distance from the frog centre to the projectile start point (the mouth), in px. */
+  muzzleOffset: number;
+  /** Ticks a landed ball takes to open its slot (original mergespeed 0.05 at 100 Hz = 0.2 s). */
+  mergeTicks: number;
   accuracySpeedFactor: number;
   fireCooldownTicks: number;
   destroyTicks: number;
@@ -234,6 +247,8 @@ export const CANDIDATE: EngineConfig = {
   feedSpeed: 360,
   drainSpeed: 520,
   projectileSpeed: 12,
+  muzzleOffset: 16,
+  mergeTicks: 12,
   accuracySpeedFactor: 1.5,
   fireCooldownTicks: 8,
   destroyTicks: 40,
@@ -387,7 +402,7 @@ export class ZumaEngine {
   }
 
   loadFixture(fixture: Fixture, chain: Chain = this.chains[0]): void {
-    chain.balls = fixture.balls.map(b => ({ id: this.nextId++, color: b.color, s: b.s, ...(b.power ? { power: b.power } : {}) }));
+    chain.balls = fixture.balls.map(b => ({ id: this.nextId++, color: b.color, s: b.s, width: 1, ...(b.power ? { power: b.power } : {}) }));
     chain.spawned = chain.balls.length;
     chain.removals = [];
     chain.recoils = [];
@@ -405,8 +420,21 @@ export class ZumaEngine {
    */
   insert(index: number, ball: { id: number; color: number; power?: PowerKind }, _pos: Point, s: number, chain: Chain = this.chains[0]): Ball {
     const idx = Math.max(0, Math.min(chain.balls.length, index));
-    const inserted: Ball = { id: ball.id, color: ball.color, s };
+    const inserted: Ball = { id: ball.id, color: ball.color, s, width: 1 };
     if (ball.power) inserted.power = ball.power;
+    chain.balls.splice(idx, 0, inserted);
+    this.resolveForward(this.alive(chain));
+    return inserted;
+  }
+
+  /**
+   * Gameplay insertion: the ball lands with `width` 0 and opens its slot over
+   * `mergeTicks`, pushing the balls ahead a little further each tick. Same splice
+   * and identity guarantees as `insert`; the run check happens in `settle`.
+   */
+  private insertGrowing(index: number, ball: { id: number; color: number }, from: Point, s: number, chain: Chain): Ball {
+    const idx = Math.max(0, Math.min(chain.balls.length, index));
+    const inserted: Ball = { id: ball.id, color: ball.color, s, width: 0, enterFrom: { x: from.x, y: from.y } };
     chain.balls.splice(idx, 0, inserted);
     this.resolveForward(this.alive(chain));
     return inserted;
@@ -466,8 +494,8 @@ export class ZumaEngine {
     const projectile: Projectile = {
       id: this.nextId++,
       color: this.current,
-      x: this.frog.x + (dx / len) * this.config.ballRadius,
-      y: this.frog.y + (dy / len) * this.config.ballRadius,
+      x: this.frog.x + (dx / len) * this.config.muzzleOffset,
+      y: this.frog.y + (dy / len) * this.config.muzzleOffset,
       vx: (dx / len) * speed,
       vy: (dy / len) * speed,
       gaps: 0,
@@ -507,7 +535,7 @@ export class ZumaEngine {
       for (const b of chain.balls) if (!rear || b.s < rear.s) rear = b;
       const s = rear ? rear.s - this.config.ballSpacing : 0;
       if (rear && s < -this.config.ballSpacing) break;
-      const ball: Ball = { id: this.nextId++, color: this.spawnColor(chain), s };
+      const ball: Ball = { id: this.nextId++, color: this.spawnColor(chain), s, width: 1 };
       chain.balls.unshift(ball);
       chain.spawned++;
     }
@@ -530,11 +558,16 @@ export class ZumaEngine {
 
   // ------------------------------------------------------------------ chain
 
+  /** Arc distance two neighbours need between their centres, weighted by their widths. */
+  private gap(a: Ball, b: Ball): number {
+    return this.config.ballSpacing * (a.width + b.width) / 2;
+  }
+
   private componentIds(alive: Ball[]): number[] {
     const ids = new Array<number>(alive.length);
     let c = 0;
     for (let i = 0; i < alive.length; i++) {
-      if (i > 0 && alive[i].s - alive[i - 1].s > this.config.ballSpacing + CONTACT_EPS) c++;
+      if (i > 0 && alive[i].s - alive[i - 1].s > this.gap(alive[i - 1], alive[i]) + CONTACT_EPS) c++;
       ids[i] = c;
     }
     return ids;
@@ -542,19 +575,19 @@ export class ZumaEngine {
 
   /** Pushes overlapping balls forward (towards the skull), propagating through contacts. */
   private resolveForward(alive: Ball[]): void {
-    const spacing = this.config.ballSpacing;
     for (let i = 1; i < alive.length; i++) {
-      if (alive[i].s < alive[i - 1].s + spacing) alive[i].s = alive[i - 1].s + spacing;
+      const min = alive[i - 1].s + this.gap(alive[i - 1], alive[i]);
+      if (alive[i].s < min) alive[i].s = min;
     }
   }
 
   /** Pushes balls behind `from` backwards while they overlap; returns the lowest index moved. */
   private resolveBackward(alive: Ball[], from: number): number {
-    const spacing = this.config.ballSpacing;
     let lowest = from;
     for (let i = from - 1; i >= 0; i--) {
-      if (alive[i].s > alive[i + 1].s - spacing) {
-        alive[i].s = alive[i + 1].s - spacing;
+      const max = alive[i + 1].s - this.gap(alive[i], alive[i + 1]);
+      if (alive[i].s > max) {
+        alive[i].s = max;
         lowest = i;
       } else break;
     }
@@ -572,6 +605,18 @@ export class ZumaEngine {
     const alive = this.alive(chain);
     const n = alive.length;
     if (n === 0) return;
+    // Landed balls open their slot a little more each tick; the rest of the tick
+    // (components, recoil, pusher, attraction, contacts) sees the updated widths.
+    const settled: Ball[] = [];
+    for (const b of alive) {
+      if (b.width >= 1) continue;
+      b.width = Math.min(1, b.width + 1 / this.config.mergeTicks);
+      if (b.width > 1 - 1e-9) {
+        b.width = 1;
+        delete b.enterFrom;
+        settled.push(b);
+      }
+    }
     const before = this.componentIds(alive);
     const first: number[] = [];
     const last: number[] = [];
@@ -612,7 +657,7 @@ export class ZumaEngine {
         const rear = alive[first[c]];
         const prevFront = alive[last[c - 1]];
         if (rear.color !== prevFront.color) continue;
-        const room = rear.s - (prevFront.s + this.config.ballSpacing);
+        const room = rear.s - (prevFront.s + this.gap(prevFront, rear));
         const d = Math.min(room, this.config.attractSpeed * dt);
         if (d > 0) shift(c, -d);
       }
@@ -624,6 +669,9 @@ export class ZumaEngine {
     for (let i = 1; i < n; i++) {
       if (after[i] === after[i - 1] && before[i] !== before[i - 1]) this.onJunction(chain, alive, i);
     }
+
+    // Balls whose slot just opened are evaluated for a match only now.
+    for (const ball of settled) this.settle(chain, ball);
   }
 
   /** Two segments just came into contact between alive[i-1] and alive[i]. */
@@ -634,19 +682,47 @@ export class ZumaEngine {
     delete left.comboDepth;
     delete right.comboDepth;
     this.emit('merge', { leftId: left.id, rightId: right.id, chain: chain.index });
+    // A ball still opening its slot does not take part in a run; `settle` will check it.
+    if (left.width < 1 || right.width < 1) return;
     if (left.color !== right.color) return;
     const run = this.runAround(alive, i);
     if (run.length < 3) return;
     this.destroyRun(chain, alive, run, depth > 0 ? depth + 1 : 1, 0);
   }
 
+  /**
+   * A shot ball has finished opening its slot (width = 1): this is where the
+   * match it may complete is evaluated, hits/streak accounted and the run destroyed.
+   */
+  private settle(chain: Chain, ball: Ball): void {
+    if (ball.destroyingUntil !== undefined) return;
+    const alive = this.alive(chain);
+    const index = alive.indexOf(ball);
+    if (index < 0) return;
+    const run = this.runAround(alive, index);
+    if (run.length >= 3) {
+      this.stats.hits++;
+      this.streak++;
+      this.stats.maxStreak = Math.max(this.stats.maxStreak, this.streak);
+      this.destroyRun(chain, alive, run, 1, ball.id);
+      if (this.streak >= 5) {
+        const pos = this.ballPosition(ball, chain);
+        this.score += 50 * (this.streak - 4);
+        this.emit('streak', { streak: this.streak, x: pos.x, y: pos.y });
+      }
+    } else {
+      this.streak = 0;
+    }
+  }
+
+  /** Same-colour balls in contact around `index`; balls still opening their slot end the run. */
   private runAround(alive: Ball[], index: number): Ball[] {
     const color = alive[index].color;
-    const touching = (a: Ball, b: Ball): boolean => b.s - a.s <= this.config.ballSpacing + CONTACT_EPS;
+    const touching = (a: Ball, b: Ball): boolean => b.s - a.s <= this.gap(a, b) + CONTACT_EPS;
     let lo = index;
     let hi = index;
-    while (lo > 0 && alive[lo - 1].color === color && touching(alive[lo - 1], alive[lo])) lo--;
-    while (hi + 1 < alive.length && alive[hi + 1].color === color && touching(alive[hi], alive[hi + 1])) hi++;
+    while (lo > 0 && alive[lo - 1].color === color && alive[lo - 1].width >= 1 && touching(alive[lo - 1], alive[lo])) lo--;
+    while (hi + 1 < alive.length && alive[hi + 1].color === color && alive[hi + 1].width >= 1 && touching(alive[hi], alive[hi + 1])) hi++;
     return alive.slice(lo, hi + 1);
   }
 
@@ -814,28 +890,17 @@ export class ZumaEngine {
     const ahead = (p.x - bp.x) * t.x + (p.y - bp.y) * t.y >= 0;
     const globalIdx = chain.balls.indexOf(hit);
     const index = ahead ? globalIdx + 1 : globalIdx;
-    const s = ahead ? hit.s + this.config.ballSpacing : hit.s;
-    const ball = this.insert(index, { id: p.id, color: p.color }, { x: p.x, y: p.y }, s, chain);
+    // A zero-width ball sits half a spacing from the hit ball; it grows into a full slot.
+    const half = this.config.ballSpacing / 2;
+    const s = ahead ? hit.s + half : hit.s - half;
+    const ball = this.insertGrowing(index, { id: p.id, color: p.color }, { x: p.x, y: p.y }, s, chain);
     this.emit('insert', { id: ball.id, color: ball.color, x: bp.x, y: bp.y, chain: chain.index });
     if (p.gaps > 0) {
       this.stats.gaps += p.gaps;
       this.score += 100 * p.gaps;
       this.emit('gap', { count: p.gaps, x: bp.x, y: bp.y });
     }
-    const alive = this.alive(chain);
-    const run = this.runAround(alive, alive.indexOf(ball));
-    if (run.length >= 3) {
-      this.stats.hits++;
-      this.streak++;
-      this.stats.maxStreak = Math.max(this.stats.maxStreak, this.streak);
-      this.destroyRun(chain, alive, run, 1, p.id);
-      if (this.streak >= 5) {
-        this.score += 50 * (this.streak - 4);
-        this.emit('streak', { streak: this.streak, x: bp.x, y: bp.y });
-      }
-    } else {
-      this.streak = 0;
-    }
+    // The run check is deferred to `settle`, once the slot is fully open (mergeTicks later).
   }
 
   // --------------------------------------------------------------- removals
