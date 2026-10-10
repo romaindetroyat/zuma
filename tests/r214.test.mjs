@@ -191,3 +191,44 @@ test('level 1-1 settings (repeat 50, 4 colours) show a run of three among the fi
     assert.ok(longestRun(colours) >= 3, `seed ${seed}: longest run ${longestRun(colours)}`);
   }
 });
+
+// The ZUMA gauge counts the points scored in the level (original `score` setting), not destroyed balls.
+test('ZUMA mode starts when the level score reaches target (points), not after a ball count', () => {
+  const track = new Track([[0, 240], [640, 240], [640, 100], [0, 100]]);
+  const g = new ZumaEngine(track, frog, { ...quiet, target: 100 }, 3);
+  g.feeding = false;
+  g.score = 5000; // carried over from previous levels: must not count towards the gauge
+  const destroyThree = () => {
+    g.loadFixture({ balls: [{ color: 0, s: 304 }, { color: 0, s: 336 }], current: 0, next: 1, stream: false });
+    g.command({ kind: 'shoot', x: 320, y: 240 });
+    run(g, 40);
+    assert.ok(g.events.some(e => e.kind === 'destroy' && e.count === 3), 'three balls destroyed');
+  };
+  destroyThree();
+  assert.equal(g.levelScore, 30);
+  assert.equal(g.zumaMode, false);
+  destroyThree();
+  assert.equal(g.levelScore, 60);
+  assert.equal(g.destroyedCount, 6, 'destroyedCount keeps counting balls for the statistics');
+  assert.equal(g.zumaMode, false, '60 points < target 100');
+  assert.ok(!g.events.some(e => e.kind === 'zuma'));
+  // Gap on the lower segment (s 132 → 500), then a run of four on the upper segment: 100 + 40 + 10 points.
+  g.loadFixture({
+    balls: [{ color: 1, s: 100 }, { color: 2, s: 132 }, { color: 3, s: 500 }, { color: 1, s: 532 }, { color: 0, s: 1058 }, { color: 0, s: 1090 }, { color: 0, s: 1122 }],
+    current: 0, next: 1, stream: false,
+  });
+  g.command({ kind: 'shoot', x: 320, y: 100 });
+  run(g, 60);
+  assert.ok(g.events.some(e => e.kind === 'gap'), 'gap bonus');
+  assert.ok(g.events.some(e => e.kind === 'destroy' && e.count === 4), 'four balls destroyed');
+  assert.equal(g.levelScore, 210);
+  assert.equal(g.score, 5210);
+  assert.ok(g.zumaMode);
+  assert.equal(g.events.filter(e => e.kind === 'zuma').length, 1, 'zuma emitted once');
+  // Further points never re-emit the event.
+  g.loadFixture({ balls: [{ color: 0, s: 304 }, { color: 0, s: 336 }], current: 0, next: 1, stream: false });
+  g.command({ kind: 'shoot', x: 320, y: 240 });
+  run(g, 40);
+  assert.equal(g.levelScore, 240);
+  assert.equal(g.events.filter(e => e.kind === 'zuma').length, 0, 'loadFixture cleared events; no second zuma');
+});

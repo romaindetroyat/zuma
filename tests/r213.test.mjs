@@ -151,7 +151,8 @@ test('reaching the skull drains the board, costs a life and ends in lost (then g
 });
 
 test('ZUMA mode stops the feed and clearing the board wins the level with its bonus', () => {
-  const g = new ZumaEngine(straight(), frog, { ...quiet, target: 3, total: 2, levelBonus: 500 }, 5);
+  // Plan 04-06: `target` is a points objective — a destruction of three balls scores 30.
+  const g = new ZumaEngine(straight(), frog, { ...quiet, target: 30, total: 2, levelBonus: 500 }, 5);
   g.feeding = false;
   g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
   g.command({ kind: 'shoot', x: 336, y: 240 });
