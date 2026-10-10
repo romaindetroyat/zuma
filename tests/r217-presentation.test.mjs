@@ -391,3 +391,86 @@ test('bundle and shell: upscale.js in MODULES before original, precached with bi
   assert.doesNotMatch(tail, /url\(/, 'r211: the stylesheet never references the picture');
   assert.equal((read('index.html').match(/id="result-continue"/g) || []).length, 1);
 });
+
+// ---------------------------------------------------------------- netteté D-19 (U22) — actifs 2 × à partir de l'échelle 1,5
+import { HD_MIN_SCALE } from '../.compiled/render.js';
+import { drawNineSlice } from '../.compiled/statsdialog.js';
+import { upscaleSheet } from '../.compiled/original.js';
+
+test('HD assets: fonts, dialog pieces, button, balls, shadow, icons and menubar are upscaled 2 × from scale 1.5 (not in « Pixels nets »); the background stays bilinear', () => {
+  assert.equal(HD_MIN_SCALE, 1.5);
+  const font = read('.compiled/bitmapfont.js');
+  assert.match(font, /pixelScale/);
+  assert.match(font, /upscaled\(\)/);
+  assert.match(font, /g\.sx \* k, g\.sy \* k, g\.sw \* k, g\.sh \* k, ox \+ g\.dx, oy \+ g\.dy, g\.sw, g\.sh/, '2 × source cut, logical destination');
+  const original = read('.compiled/original.js');
+  assert.match(original, /export function upscaleSheet\(/);
+  assert.doesNotMatch(original, /bitmapfont/, 'still no cycle with bitmapfont');
+  const dialog = read('.compiled/statsdialog.js');
+  assert.match(dialog, /export function upscaleStatsKit\(/);
+  assert.match(dialog, /function drawNineSlice\(ctx, image, src, inset, dst, sourceScale = 1\)/);
+  assert.match(dialog, /kit\.pixelScale/);
+  const render = read('.compiled/render.js');
+  assert.match(render, /export const HD_MIN_SCALE = 1\.5/);
+  const ball = render.slice(render.indexOf('drawBall(color, x, y, roll, alpha, scale, power, frame) {'), render.indexOf('drawPowerGlyph(power) {'));
+  assert.match(ball, /ballShadow, -15, -13, [^)]*\/ k/, 'shadow drawn at its logical size');
+  assert.match(ball, /icon, -16, -16, [^)]*\/ k/, 'power icon drawn at its logical size');
+  const hud = render.slice(render.indexOf('drawHud(hud, frame) {'));
+  assert.match(hud, /menubar, 0, 0, [^)]*\/ k/, 'menubar drawn at 640 × 480');
+  const main = read('.compiled/main.js');
+  assert.match(main, /HD_MIN_SCALE/);
+  assert.match(main, /upscaleStatsKit\(/);
+  assert.match(main, /!this\.pixelated/, '« Pixels nets » keeps the 1 × assets');
+  const start = main.indexOf('buildHdAssets(base)');
+  assert.ok(start > 0, 'buildHdAssets compiled');
+  const block = main.slice(start, main.indexOf('\n}\n', start) > 0 ? main.indexOf('\n}\n', start) : undefined);
+  for (const key of ['balls', 'ballShadow', 'powers', 'menubar', 'fonts']) assert.match(block, new RegExp(`\\b${key}\\b`), `${key} upscaled`);
+  for (const key of ['hole', 'frogPad', 'pitcover', 'explosions', 'coin', 'background', 'gauge', 'tongue', 'eyeblink']) assert.doesNotMatch(block, new RegExp(`\\b${key}\\b`), `${key} stays 1 ×`);
+  assert.match(block, /pixelScale: 2/);
+});
+
+test('drawNineSlice with sourceScale 2 doubles the source rectangles and keeps the destination rectangles', () => {
+  const calls = [];
+  const ctx = { drawImage: (_image, ...rest) => calls.push(rest) };
+  const src = { x: 11, y: 0, w: 229, h: 231 };
+  const dst = { x: 109, y: 91, w: 422, h: 355 };
+  drawNineSlice(ctx, {}, src, 36, dst);
+  const one = calls.splice(0);
+  drawNineSlice(ctx, {}, src, 36, dst, 2);
+  const two = calls.splice(0);
+  assert.equal(one.length, 9);
+  assert.equal(two.length, 9);
+  for (let i = 0; i < 9; i++) {
+    assert.deepEqual(two[i].slice(0, 4), one[i].slice(0, 4).map(v => v * 2), `source ${i} doubled`);
+    assert.deepEqual(two[i].slice(4), one[i].slice(4), `destination ${i} unchanged`);
+  }
+  assert.deepEqual(one[0], [11, 0, 36, 36, 109, 91, 36, 36], 'top-left corner');
+  assert.deepEqual(two[0], [22, 0, 72, 72, 109, 91, 36, 36]);
+});
+
+test('upscaleSheet: picture replaced, frame size doubled, frame count unchanged; no picture → the sheet as is', () => {
+  const sheet = { image: { width: 32, height: 1504 }, frameWidth: 32, frameHeight: 32, frames: 47 };
+  const big = { width: 64, height: 3008 };
+  const up = upscaleSheet(sheet, big);
+  assert.equal(up.image, big);
+  assert.equal(up.frameWidth, 64);
+  assert.equal(up.frameHeight, 64);
+  assert.equal(up.frames, 47);
+  assert.notEqual(up, sheet);
+  assert.deepEqual(sheet, { image: { width: 32, height: 1504 }, frameWidth: 32, frameHeight: 32, frames: 47 }, 'input untouched');
+  const same = upscaleSheet(sheet, null);
+  assert.equal(same.image, sheet.image);
+  assert.equal(same.frameWidth, 32);
+  assert.equal(same.frameHeight, 32);
+});
+
+test('layoutTip ellipsis: « … » by default, « ... » when the font has no such glyph (no pack font defines U+2026)', () => {
+  const words = n => Array.from({ length: n }, (_, i) => `mot${i % 7}`).join(' ');
+  const measure = s => 6 * s.length;
+  const dots = layoutTip(words(40), 270, measure, null, '...');
+  assert.equal(dots.lines.length, 2);
+  assert.ok(dots.lines[1].endsWith('...'));
+  assert.ok(measure(dots.lines[1]) <= 270);
+  const block = read('.compiled/statsdialog.js').slice(read('.compiled/statsdialog.js').indexOf('insetBox(ctx, L.tip.box)'));
+  assert.match(block, /measure\('…'\) > 0 \? '…' : '\.\.\.'/, 'the composed dialog falls back to three dots');
+});
