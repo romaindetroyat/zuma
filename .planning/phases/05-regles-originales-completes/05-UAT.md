@@ -61,7 +61,7 @@ Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome),
 
 Validés implicitement : arrivée rapide, couleurs, alerte, roulement, bannière ZUMA, décompte « +100 », couleurs du STATS, record. Le +10 000 par courbe n'a pas été relevé (16 260 points au 1-1 affichés sans remarque) : conservé jusqu'à avis contraire.
 
-## Sixième session (à remplir)
+## Sixième session (2026-10-10, standalone R2.0.17, macOS)
 
 Standalone R2.0.17 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, écran Retina), niveau 1-1. Notes de version : `R217_RELEASE_NOTES.md`.
 
@@ -92,3 +92,12 @@ Standalone R2.0.17 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
+| U26 | Niveau 2-2 : « les boules disparaissent, la gestion des dessus-dessous n'est pas bonne » (billes tronquées à gauche et en haut à droite) | `Track` lit un octet de calque par point (bit 1 = sous une découpe, bit 2 = caché) et `render.ts` saute les billes « cachées » au lieu de dessiner la découpe du décor par-dessus ; sémantique de l'octet CURV et découpes du 2-2 à vérifier | Spike 03 (format CURV, rendu des tunnels dans l'original) puis plan 05-10 : billes toujours dessinées, découpes (`layers` du pack) peintes au-dessus là où la courbe passe dessous, ordre de dessin par calque (D-23) |
+| U27 | « Le menu est dégueulasse, il faut qu'il soit conforme à l'original » | Panneau DOM générique (titre « ZUMA PWA », boutons CSS) | Plan 05-10 : menu de jeu composé comme le STATS (dialogbox 9-slice, DialogButton, polices, chaînes du pack `MENU` / `BACK_TO_GAME` / `OPTIONS` / `HELP` / `BACK_TO_MAIN_MENU` / `QUIT`), options (son, pixels nets, plein écran) dans un sous-dialogue de même facture ; structure vérifiée par le spike 03 (D-24) |
+| U28 | « La taille de l'écran doit être un peu plus grande en mode fenêtre », OK en plein écran | En « Pixels nets » l'échelle CSS est un entier (`floor(1000/640)` = 1 → 640 px) ; sans ce mode le canvas remplit la fenêtre | Plan 05-10 : la fenêtre est toujours remplie en 4:3 ; « Pixels nets » arrondit à l'entier en pixels d'appareil (DPR 2 → pas de 0,5 CSS) au lieu de l'entier CSS (D-25) |
+| U29 | « La visée doit se faire aussi quand la souris passe sur les bords du cadre » ; « le menu doit être Entrée ou Espace, pas un clic de souris » | La visée ne suit que `pointermove` sur le canvas ; un clic sur MENU / STATS du HUD ouvre le panneau et un clic dans la bande du HUD ne tire pas | Plan 05-10 : visée suivie sur `window` (coordonnées ramenées au canvas, bornées), tout clic tire y compris sur le cadre ; les boutons du HUD ne réagissent plus au clic ; menu sur Entrée et Échap ; Espace reste l'échange (clic droit / Espace dans l'original, vérifié par le spike) ; STATS sur Tab (D-26) |
+| U30 | « On gagne des vies tous les 100 000 points, matérialisées par les grenouilles ; un bruit à l'obtention » | Chaîne du pack `GET_AN_EXTRA_FROG` : « une grenouille supplémentaire tous les 50 000 points » ; son `extralife` présent ; aucune vie gagnée dans le moteur | Spike 03 (seuil dans `AddScore`, texte `EXTRA_LIFE_BONUS`) puis plan 05-10 : vie à chaque multiple de 50 000, événement `extra-life`, son `extralife`, texte « BONUS VIE SUPP. », grenouille ajoutée au HUD (D-27) |
+| U31 | Son d'apparition de pièce « joué trop souvent » | `coinappear` à chaque apparition ; cadence 9–15 s (D-07) et `treasurefreq` 300 non vérifiés (A6) | Spike 03 (compteur de pièces dans l'exécutable) puis plan 05-10 : cadence originale ; à défaut, intervalle doublé (18–30 s) et son seulement si la pièce est visible (D-28) |
+| U32 | Grondement du roulement « un peu trop présent », arrêt « un peu trop franc » | Gain 0,6 constant, fondu linéaire 150 ms (05-08) | Plan 05-10 : gain 0,35, fondu 400 ms à l'arrêt, montée 100 ms (D-29) |
+
+Validés implicitement : netteté (plus de remarque), STATS (grille, décompte), barème des brèches.
