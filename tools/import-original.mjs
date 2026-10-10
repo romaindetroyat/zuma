@@ -49,6 +49,8 @@ const IMAGES = [
   'SMALLFROGonPAD', '_SMALLFROGonPAD', 'hatchback', '_hatchback', 'Tongue', '_Tongue', 'EYEBLINK',
   'Menubar', '_Menubar', 'MenuButton', '_Menubutton', 'gauge', '_gauge', 'gaugegreen', 'ToadLives', '_toadlives',
   'GodHead', '_GodHead', 'dialogbox', '_dialogbox', 'DialogButton', '_Dialogbutton', 'loadingscreen', 'mmscreen',
+  // In-game MENU (OPTIONS dialog, D-24): slider track / thumb and check box, with their masks.
+  'slidertrack', '_slidertrack', 'SliderThumb', '_SliderThumb', 'checkBUtton', '_checkBUtton',
 ];
 
 function readText(file) {
@@ -64,7 +66,13 @@ function attrs(tag) {
   return o;
 }
 
-/** Parses a CURV file: control points, then a pixel-sampled polyline with tunnel flags. */
+/**
+ * Parses a CURV file (0x4178c0): header, control points, then a pixel-sampled polyline. After `count`, the
+ * first point is `float x, float y, uint8 A, uint8 B`, then (count − 1) × `{ int8 dx, int8 dy, uint8 A, uint8 B }`
+ * with dx, dy in 1/100 px (0x417b5e–0x417c2b). Byte A = tunnel (unplayable: no projectile hit, no nearest
+ * point), byte B = draw priority 0..3 (spike 03 Q1). Third value of each point = `(A ? 1 : 0) | (min(3, B) << 1)`.
+ * `trailing` = bytes left after the last point (0 for a well-formed file).
+ */
 export function parseCurve(buf) {
   if (buf.toString('latin1', 0, 4) !== 'CURV') throw new Error('not a CURV file');
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -80,17 +88,18 @@ export function parseCurve(buf) {
   const count = dv.getInt32(pos, true);
   let x = dv.getFloat32(pos + 4, true);
   let y = dv.getFloat32(pos + 8, true);
-  pos += 12;
-  const points = [[round2(x), round2(y), 0]];
+  const flags = (a, b) => (a ? 1 : 0) | (Math.min(3, b) << 1);
+  const points = [[round2(x), round2(y), flags(dv.getUint8(pos + 12), dv.getUint8(pos + 13))]];
+  pos += 14;
   for (let i = 1; i < count; i++) {
-    const under = dv.getUint8(pos);
-    const hidden = dv.getUint8(pos + 1);
-    x += dv.getInt8(pos + 2) / 100;
-    y += dv.getInt8(pos + 3) / 100;
+    x += dv.getInt8(pos) / 100;
+    y += dv.getInt8(pos + 1) / 100;
+    const tunnel = dv.getUint8(pos + 2);
+    const priority = dv.getUint8(pos + 3);
     pos += 4;
-    points.push([round2(x), round2(y), (under ? 1 : 0) | (hidden ? 2 : 0)]);
+    points.push([round2(x), round2(y), flags(tunnel, priority)]);
   }
-  return { version, controls, points };
+  return { version, controls, points, trailing: buf.byteLength - pos };
 }
 
 const round2 = v => Math.round(v * 100) / 100;
@@ -205,7 +214,8 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     for (const curve of g.curves) {
       const dat = files.find(f => f.toLowerCase() === `${curve.toLowerCase()}.dat`);
       if (!dat) { console.warn(`missing curve ${curve} for ${g.id}`); continue; }
-      const parsed = parseCurve(fs.readFileSync(path.join(levelSrc, dat)));
+      const { trailing, ...parsed } = parseCurve(fs.readFileSync(path.join(levelSrc, dat)));
+      if (trailing !== 0) console.warn(`curve ${curve}: ${trailing} unread trailing bytes`);
       const target = `${curve.toLowerCase()}.json`;
       fs.writeFileSync(path.join(curveDir, target), JSON.stringify(parsed));
       g.curveFiles.push(`levels/${target}`);

@@ -20,7 +20,12 @@
  * narrowest gap crossed (`gapBonusPoints`), armed on the ball and paid by the match
  * that destroys it (kept while the ball waits against its colour, cleared
  * otherwise); a match scores 10 × n + 100 × combo + gap bonus, plus (chain + 5) × 10
- * from the 5th consecutive hit on a direct match.
+ * from the 5th consecutive hit on a direct match. From R2.0.18 (05-RESEARCH-03.md, D-23 / D-27 / D-28 /
+ * D-30): CURV byte A marks tunnel points (a ball there cannot be hit, the nearest-point search skips
+ * them) and byte B the draw priority 0..3; one life per multiple of `extraLifeEvery` (50 000) crossed,
+ * with no cap; coins stay 10 s and are attempted at 1/180 per tick from 780 ticks after the previous
+ * appearance, never in ZUMA mode, on points whose chain head passed `dist` % of the curve; the
+ * end-of-level tally walks one marker per chain, all together.
  *
  * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
  * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
@@ -29,7 +34,7 @@
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.17';
+export const ENGINE_VERSION = '2.0.18';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {
@@ -50,7 +55,10 @@ export class SeededRandom {
 }
 
 export interface Point { x: number; y: number }
-/** `[x, y]` or `[x, y, layer]`; layer bit 1 = passes under a cutout, bit 2 = hidden. */
+/**
+ * `[x, y]` or `[x, y, flags]`; flags bit 0 = tunnel (CURV byte A: unplayable, never hit nor targeted),
+ * bits 1–2 = draw priority 0..3 (CURV byte B), spike 03 Q1.
+ */
 export type TrackPoint = Point | [number, number] | [number, number, number];
 
 /** Polyline track parameterised by arc length `s` (0 at the spawn hole). */
@@ -122,17 +130,41 @@ export class Track {
     return { x: dx / l, y: dy / l };
   }
 
-  /** Layer flags of the segment containing `s` (0 = ordinary surface). */
+  /** Raw flags of the vertex nearest to `s` (0 outside [0, length]). */
   layerAt(s: number): number {
     if (s < 0 || s > this.length) return 0;
     const { i, t } = this.locate(s);
     return this.layers[t < 0.5 ? i : Math.min(i + 1, this.layers.length - 1)];
   }
 
-  /** Closest arc-length parameter to an arbitrary point, with the distance to the track. */
-  nearest(p: Point): { s: number; dist: number } {
+  /** Tunnel point (CURV byte A, 0x405cb0 / 0x405d00): no projectile contact, no nearest point. */
+  tunnelAt(s: number): boolean {
+    return (this.layerAt(s) & 1) === 1;
+  }
+
+  /** Draw priority 0..3 at `s` (CURV byte B, 0x405bc0); 0 outside the track. */
+  priorityAt(s: number): number {
+    return (this.layerAt(s) >> 1) & 3;
+  }
+
+  /**
+   * Draw priority of a ball centred at `s` (0x405c10): the max of the priorities read at its two edges,
+   * `s − radius` and `s + radius` (radius 16, 0x401720) — the ball changes pass as soon as one edge
+   * enters the zone. Only the two edges are read, not a window.
+   */
+  ballPriority(s: number, radius = 16): number {
+    return Math.max(this.priorityAt(s - radius), this.priorityAt(s + radius));
+  }
+
+  /**
+   * Closest arc-length parameter to an arbitrary point, with the distance to the track. With
+   * `skipTunnel` (0x414d6e) a segment whose two vertices are tunnel points is ignored; `{ s: 0, dist:
+   * Infinity }` when nothing is left.
+   */
+  nearest(p: Point, skipTunnel = false): { s: number; dist: number } {
     let best = { s: 0, dist: Infinity };
     for (let i = 0; i + 1 < this.points.length; i++) {
+      if (skipTunnel && (this.layers[i] & 1) === 1 && (this.layers[i + 1] & 1) === 1) continue;
       const a = this.points[i];
       const b = this.points[i + 1];
       const dx = b.x - a.x;
@@ -306,6 +338,11 @@ export interface EngineConfig {
   /** How long a power stays attached to its ball before fading. */
   powerVisibleTicks: number;
   lives: number;
+  /**
+   * One life per multiple of this score crossed (0x417380: ⌊new / 50 000⌋ − ⌊old / 50 000⌋, several at
+   * once, no cap); 0 disables. Only the gauntlet mode (`board+0x187`, absent here) turns it off.
+   */
+  extraLifeEvery: number;
   /** Level bonus per curve, credited when the board is cleared: (100 − coverage) × 100 with coverage 0 (0x428705, hypothesis A3). */
   levelBonus: number;
   /** Points for a grabbed coin (0x4233fb: max(500, 100 × ⌊score / 600⌋), computed by configFromSettings). */
@@ -380,6 +417,7 @@ export const CANDIDATE: EngineConfig = {
   powerGuardTicks: 150,
   powerVisibleTicks: 480,
   lives: 3,
+  extraLifeEvery: 50_000,
   levelBonus: 10000,
   coinPoints: 500,
   coinVisibleTicks: 360,
@@ -711,9 +749,12 @@ export class ZumaEngine {
    */
   creditBonus(points: number): void {
     if (!Number.isFinite(points) || points <= 0) return;
+    const old = this.score;
     this.score += points;
     this.levelScore += points;
     this.timeBonusCredited += points;
+    // The original counts the STATS bonus up through AddScore (0x440b00): a multiple crossed there gives a life too.
+    this.grantLives(old);
   }
 
   /** Test hook: places the coin of `treasure[index]` right now (same event as a natural appearance). */
@@ -1180,8 +1221,10 @@ export class ZumaEngine {
    * running is kept and the SLOW power-up (`slowTicks`) is never touched.
    */
   private addScore(points: number): void {
+    const old = this.score;
     this.score += points;
     this.levelScore += points;
+    this.grantLives(old);
     if (!this.zumaMode && this.levelScore >= this.config.target) {
       this.zumaMode = true;
       let coverage = 0;
@@ -1193,6 +1236,21 @@ export class ZumaEngine {
       }
       this.emit('zuma', { coverage, pushback });
     }
+  }
+
+  /**
+   * Extra lives (0x417380, spike 03 Q3): ⌊score / every⌋ − ⌊old / every⌋ lives, several at once, no cap
+   * (only the gauntlet mode `board+0x187` disables them; the `+0x178 = 150` counter set there has no
+   * reader). Emits `extra-life { lives, count }`; the original shows no text, it plays `extralife` three
+   * times (presentation).
+   */
+  private grantLives(old: number): void {
+    const every = this.config.extraLifeEvery;
+    if (!Number.isFinite(every) || every <= 0) return;
+    const gained = Math.floor(this.score / every) - Math.floor(old / every);
+    if (!(gained > 0)) return;
+    this.lives += gained;
+    this.emit('extra-life', { lives: this.lives, count: gained });
   }
 
   // ------------------------------------------------------------- power-ups
@@ -1348,6 +1406,8 @@ export class ZumaEngine {
         this.trackGap(p, chain, alive);
         for (const b of alive) {
           if (b.s < 0 || b.s > chain.track.length) continue;
+          // 0x408f52: a ball on a tunnel point is not touchable; the projectile flies on.
+          if (chain.track.tunnelAt(b.s)) continue;
           const bp = chain.track.pointAt(b.s);
           const d = Math.hypot(p.x - bp.x, p.y - bp.y);
           if (d < 2 * ballRadius && d < bestDist) {
@@ -1365,7 +1425,7 @@ export class ZumaEngine {
 
   /** Counts the gaps between separated segments a projectile flies through and keeps the narrowest free width. */
   private trackGap(p: Projectile, chain: Chain, alive: Ball[]): void {
-    const near = chain.track.nearest(p);
+    const near = chain.track.nearest(p, true); // 0x414d6e: tunnel points are never the nearest point
     if (near.dist > this.config.ballRadius) return;
     let prev: Ball | undefined;
     let next: Ball | undefined;
