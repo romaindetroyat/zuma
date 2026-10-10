@@ -305,3 +305,74 @@ test('style.css: the stage is sized by --k in both modes (4:3 fallback before th
   assert.doesNotMatch(css, /\.stage\.pixelated \{[^}]*width/, 'no integer-CSS-only rule left');
   assert.doesNotMatch(css, /var\(--k, 1\)/);
 });
+
+// ---------------------------------------------------------------- audio : roulement, pièces, vies (D-27, D-28, D-29)
+import { rampPlan, clampPan, ROLLING_GAIN, ROLLING_ATTACK_SECONDS, ROLLING_FADE_SECONDS } from '../.compiled/audio.js';
+import { soundCues } from '../.compiled/feedback.js';
+import { lifeIcons } from '../.compiled/render.js';
+
+test('rolling: gain 0.35, 50 ms attack, 500 ms linear fade; cut at once by pause, menu and STATS', () => {
+  assert.equal(ROLLING_GAIN, 0.35);
+  assert.equal(ROLLING_ATTACK_SECONDS, 0.05);
+  assert.equal(ROLLING_FADE_SECONDS, 0.5);
+  assert.deepEqual(rampPlan(0, 1), { to: 0.35, seconds: 0.05 });
+  assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: 0.5 });
+  assert.equal(rampPlan(1, 1), null);
+  const audio = read('.compiled/audio.js');
+  assert.match(body(audio, 'export function rampPlan('), /ROLLING_ATTACK_SECONDS/);
+  assert.match(body(audio, '    setLoop(key, level) {'), /linearRampToValueAtTime/);
+  const main = read('.compiled/main.js');
+  for (const sig of ['    togglePause() {', '    openMenu() {', '    openStats(outcome) {']) assert.match(body(main, sig), /stopLoops\(\)/, `${sig.trim()} cuts the loops (0x402830)`);
+});
+
+test('cues: extra-life plays extralife three times at 0 / 0.3 / 0.6 s (0x415350), whatever the count', () => {
+  const three = [0, 0.3, 0.6].map(delay => ({ key: 'extralife', gain: 1, rate: 1, delay }));
+  assert.deepEqual(soundCues({ tick: 1, kind: 'extra-life', lives: 4, count: 1 }), three);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'extra-life', lives: 6, count: 2 }), three, 'one series per AddScore');
+});
+
+test('cues: coinappear at 0.40 and coinvanish at 1 panned (x − 320) / 320 × 0.3; clampPan bounds −1..1', () => {
+  assert.deepEqual(soundCues({ tick: 1, kind: 'coin-appear', x: 320 }), [{ key: 'coinappear', gain: 0.4, rate: 1, pan: 0 }]);
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear', x: 640 })[0].pan, 0.3);
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear', x: 0 })[0].pan, -0.3);
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear', x: 2000 })[0].pan, 0.3, 'bounded to ± 0.3');
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear', x: NaN })[0].pan, 0);
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear' })[0].pan, 0);
+  assert.ok(Math.abs(soundCues({ tick: 1, kind: 'coin-appear', x: 576 })[0].pan - 0.24) < 1e-12);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'coin-vanish', x: 640 }), [{ key: 'coinvanish', gain: 1, rate: 1, pan: 0.3 }]);
+  assert.equal(clampPan(2), 1);
+  assert.equal(clampPan(-3), -1);
+  assert.equal(clampPan(NaN), 0);
+  assert.equal(clampPan(undefined), 0);
+  assert.equal(clampPan(0.24), 0.24);
+  const audio = read('.compiled/audio.js');
+  assert.match(audio, /typeof [^;]*createStereoPanner === 'function'/, 'StereoPannerNode only when it exists');
+  assert.match(body(audio, '    play(cue) {'), /clampPan\(cue\.pan\)/);
+  assert.match(body(audio, '    synth(cue, delay = 0, pan = 0) {'), /output\(pan\)/, 'the synth is panned too');
+  assert.match(body(audio, '    play(cue) {'), /output\(pan\)/, 'samples are panned');
+});
+
+test('lifeIcons: frogs in the HUD slot (three in the menubar, six in the vector HUD), « +N » beyond', () => {
+  assert.deepEqual(lifeIcons(0), { icons: 0, extra: 0 });
+  assert.deepEqual(lifeIcons(3), { icons: 3, extra: 0 });
+  assert.deepEqual(lifeIcons(4), { icons: 3, extra: 1 });
+  assert.deepEqual(lifeIcons(13), { icons: 3, extra: 10 });
+  assert.deepEqual(lifeIcons(7, 6), { icons: 6, extra: 1 });
+  assert.deepEqual(lifeIcons(-2), { icons: 0, extra: 0 });
+  assert.deepEqual(lifeIcons(NaN), { icons: 0, extra: 0 });
+  assert.deepEqual(lifeIcons(Infinity), { icons: 0, extra: 0 });
+  const hud = body(read('.compiled/render.js'), '    drawHud(hud, frame) {');
+  assert.match(hud, /lifeIcons\(hud\.lives, 3\)/);
+  assert.match(hud, /lifeIcons\(hud\.lives, 6\)/);
+});
+
+test('main.js: the lives won while the STATS counts up sound at once; no in-game text for extra-life (original)', () => {
+  const main = read('.compiled/main.js');
+  for (const sig of ['    bonusStep(target) {', '    async closeStats() {']) {
+    const b = body(main, sig);
+    const credit = b.indexOf('creditBonus(');
+    assert.ok(credit > 0, `${sig.trim()} credits`);
+    assert.ok(b.indexOf('drainEvents()', credit) > credit, `${sig.trim()} drains the engine events after the credit`);
+  }
+  assert.doesNotMatch(main, /case 'extra-life'/, 'no floating text (spike 03 Q3)');
+});

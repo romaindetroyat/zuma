@@ -59,9 +59,10 @@ test('warningGain is constant (the original does not modulate the volume); FAR /
 // ---------------------------------------------------------------- roulement (U18, D-17)
 
 test('loopLevels: rolling is binary — on above ROLLING_MIN_SPEED while playing, off otherwise', () => {
-  assert.equal(ROLLING_GAIN, 0.6);
+  // R2.0.18 (D-29): gain 0.35 and a 500 ms linear fade (the original fades 0.02 per update, ≈ 0.5 s, 0x402880).
+  assert.equal(ROLLING_GAIN, 0.35);
   assert.equal(ROLLING_MIN_SPEED, 2);
-  assert.equal(ROLLING_FADE_SECONDS, 0.15);
+  assert.equal(ROLLING_FADE_SECONDS, 0.5);
   assert.equal(loopLevels({ speed: 0, playing: true }).rolling, 0);
   assert.equal(loopLevels({ speed: 2, playing: true }).rolling, 0, 'threshold is exclusive');
   assert.equal(loopLevels({ speed: 2.01, playing: true }).rolling, 1);

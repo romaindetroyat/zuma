@@ -57,7 +57,8 @@ test('loopLevels: rolling is on whenever the chain moves (the warning is a pulse
   assert.equal(loopLevels({ ...base, speed: 900 }).rolling, 1, 'on at feed speed');
   assert.equal(loopLevels({ ...base, speed: 1 }).rolling, 0, 'off under 2 px/s (recoil settling, stop)');
   assert.equal(loopLevels({ ...base, speed: 180, playing: false }).rolling, 0, 'no rolling when not playing');
-  assert.equal(ROLLING_GAIN, 0.6, 'constant loop gain');
+  // R2.0.18 (D-29): the user lowered the constant gain from 0.6 to 0.35 (U32).
+  assert.equal(ROLLING_GAIN, 0.35, 'constant loop gain');
 });
 
 // Plan 04-05: the original `warning1` is a 0.37 s hit repeated faster and louder as the head nears the skull.

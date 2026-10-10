@@ -277,13 +277,14 @@ import { rampPlan, ROLLING_GAIN, ROLLING_FADE_SECONDS } from '../.compiled/audio
 
 test('rampPlan: a ramp only when the loop target changes — 50 ms in to ROLLING_GAIN, ROLLING_FADE_SECONDS out to 0', () => {
   assert.deepEqual(rampPlan(null, 1), { to: ROLLING_GAIN, seconds: 0.05 });
-  assert.deepEqual(rampPlan(0, 1), { to: 0.6, seconds: 0.05 });
+  // R2.0.18 (D-29): 50 ms attack to 0.35, 500 ms linear fade (was 0.6 / 150 ms).
+  assert.deepEqual(rampPlan(0, 1), { to: 0.35, seconds: 0.05 });
   assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: ROLLING_FADE_SECONDS });
-  assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: 0.15 });
+  assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: 0.5 });
   assert.equal(rampPlan(1, 1), null, 'same target: the running ramp is left alone');
   assert.equal(rampPlan(0, 0), null);
   assert.equal(rampPlan(null, 0), null);
-  assert.deepEqual(rampPlan(0.5, 1), { to: 0.6, seconds: 0.05 });
+  assert.deepEqual(rampPlan(0.5, 1), { to: 0.35, seconds: 0.05 });
   const audio = read('.compiled/audio.js');
   const start = audio.indexOf('setLoop(key, level)');
   const body = audio.slice(start, audio.indexOf('pulse(key, level)', start));
