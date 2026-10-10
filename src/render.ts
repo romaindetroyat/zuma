@@ -839,6 +839,31 @@ function shade(hex: string, factor: number): string {
   return `rgb(${r},${g},${b})`;
 }
 
+/**
+ * Client coordinates → logical 640 × 480 point, clamped to the stage (D-26: the aim follows the pointer over the
+ * whole window, the page frame included). A degenerate rectangle or non-finite input gives the centre.
+ */
+export function stagePoint(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number }): Point {
+  const ok = [clientX, clientY, rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0;
+  if (!ok) return { x: WIDTH / 2, y: HEIGHT / 2 };
+  const x = ((clientX - rect.left) * WIDTH) / rect.width;
+  const y = ((clientY - rect.top) * HEIGHT) / rect.height;
+  return { x: Math.max(0, Math.min(WIDTH, x)), y: Math.max(0, Math.min(HEIGHT, y)) };
+}
+
+/**
+ * CSS pixels per logical pixel (D-25): the window is filled in 4:3, fit = min(w / 640, h / 480). In « Pixels nets »
+ * the scale is rounded down to whole device pixels — max(1, ⌊fit × dpr⌋) / dpr: never less than one device pixel
+ * per logical pixel. Non-finite sizes → 1; a non-finite or non-positive dpr counts as 1.
+ */
+export function fitScale(innerWidth: number, innerHeight: number, dpr: number, pixelated: boolean): number {
+  const fit = Math.min(innerWidth / WIDTH, innerHeight / HEIGHT);
+  if (!Number.isFinite(fit) || fit <= 0) return 1;
+  if (!pixelated) return fit;
+  const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  return Math.max(1, Math.floor(fit * d)) / d;
+}
+
 /** Pit cover frame for a threat level 0..1: 0 → closed lid (frame 0), 1 → last frame (open). */
 export function pitCoverFrame(threat: number, frames: number): number {
   const t = Number.isFinite(threat) ? Math.max(0, Math.min(1, threat)) : 0;

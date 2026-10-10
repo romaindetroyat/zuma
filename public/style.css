@@ -11,6 +11,9 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: "Trebuchet MS", Verdana, sans-serif; }
 body { display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; }
 .stage { position: relative; width: min(100vw, calc(100vh * 4 / 3)); aspect-ratio: 4 / 3; }
+/* R2.0.18 (D-25): main.ts sets --k = fitScale(window, dpr, « Pixels nets ») and the class `sized`; the 4:3 rule above is
+   the fallback until then. */
+.stage.sized { width: calc(640px * var(--k)); height: calc(480px * var(--k)); aspect-ratio: auto; }
 #game { display: block; width: 100%; height: 100%; image-rendering: auto; background: #000; cursor: crosshair; user-select: none; -webkit-user-select: none; }
 .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
 .overlay.open { display: flex; }
@@ -30,8 +33,7 @@ dd { margin: 0; font-weight: bold; }
 .boot-title { margin: 0; font-size: 28px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
 .boot.error #boot-message { color: #ff8a80; font-weight: bold; }
 
-/* R2.0.14 — « Pixels nets »: integer CSS scale (--k) of the native 640×480 store, no smoothing. */
-.stage.pixelated { width: calc(640px * var(--k, 1)); height: calc(480px * var(--k, 1)); aspect-ratio: auto; }
+/* « Pixels nets » (R2.0.18, D-25): --k in whole device pixels, native 640×480 store enlarged without smoothing. */
 .stage.pixelated #game { image-rendering: pixelated; }
 
 /* R2.0.11 — STATS is one opaque monolithic panel: one title, one data layer, one tip, one OK. */

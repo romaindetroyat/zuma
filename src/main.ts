@@ -7,7 +7,7 @@ import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, 
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
-import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuState, type MenuWidgetId } from './menudialog.js';
 
 declare const __BUILD__: string;
@@ -115,21 +115,19 @@ class Game {
 
   // ---------------------------------------------------------------- scaling
 
-  /** Matches the canvas backing store to the displayed size and devicePixelRatio (or an integer CSS scale). */
+  /**
+   * D-25: the stage fills the window in 4:3 (`--k` = fitScale CSS px per logical px, both modes). « Pixels nets »
+   * keeps the 640 × 480 store enlarged without smoothing by a scale that lands on whole device pixels; otherwise
+   * the backing store follows the displayed size × devicePixelRatio.
+   */
   private applyScaling(): void {
     const stage = this.canvas.parentElement;
     const dpr = window.devicePixelRatio || 1;
-    if (this.pixelated) {
-      const k = Math.max(1, Math.floor(Math.min(window.innerWidth / WIDTH, window.innerHeight / HEIGHT)));
-      stage?.style.setProperty('--k', String(k));
-      stage?.classList.add('pixelated');
-      this.renderer.resize(WIDTH * k, dpr, true);
-    } else {
-      stage?.classList.remove('pixelated');
-      stage?.style.removeProperty('--k');
-      const rect = this.canvas.getBoundingClientRect();
-      this.renderer.resize(rect.width || WIDTH, dpr, false);
-    }
+    const k = fitScale(window.innerWidth, window.innerHeight, dpr, this.pixelated);
+    stage?.style.setProperty('--k', String(k));
+    stage?.classList.add('sized');
+    stage?.classList.toggle('pixelated', this.pixelated);
+    this.renderer.resize(WIDTH * k, dpr, this.pixelated);
     this.applyHd();
     // The open dialogs follow the new scale and assets (D-19).
     if (this.statsOpen) this.renderStats();
@@ -513,60 +511,7 @@ class Game {
     this.openStats(engine.state === 'won' ? 'won' : engine.state === 'gameover' ? 'gameover' : 'lost');
   }
 
-  // ------------------------------------------------------------------ input
-
-  private canvasPoint(ev: MouseEvent | Touch): Point {
-    const rect = this.canvas.getBoundingClientRect();
-    return { x: ((ev.clientX - rect.left) / rect.width) * WIDTH, y: ((ev.clientY - rect.top) / rect.height) * HEIGHT };
-  }
-
-  private bindInput(): void {
-    const canvas = this.canvas;
-    canvas.addEventListener('contextmenu', ev => ev.preventDefault());
-    canvas.addEventListener('mousemove', ev => {
-      this.pointer = this.canvasPoint(ev);
-      this.engine?.command({ kind: 'aim', ...this.pointer });
-    });
-    canvas.addEventListener('mousedown', ev => {
-      ev.preventDefault();
-      this.audio.unlock();
-      const p = this.canvasPoint(ev);
-      if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
-      if (ev.button !== 0) return;
-      this.press(p);
-    });
-    canvas.addEventListener('touchstart', ev => {
-      ev.preventDefault();
-      this.audio.unlock();
-      const t = ev.changedTouches[0];
-      if (!t) return;
-      const p = this.canvasPoint(t);
-      this.pointer = p;
-      this.engine?.command({ kind: 'aim', ...p });
-      this.press(p);
-    }, { passive: false });
-    window.addEventListener('keydown', ev => {
-      if (ev.repeat) return;
-      if (this.menuOpen) {
-        if (this.menuKey(ev.code)) ev.preventDefault();
-        return;
-      }
-      if (ev.code === 'Space') { ev.preventDefault(); this.engine?.command({ kind: 'swap' }); }
-      else if (ev.code === 'KeyP') this.togglePause();
-      else if (ev.code === 'Escape') this.toggleMenu();
-      else if (ev.code === 'KeyM') this.toggleSound();
-    });
-  }
-
-  private press(p: Point): void {
-    if (this.statsOpen || this.menuOpen || this.loading) return;
-    const button = this.renderer.hitTest(p.x, p.y);
-    if (button === 'menu') { this.toggleMenu(); return; }
-    if (button === 'stats') { this.openStats('live'); return; }
-    if (this.paused) { this.togglePause(); return; }
-    if (p.y < HUD_HEIGHT) return;
-    this.engine?.command({ kind: 'shoot', x: p.x, y: p.y });
-  }
+  // ------------------------------------------------------------ pause, sound
 
   private togglePause(): void {
     if (this.statsOpen || this.menuOpen) return;
@@ -610,6 +555,77 @@ class Game {
       if (onOk || !this.statsOpen || !this.statsBonus || this.statsBonus.shown >= this.statsBonus.total) return;
       this.statsBonus.fast = true;
     }, { passive: true });
+  }
+
+  // ------------------------------------------------------------------ input
+
+  /**
+   * Inputs (D-26): the aim follows the pointer over the whole window (stagePoint, clamped to the stage) and a left
+   * click shoots anywhere, the HUD band and the page frame included; right click swaps (hypothesis C1). The HUD
+   * MENU / STATS buttons only answer a touch (without a keyboard the menu would be unreachable — deviation from
+   * D-26 limited to touch). Keys: Space / Enter / Escape open and close the menu (the original pauses on Space, and
+   * the menu pauses: converging), Tab opens the STATS, P pauses, M mutes. Open dialogs handle their own pointer.
+   */
+  private bindInput(): void {
+    window.addEventListener('contextmenu', ev => ev.preventDefault());
+    window.addEventListener('pointermove', ev => {
+      if (this.menuOpen || this.statsOpen) return;
+      this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
+      this.engine?.command({ kind: 'aim', ...this.pointer });
+    });
+    window.addEventListener('pointerdown', ev => {
+      this.audio.unlock();
+      if (this.loading || this.menuOpen || this.statsOpen) return;
+      if (ev.pointerType === 'mouse') ev.preventDefault(); // no text selection while playing
+      const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
+      if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
+      if (ev.button !== 0) return;
+      this.pointer = p;
+      this.engine?.command({ kind: 'aim', ...p });
+      if (ev.pointerType === 'touch') {
+        const button = this.renderer.hitTest(p.x, p.y);
+        if (button === 'menu') { this.toggleMenu(); return; }
+        if (button === 'stats') { this.openStats('live'); return; }
+      }
+      if (this.paused) { this.togglePause(); return; }
+      this.engine?.command({ kind: 'shoot', x: p.x, y: p.y });
+    });
+    window.addEventListener('keydown', ev => {
+      if (ev.repeat) return;
+      if (this.menuOpen) {
+        if (this.menuKey(ev.code)) ev.preventDefault();
+        return;
+      }
+      const dialogKey = ev.code === 'Space' || ev.code === 'Enter' || ev.code === 'NumpadEnter' || ev.code === 'Escape' || ev.code === 'Tab';
+      if (this.statsOpen) {
+        // The live STATS (Tab) closes like OK; an end-of-level STATS only closes through OK.
+        if (dialogKey && this.statsOutcome === 'live') {
+          ev.preventDefault();
+          if (this.statsKit) this.audio.play({ key: 'button', gain: 1, rate: 1 });
+          void this.closeStats();
+        }
+        return;
+      }
+      switch (ev.code) {
+        case 'Space':
+        case 'Enter':
+        case 'NumpadEnter':
+        case 'Escape':
+          ev.preventDefault();
+          this.toggleMenu();
+          break;
+        case 'Tab':
+          ev.preventDefault();
+          this.openStats('live');
+          break;
+        case 'KeyP':
+          this.togglePause();
+          break;
+        case 'KeyM':
+          this.toggleSound();
+          break;
+      }
+    });
   }
 
   // ------------------------------------------------------------------- menu
