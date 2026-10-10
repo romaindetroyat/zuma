@@ -56,6 +56,19 @@ export function explosionFrame(counter: number): number {
   return counter >= 0 && frame < EXPLOSION_FRAME_COUNT ? frame : -1;
 }
 
+/** Arc length of one full ball rotation (radius 16). */
+export const BALL_CIRCUMFERENCE = 2 * Math.PI * 16;
+
+/**
+ * Rolling sprite frame for arc length s; monotone in s so recoil visibly rolls
+ * the balls backwards (R2.0.14 lock). Wraps every `circumference` px; `frames <= 1` → 0.
+ */
+export function rollFrame(s: number, frames: number, circumference = BALL_CIRCUMFERENCE): number {
+  if (!(frames > 1) || !(circumference > 0)) return 0;
+  const c = circumference;
+  return Math.floor((((s % c) + c) % c) / c * frames) % frames;
+}
+
 export function particleAlpha(counter: number): number {
   return Math.max(0, Math.min(1, (PARTICLE_LIFE_TICKS - counter) / 20));
 }

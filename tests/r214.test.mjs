@@ -101,7 +101,7 @@ test('rollFrame is monotone in s, wraps around the circumference and covers ever
   assert.equal(rollFrame(-1, frames), rollFrame(c - 1, frames), 'negative s wraps');
   assert.equal(rollFrame(123.4, 1), 0);
   assert.equal(rollFrame(123.4, 0), 0);
-  assert.equal(rollFrame(20, frames, 200), rollFrame(10, frames), 'custom circumference scales the frame');
+  assert.equal(rollFrame(20, frames, 2 * c), rollFrame(10, frames), 'custom circumference scales the frame');
 });
 
 test('advancing balls roll forward, recoiling balls roll backwards', () => {
