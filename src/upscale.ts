@@ -45,11 +45,23 @@ export function upscale2x(src: RawImage): RawImage {
   return { width: w2, height: h * 2, data: new Uint8ClampedArray(out.buffer) };
 }
 
+/** One 2 × copy per source picture: fonts sharing a `.gif` (HUD and STATS Cancun12) share the atlas (T-05-22). */
+const UPSCALED = new WeakMap<Bitmap, HTMLCanvasElement>();
+
 /**
- * The picture enlarged 2 × by `upscale2x` on a fresh canvas; null when the picture is empty or its
- * pixels cannot be read (no 2D context, tainted image) so the caller keeps the 1 × original.
+ * The picture enlarged 2 × by `upscale2x` on a fresh canvas (memoised per source); null when the
+ * picture is empty or its pixels cannot be read (no 2D context, tainted image) so the caller keeps
+ * the 1 × original.
  */
 export function upscaleBitmap(image: Bitmap): HTMLCanvasElement | null {
+  const cached = UPSCALED.get(image);
+  if (cached) return cached;
+  const out = upscaleFresh(image);
+  if (out) UPSCALED.set(image, out);
+  return out;
+}
+
+function upscaleFresh(image: Bitmap): HTMLCanvasElement | null {
   try {
     const w = image.width;
     const h = image.height;

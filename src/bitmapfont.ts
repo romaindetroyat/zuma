@@ -15,6 +15,7 @@
  * are pure (no DOM) so the Node tests can lock them; `BitmapFont` draws on a canvas.
  */
 import { applyMask, assetUrl, canvasOf, type Bitmap } from './original.js';
+import { upscaleBitmap } from './upscale.js';
 
 export interface FontRect { x: number; y: number; w: number; h: number }
 export interface FontLayer {
@@ -309,11 +310,33 @@ export class BitmapFont {
   private readonly atlases = new Map<string, HTMLCanvasElement | null>();
   private readonly alphaMasks = new Map<string, HTMLCanvasElement | null>();
 
-  constructor(readonly script: FontScript, readonly images: Map<string, Bitmap>, readonly maskOnly: boolean) {
-    const m = fontMetrics(script);
-    this.ascent = m.ascent;
-    this.height = m.height;
-    this.capHeight = this.measureCapHeight();
+  /**
+   * `pixelScale` = pixels of the glyph pictures per logical pixel (2 for an `upscaled()` font: the
+   * glyphs are cut at 2 × and drawn at their logical size, D-19); `metrics` skips the pixel measure.
+   */
+  constructor(readonly script: FontScript, readonly images: Map<string, Bitmap>, readonly maskOnly: boolean, readonly pixelScale = 1, metrics?: { ascent: number; height: number; capHeight: number }) {
+    if (metrics) {
+      this.ascent = metrics.ascent;
+      this.height = metrics.height;
+      this.capHeight = metrics.capHeight;
+    } else {
+      const m = fontMetrics(script);
+      this.ascent = m.ascent;
+      this.height = m.height;
+      this.capHeight = this.measureCapHeight();
+    }
+  }
+
+  /** The same font over 2 × EPX pictures (metrics copied); `this` when a picture cannot be read or the font is already 2 ×. */
+  upscaled(): BitmapFont {
+    if (this.pixelScale !== 1) return this;
+    const images = new Map<string, Bitmap>();
+    for (const [stem, image] of this.images) {
+      const big = upscaleBitmap(image);
+      if (!big) return this;
+      images.set(stem, big);
+    }
+    return new BitmapFont(this.script, images, this.maskOnly, 2, { ascent: this.ascent, height: this.height, capHeight: this.capHeight });
   }
 
   private measureCapHeight(): number {
@@ -342,12 +365,13 @@ export class BitmapFont {
     const multiply = options.multiply ? parseColor(options.multiply) : null;
     const sources = this.script.layers.map(layer => this.sourceFor(layer, tint, multiply));
     const savedAlpha = ctx.globalAlpha;
+    const k = this.pixelScale;
     for (const g of layout.glyphs) {
       const src = sources[g.layer];
       if (!src || g.sw <= 0 || g.sh <= 0) continue;
       const mult = this.script.layers[g.layer].colorMult;
       ctx.globalAlpha = savedAlpha * alpha * (mult ? mult[3] : 1);
-      ctx.drawImage(src, g.sx, g.sy, g.sw, g.sh, ox + g.dx, oy + g.dy, g.sw, g.sh);
+      ctx.drawImage(src, g.sx * k, g.sy * k, g.sw * k, g.sh * k, ox + g.dx, oy + g.dy, g.sw, g.sh);
     }
     ctx.globalAlpha = savedAlpha;
     return layout.width;
@@ -378,7 +402,8 @@ export class BitmapFont {
   private tintedAtlas(stem: string, mask: Bitmap, rgb: Rgb): HTMLCanvasElement | null {
     let alphaMask = this.alphaMasks.get(stem);
     if (alphaMask === undefined) {
-      const rects = this.script.layers.filter(l => l.image === stem).flatMap(l => [...l.rects.values()]);
+      const k = this.pixelScale;
+      const rects = this.script.layers.filter(l => l.image === stem).flatMap(l => [...l.rects.values()].map(r => ({ x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k })));
       alphaMask = luminanceToAlpha(mask, rects);
       this.alphaMasks.set(stem, alphaMask);
     }
@@ -491,8 +516,25 @@ export interface FontPack {
   image(path: string): Promise<Bitmap | null>;
 }
 
-/** Null when the pack has no such font, the script cannot be fetched or no glyph picture loads (never throws). */
-export async function loadBitmapFont(pack: FontPack, key: string): Promise<BitmapFont | null> {
+/** One load per pack and key: the HUD and the STATS kit share each font instance, its pictures and tint atlases (T-05-22). */
+const FONT_LOADS = new WeakMap<FontPack, Map<string, Promise<BitmapFont | null>>>();
+
+/** Null when the pack has no such font, the script cannot be fetched or no glyph picture loads (never throws). Memoised per pack and key. */
+export function loadBitmapFont(pack: FontPack, key: string): Promise<BitmapFont | null> {
+  let loads = FONT_LOADS.get(pack);
+  if (!loads) {
+    loads = new Map();
+    FONT_LOADS.set(pack, loads);
+  }
+  let load = loads.get(key);
+  if (!load) {
+    load = fetchBitmapFont(pack, key);
+    loads.set(key, load);
+  }
+  return load;
+}
+
+async function fetchBitmapFont(pack: FontPack, key: string): Promise<BitmapFont | null> {
   const entry = pack.data.fonts?.[key];
   if (!entry || !entry.script) return null;
   let text: string;

@@ -3,10 +3,11 @@ import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type Engi
 import { EXPLOSION_RGB, ballCss, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
-import { OriginalPack, tintSheet, type PackGraphics, type PackSettings } from './original.js';
-import { loadBitmapFont } from './bitmapfont.js';
-import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
-import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
+import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
+import { upscaleBitmap } from './upscale.js';
+import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
+import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -43,7 +44,12 @@ class Game {
   private pack: OriginalPack | null = null;
   /** Original strings (`strings.json`) for the in-game messages (GET_READY / GO); null without the pack. */
   private strings: Record<string, string> | null = null;
-  /** Native STATS (D-01): original pieces + fonts + strings; null → vector STATS panel. */
+  /** 1 × assets of the pack and their 2 × EPX copy, built once on demand (D-19); the renderer points at one of them. */
+  private baseAssets: RenderAssets | null = null;
+  private hdAssets: RenderAssets | null = null;
+  /** Native STATS (D-01): original pieces + fonts + strings; null → vector STATS panel. `statsKit` = the 1 × or 2 × kit in use. */
+  private statsKitBase: StatsKit | null = null;
+  private statsKitHd: StatsKit | null = null;
   private statsKit: StatsKit | null = null;
   /** The composed dialog, shown as the first child of `.zuma-stats` while the STATS are open (D-19). */
   private statsCanvas: HTMLCanvasElement | null = null;
@@ -101,14 +107,28 @@ class Game {
       stage?.style.setProperty('--k', String(k));
       stage?.classList.add('pixelated');
       this.renderer.resize(WIDTH * k, dpr, true);
-      return;
+    } else {
+      stage?.classList.remove('pixelated');
+      stage?.style.removeProperty('--k');
+      const rect = this.canvas.getBoundingClientRect();
+      this.renderer.resize(rect.width || WIDTH, dpr, false);
     }
-    stage?.classList.remove('pixelated');
-    stage?.style.removeProperty('--k');
-    const rect = this.canvas.getBoundingClientRect();
-    this.renderer.resize(rect.width || WIDTH, dpr, false);
-    // The open dialog follows the new scale (D-19).
+    this.applyHd();
+    // The open dialog follows the new scale and assets (D-19).
     if (this.statsOpen) this.renderStats();
+  }
+
+  /**
+   * D-19: from HD_MIN_SCALE backing-store pixels per logical pixel — and never in « Pixels nets »,
+   * whose integer CSS scale keeps the 1 × store — the renderer and the STATS use the 2 × EPX assets,
+   * built once and kept; below it, the 1 × pictures. Nothing happens without the pack.
+   */
+  private applyHd(): void {
+    const hd = !this.pixelated && this.renderer.scale >= HD_MIN_SCALE;
+    const base = this.baseAssets;
+    if (base) this.renderer.assets = hd ? (this.hdAssets ??= buildHdAssets(base)) : base;
+    const kit = this.statsKitBase;
+    this.statsKit = kit && hd ? (this.statsKitHd ??= upscaleStatsKit(kit)) : kit;
   }
 
   private bindScaling(): void {
@@ -140,9 +160,10 @@ class Game {
     await this.audio.discover();
     if (this.pack) {
       this.strings = await this.pack.strings();
-      this.renderer.assets = await this.loadAssets(this.pack);
+      this.baseAssets = await this.loadAssets(this.pack);
+      this.applyHd();
       // Loaded in the background: a STATS opened before the kit is ready uses the vector panel.
-      void loadStatsKit(this.pack).then(kit => { this.statsKit = kit; });
+      void loadStatsKit(this.pack).then(kit => { this.statsKitBase = kit; this.applyHd(); });
     }
     const badge = document.getElementById('build');
     if (badge) badge.textContent = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
@@ -185,7 +206,7 @@ class Game {
     ]);
     const explosions = grey ? EXPLOSION_RGB.map(rgb => tintSheet(grey, rgb)) : EXPLOSION_RGB.map(() => null);
     const fonts = titleFont || textFont || floatFont ? { title: titleFont, text: textFont, float: floatFont } : null;
-    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, fonts };
+    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, fonts, pixelScale: 1 };
   }
 
   // ----------------------------------------------------------------- levels
@@ -746,6 +767,41 @@ class Game {
     else if (outcome === 'lost') await this.retryLevel();
     else if (outcome === 'gameover') await this.newGame();
   }
+}
+
+/**
+ * 2 × EPX copies of the pictures that are drawn at their logical size with smoothing (D-19): the six
+ * ball sheets, the shadow, the 24 power icons, the menubar and the three HUD fonts — the level art,
+ * cutouts, holes, lid, frog, coin, gauge, lives and explosions keep their 1 × bilinear pictures. All
+ * or nothing: when any of them cannot be read, the 1 × assets are returned (T-05-22, ≈ 11 MB at most).
+ */
+function buildHdAssets(base: RenderAssets): RenderAssets {
+  let complete = true;
+  const big = (image: Bitmap | null): Bitmap | null => {
+    if (!image) return null;
+    const out = upscaleBitmap(image);
+    if (!out) complete = false;
+    return out;
+  };
+  const icons = (list: Array<Bitmap | null>): Array<Bitmap | null> => list.map(big);
+  const balls = base.balls.map(sheet => {
+    if (!sheet) return null;
+    const out = upscaleSheet(sheet);
+    if (out === sheet) complete = false;
+    return out;
+  });
+  const ballShadow = big(base.ballShadow);
+  const powers = { bomb: icons(base.powers.bomb), slow: icons(base.powers.slow), backwards: icons(base.powers.backwards), accuracy: icons(base.powers.accuracy) };
+  const menubar = big(base.menubar);
+  const font = (f: BitmapFont | null): BitmapFont | null => {
+    if (!f) return null;
+    const out = f.upscaled();
+    if (out.pixelScale !== 2) complete = false;
+    return out;
+  };
+  const fonts = base.fonts ? { title: font(base.fonts.title), text: font(base.fonts.text), float: font(base.fonts.float) } : null;
+  if (!complete) return base;
+  return { ...base, pixelScale: 2, balls, ballShadow, powers, menubar, fonts };
 }
 
 /** StatsValues fields → ids of the R2.0.12 STATS structure. */

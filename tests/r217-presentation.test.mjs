@@ -421,7 +421,7 @@ test('HD assets: fonts, dialog pieces, button, balls, shadow, icons and menubar 
   assert.match(main, /HD_MIN_SCALE/);
   assert.match(main, /upscaleStatsKit\(/);
   assert.match(main, /!this\.pixelated/, '« Pixels nets » keeps the 1 × assets');
-  const start = main.indexOf('buildHdAssets(base)');
+  const start = main.indexOf('function buildHdAssets(base)');
   assert.ok(start > 0, 'buildHdAssets compiled');
   const block = main.slice(start, main.indexOf('\n}\n', start) > 0 ? main.indexOf('\n}\n', start) : undefined);
   for (const key of ['balls', 'ballShadow', 'powers', 'menubar', 'fonts']) assert.match(block, new RegExp(`\\b${key}\\b`), `${key} upscaled`);
@@ -473,4 +473,24 @@ test('layoutTip ellipsis: « … » by default, « ... » when the font has no s
   assert.ok(measure(dots.lines[1]) <= 270);
   const block = read('.compiled/statsdialog.js').slice(read('.compiled/statsdialog.js').indexOf('insetBox(ctx, L.tip.box)'));
   assert.match(block, /measure\('…'\) > 0 \? '…' : '\.\.\.'/, 'the composed dialog falls back to three dots');
+});
+
+test('loadBitmapFont is memoised per pack and key: the HUD and the STATS kit share one font instance (2 × atlases counted once, T-05-22)', async () => {
+  const { loadBitmapFont } = await import('../.compiled/bitmapfont.js');
+  let fetches = 0;
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetches++; return { ok: true, text: async () => "CreateLayer Main;\nLayerSetImage Main 'Foo';\nLayerSetAscent Main 10;\nLayerSetImageMap Main ('A') ((0, 0, 5, 8));\n" }; };
+  try {
+    const pack = { base: 'x/', data: { fonts: { foo: { script: 'fonts/foo.txt', image: null, mask: 'fonts/_foo.gif' } } }, image: async () => ({ width: 10, height: 10 }) };
+    const [a, b] = await Promise.all([loadBitmapFont(pack, 'foo'), loadBitmapFont(pack, 'foo')]);
+    assert.ok(a, 'font loaded');
+    assert.equal(a, b, 'same instance');
+    assert.equal(await loadBitmapFont(pack, 'foo'), a, 'still the same later');
+    assert.equal(fetches, 1, 'one fetch of the script');
+    assert.equal(await loadBitmapFont(pack, 'bar'), null, 'unknown key → null');
+    const other = { ...pack };
+    assert.notEqual(await loadBitmapFont(other, 'foo'), a, 'another pack → its own font');
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
 });

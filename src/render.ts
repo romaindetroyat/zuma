@@ -30,7 +30,12 @@ export interface RenderAssets {
   sparkle: Bitmap | null;
   /** Original bitmap fonts: title (NativeAlienExtended18) and text (Cancun12) for the HUD messages, float (CancunFloat14) for the floating texts. */
   fonts: { title: BitmapFont | null; text: BitmapFont | null; float: BitmapFont | null } | null;
+  /** 2 when balls, shadow, power icons, menubar and fonts are the 2 × EPX copies drawn at their logical size (D-19); 1 otherwise. */
+  pixelScale: 1 | 2;
 }
+
+/** Backing-store scale from which the 2 × assets are used (below it the bilinear 1 × pictures look fine). */
+export const HD_MIN_SCALE = 1.5;
 
 export interface LevelView {
   name: string;
@@ -334,14 +339,16 @@ export class Renderer {
     ctx.translate(x, y);
     ctx.scale(scale, scale);
     if (sheet) {
-      if (this.assets?.ballShadow) ctx.drawImage(this.assets.ballShadow, -15, -13);
+      // 2 × pictures (assets.pixelScale) are drawn at their logical size; the sheet frame already maps to 32 × 32.
+      const k = this.assets?.pixelScale ?? 1;
+      if (this.assets?.ballShadow) ctx.drawImage(this.assets.ballShadow, -15, -13, this.assets.ballShadow.width / k, this.assets.ballShadow.height / k);
       // D-12: the frame follows the arc length, so recoil visibly rolls the ball backwards.
       const f = rollFrame(roll, sheet.frames);
       ctx.drawImage(sheet.image, 0, f * sheet.frameHeight, sheet.frameWidth, sheet.frameHeight, -16, -16, 32, 32);
       if (power) {
         const icon = this.assets?.powers[power][color] ?? null;
         ctx.globalAlpha = alpha * (0.75 + 0.25 * Math.sin(frame / 5));
-        if (icon) ctx.drawImage(icon, -16, -16);
+        if (icon) ctx.drawImage(icon, -16, -16, icon.width / k, icon.height / k);
         else this.drawPowerGlyph(power);
       }
     } else {
@@ -608,8 +615,9 @@ export class Renderer {
     ctx.textBaseline = 'middle';
     const font = (px: number): string => `bold ${px}px "Trebuchet MS", Verdana, sans-serif`;
     if (this.assets?.menubar) {
-      // Original artwork: MENU slot, lives slot, score slot, level slot, gauge slot.
-      ctx.drawImage(this.assets.menubar, 0, 0);
+      // Original artwork: MENU slot, lives slot, score slot, level slot, gauge slot (2 × copy drawn at 640 × 480, D-19).
+      const k = this.assets.pixelScale;
+      ctx.drawImage(this.assets.menubar, 0, 0, this.assets.menubar.width / k, this.assets.menubar.height / k);
       ctx.fillStyle = '#f3e4b8';
       ctx.font = font(15);
       ctx.textAlign = 'center';

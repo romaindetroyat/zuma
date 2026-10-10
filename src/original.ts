@@ -6,6 +6,7 @@
  * proprietary data; it only reads what a local build placed under assets/.
  */
 import { Track, type Point, type TreasurePoint } from './core.js';
+import { upscaleBitmap } from './upscale.js';
 
 declare global {
   interface Window { __ZUMA_ASSETS__?: Record<string, string> }
@@ -330,6 +331,16 @@ function cutFromBackground(background: Bitmap, alpha: Bitmap, x: number, y: numb
   for (let i = 0; i < pixels.data.length; i += 4) pixels.data[i + 3] = mask[i];
   ctx.putImageData(pixels, 0, 0);
   return out;
+}
+
+/**
+ * The sheet over its 2 × EPX picture (D-19): frame size doubled, frame count unchanged, so the
+ * renderer keeps cutting frame by frame and drawing at the logical size. Without a 2 × picture
+ * (unreadable pixels) the sheet is returned as is.
+ */
+export function upscaleSheet(sheet: Sheet, image: Bitmap | null = upscaleBitmap(sheet.image)): Sheet {
+  if (!image) return sheet;
+  return { image, frameWidth: sheet.frameWidth * 2, frameHeight: sheet.frameHeight * 2, frames: sheet.frames };
 }
 
 /** Tints a grey sprite sheet with an RGB colour (used for the per-colour explosion). */

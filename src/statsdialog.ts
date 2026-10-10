@@ -10,6 +10,7 @@
  */
 import { BitmapFont, loadBitmapFont } from './bitmapfont.js';
 import type { Bitmap, OriginalPack } from './original.js';
+import { upscaleBitmap } from './upscale.js';
 
 export interface Rect { x: number; y: number; w: number; h: number }
 export interface Point { x: number; y: number }
@@ -24,6 +25,8 @@ export interface StatsKit {
   /** `tip` = Arial12Bold (else Cancun10); `tipSmall` = Cancun10 when a bigger tip font exists, tried before the ellipsis (D-20). */
   fonts: { title: BitmapFont; text: BitmapFont; tip: BitmapFont | null; tipSmall: BitmapFont | null };
   strings: Record<string, string>;
+  /** 1, or 2 when every piece and font of the kit is the 2 × EPX copy (upscaleStatsKit, D-19). */
+  pixelScale: 1 | 2;
 }
 
 export interface StatsValues { points: string; combos: string; coins: string; gaps: string; chain: string; comboMax: string; time: string; objective: string; bonus: string; record: string }
@@ -186,7 +189,7 @@ export function wrapText(text: string, maxWidth: number, measure: (s: string) =>
  * smaller font is available (`measureSmall`), wrapped again with it (`small` = true); when it still
  * overflows, the second line is cut word by word until `line + '…'` fits. Never more than two lines.
  */
-export function layoutTip(text: string, maxWidth: number, measure: (s: string) => number, measureSmall: ((s: string) => number) | null): { lines: string[]; small: boolean } {
+export function layoutTip(text: string, maxWidth: number, measure: (s: string) => number, measureSmall: ((s: string) => number) | null, ellipsis = '…'): { lines: string[]; small: boolean } {
   const MAX = 2;
   let lines = wrapText(text, maxWidth, measure);
   let small = false;
@@ -198,8 +201,8 @@ export function layoutTip(text: string, maxWidth: number, measure: (s: string) =
   }
   if (lines.length > MAX) {
     const words = lines[MAX - 1].split(' ');
-    while (words.length > 0 && m(`${words.join(' ')}…`) > maxWidth) words.pop();
-    lines = [...lines.slice(0, MAX - 1), `${words.join(' ')}…`];
+    while (words.length > 0 && m(`${words.join(' ')}${ellipsis}`) > maxWidth) words.pop();
+    lines = [...lines.slice(0, MAX - 1), `${words.join(' ')}${ellipsis}`];
   }
   return { lines, small };
 }
@@ -230,10 +233,29 @@ export async function loadStatsKit(pack: OriginalPack): Promise<StatsKit | null>
       pack.strings(),
     ]);
     if (!frame || !button || !title || !text || !strings) return null;
-    return { frame, head, button, fonts: { title, text, tip: arial ?? cancun10, tipSmall: arial ? cancun10 : null }, strings };
+    return { frame, head, button, fonts: { title, text, tip: arial ?? cancun10, tipSmall: arial ? cancun10 : null }, strings, pixelScale: 1 };
   } catch {
     return null;
   }
+}
+
+/**
+ * The kit over 2 × EPX pictures (D-19): frame, head, button through `upscaleBitmap`, fonts through
+ * `upscaled()`, strings shared, `pixelScale` 2. All or nothing: when any piece cannot be read the
+ * 1 × kit is returned unchanged.
+ */
+export function upscaleStatsKit(kit: StatsKit): StatsKit {
+  if (kit.pixelScale !== 1) return kit;
+  const frame = upscaleBitmap(kit.frame);
+  const button = upscaleBitmap(kit.button);
+  const head = kit.head ? upscaleBitmap(kit.head) : null;
+  const title = kit.fonts.title.upscaled();
+  const text = kit.fonts.text.upscaled();
+  const tip = kit.fonts.tip ? kit.fonts.tip.upscaled() : null;
+  const tipSmall = kit.fonts.tipSmall ? kit.fonts.tipSmall.upscaled() : null;
+  const fontsOk = title.pixelScale === 2 && text.pixelScale === 2 && (!tip || tip.pixelScale === 2) && (!tipSmall || tipSmall.pixelScale === 2);
+  if (!frame || !button || (kit.head && !head) || !fontsOk) return kit;
+  return { frame, head, button, fonts: { title, text, tip, tipSmall }, strings: kit.strings, pixelScale: 2 };
 }
 
 // ------------------------------------------------------------------ composing
@@ -269,9 +291,11 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   const { title, text } = kit.fonts;
   const tipFont = kit.fonts.tip ?? text;
   const str = (key: string, fallback: string): string => kit.strings[key] ?? fallback;
+  // Pictures of a 2 × kit are cut at 2 × and drawn at their logical size (the fonts do the same in BitmapFont.draw).
+  const k = kit.pixelScale;
 
-  drawNineSlice(ctx, kit.frame, L.source, L.inset, L.frame);
-  if (kit.head) ctx.drawImage(kit.head, L.head.x, L.head.y);
+  drawNineSlice(ctx, kit.frame, L.source, L.inset, L.frame, k);
+  if (kit.head) ctx.drawImage(kit.head, 0, 0, kit.head.width, kit.head.height, L.head.x, L.head.y, kit.head.width / k, kit.head.height / k);
 
   // Title in its own colours multiplied by gold (D-18); rows spaced 1.65 × the capital height, bounded (T-05-18).
   title.draw(ctx, str('STATS', 'STATISTIQUES'), L.title.x, L.title.baseline, { align: 'center', multiply: C.title });
@@ -312,26 +336,33 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   const textX = L.tip.labelX + text.measure(tipLabel) + L.tip.gap;
   const tipWidth = Math.min(L.tip.maxWidth, L.tip.box.x + L.tip.box.w - 10 - textX);
   const tipSmall = kit.fonts.tipSmall;
-  const tip = layoutTip(options.tip, tipWidth, s => tipFont.measure(s), tipSmall ? s => tipSmall.measure(s) : null);
+  // No pack font defines U+2026 (an unknown character is skipped by the layout): three dots then.
+  const ellipsis = tipFont.measure('…') > 0 ? '…' : '...';
+  const tip = layoutTip(options.tip, tipWidth, s => tipFont.measure(s), tipSmall ? s => tipSmall.measure(s) : null, ellipsis);
   const lineFont = tip.small && tipSmall ? tipSmall : tipFont;
   const firstBaseline = L.tip.baseline - (tip.lines.length > 1 ? Math.round(L.tip.lineHeight / 2) : 0);
   tip.lines.slice(0, L.tip.maxLines).forEach((line, i) => lineFont.draw(ctx, line, textX, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'left' }));
 
   // OK button: one of the three painted states, label centred (nudged when pressed).
   const state = options.button === 'hover' ? 1 : options.button === 'pressed' ? 2 : 0;
-  ctx.drawImage(kit.button, state * L.ok.w, 0, L.ok.w, L.ok.h, L.ok.x, L.ok.y, L.ok.w, L.ok.h);
+  ctx.drawImage(kit.button, state * L.ok.w * k, 0, L.ok.w * k, L.ok.h * k, L.ok.x, L.ok.y, L.ok.w, L.ok.h);
   const nudge = state === 2 ? 1 : 0;
   text.draw(ctx, str('DIALOG_BUTTON_OK', str('OK', 'OK')), L.ok.x + L.ok.w / 2 + nudge, L.okLabelBaseline + nudge, { tint: C.value, align: 'center' });
   return out;
 }
 
-/** 9-slice: corners unscaled, edges stretched along one axis, centre stretched both ways. */
-export function drawNineSlice(ctx: CanvasRenderingContext2D, image: Bitmap, src: Rect, inset: number, dst: Rect): void {
+/**
+ * 9-slice: corners unscaled, edges stretched along one axis, centre stretched both ways. `src`, `inset`
+ * and `dst` are logical; `sourceScale` (2 for an upscaled picture) multiplies the source rectangles only.
+ */
+export function drawNineSlice(ctx: CanvasRenderingContext2D, image: Bitmap, src: Rect, inset: number, dst: Rect, sourceScale = 1): void {
   const i = Math.max(0, Math.min(inset, Math.floor(Math.min(src.w, src.h) / 2)));
-  const sx = [src.x, src.x + i, src.x + src.w - i];
-  const sy = [src.y, src.y + i, src.y + src.h - i];
-  const sw = [i, src.w - 2 * i, i];
-  const sh = [i, src.h - 2 * i, i];
+  const S = sourceScale;
+  const si = i * S;
+  const sx = [src.x * S, src.x * S + si, (src.x + src.w) * S - si];
+  const sy = [src.y * S, src.y * S + si, (src.y + src.h) * S - si];
+  const sw = [si, src.w * S - 2 * si, si];
+  const sh = [si, src.h * S - 2 * si, si];
   const dx = [dst.x, dst.x + i, dst.x + dst.w - i];
   const dy = [dst.y, dst.y + i, dst.y + dst.h - i];
   const dw = [i, dst.w - 2 * i, i];
