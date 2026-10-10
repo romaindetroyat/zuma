@@ -44,6 +44,7 @@ Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome),
 - Couvercle du crâne ouvert dès 600 px.
 - Compte à rebours sans mode rapide (un bonus de ≈ 24 000 compte ≈ 24 s ; le reste est crédité sur OK).
 - `levelwin` (`chant5`) qui se chevauche avec les `pop` du dialogue.
+- Fondu du roulement à l'arrêt : décroissance quasi exponentielle d'≈ 0,4 s (rampe relancée à chaque image) plutôt que 150 ms linéaires — acceptable à l'oreille ? (voir `deferred-items.md`).
 
 ### Observation reportée (cosmétique, 05-04)
 
