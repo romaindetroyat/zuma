@@ -7,7 +7,7 @@
  * until the slot is fully open), 40-tick destruction persistence, local recoil
  * propagated from segment to segment, attraction that only reconnects after
  * physical contact, immutable projectile colour, the four power-up families,
- * coins on the treasure points (one at a time, clearance by `dist`, grabbed by a
+ * coins on the treasure points (one at a time, free once the chain head passed `dist` %, grabbed by a
  * projectile without breaking the streak), and — from R2.0.16, transcribed from
  * the original executable (05-RESEARCH.md) — the pusher kinematics (±50 / 1000
  * px/s² ramp, 24-tick stop after an insertion into the rear segment, end-of-track
@@ -250,18 +250,25 @@ export type Command =
 /** `clearing` = board emptied in ZUMA mode, end-of-level tally running along the track (D-10). */
 export type EngineState = 'playing' | 'clearing' | 'draining' | 'lost' | 'gameover' | 'won';
 
-/** A coin spot from the original `levels.xml` (`TreasurePoint`): `curve` = chain index, `dist` = clearance in px (0 = always free). */
+/**
+ * A coin spot from the original `levels.xml` (`TreasurePoint`): `curve` = chain index, `dist` = percentage of
+ * its curve the chain head must have passed for the point to be free (0 = always free; spike 03 Q4, 0x40a900).
+ */
 export interface TreasurePoint { x: number; y: number; curve: number; dist: number }
 /** The single coin currently on the board; `until` = tick at which it vanishes. */
 export interface Coin { id: number; x: number; y: number; curve: number; until: number }
 /**
- * End-of-level tally marker (0x421550): `s` walks `cleanupStepPx` every `cleanupStepTicks` from the
- * aligned start up to the skull; `nextTick` / `popNext` are fractional tick deadlines, `endTick` is
- * set once the last step (or none) has fired.
+ * One tally marker (0x421550): `s` walks `cleanupStepPx` every `cleanupStepTicks` from its aligned start up
+ * to the skull of chain `chain`; `step` / `steps` = steps done / to do for this marker.
+ */
+export interface CleanupMarker { chain: number; s: number; step: number; steps: number }
+/**
+ * End-of-level tally (D-30): one marker per chain, all stepping together on a shared clock — `step` / `steps`
+ * = shared steps done / steps of the longest marker; `nextTick` / `popNext` are fractional tick deadlines,
+ * `endTick` is set once the last step of the longest marker (or none) has fired.
  */
 export interface Cleanup {
-  chain: number;
-  s: number;
+  markers: CleanupMarker[];
   step: number;
   steps: number;
   nextTick: number;
@@ -347,11 +354,14 @@ export interface EngineConfig {
   levelBonus: number;
   /** Points for a grabbed coin (0x4233fb: max(500, 100 × ⌊score / 600⌋), computed by configFromSettings). */
   coinPoints: number;
-  /** Ticks a coin stays on its treasure point (6 s, D-07). */
+  /** Ticks a coin stays on its treasure point (0x4177cf: 1 000 maj × 0.6 = 600). */
   coinVisibleTicks: number;
-  /** Minimum / maximum ticks between a coin leaving and the next one appearing (9–15 s, D-07). */
-  coinMinGapTicks: number;
-  coinMaxGapTicks: number;
+  /** First coin attempt possible this many ticks after the level start (300 maj × 0.6 = 180: the original deadline starts at 0). */
+  coinFirstTicks: number;
+  /** Attempts resume this many ticks after the previous appearance, grabbed or not (0x41760d: 1 300 maj × 0.6 = 780). */
+  coinRetryTicks: number;
+  /** Per-tick probability of an attempt (`Rand() % treasurefreq == 0`: 1/300 per maj ≈ 1/180 per tick). */
+  coinChance: number;
   /** Projectile centre to coin centre distance that grabs the coin (D-09). */
   coinRadius: number;
   /** End-of-level tally (0x421550): step length, px. */
@@ -420,9 +430,10 @@ export const CANDIDATE: EngineConfig = {
   extraLifeEvery: 50_000,
   levelBonus: 10000,
   coinPoints: 500,
-  coinVisibleTicks: 360,
-  coinMinGapTicks: 540,
-  coinMaxGapTicks: 900,
+  coinVisibleTicks: 600, // 1 000 maj × 0.6
+  coinFirstTicks: 180, // 300 maj × 0.6
+  coinRetryTicks: 780, // 1 300 maj × 0.6
+  coinChance: 1 / 180, // 1/300 per maj ≈ 1/180 per tick
   coinRadius: 18,
   cleanupStepPx: 60,
   cleanupStepTicks: 2.4, // 4 maj × 0.6
@@ -595,15 +606,20 @@ export class ZumaEngine {
   private nextId = 1;
   private lastShotTick = -Infinity;
   private lastPowerTick = -Infinity;
-  private nextCoinTick = Infinity;
-  /** Where the last explosion happened: the end-of-level tally starts there (D-10). */
-  private lastDestroy: { chain: number; s: number } | null = null;
+  /** Tick of the previous coin appearance (grabbed or not); attempts resume `coinRetryTicks` later (0x41760d). */
+  private lastCoinTick: number;
+  /** Per chain, where its last explosion happened: its tally marker starts there (D-10, D-30); null → its track start. */
+  private lastDestroy: Array<number | null>;
+  /** Chain of the most recent explosion (the `clearing` point). */
+  private lastDestroyChain: number | null = null;
 
   constructor(track: Track | Track[], readonly frog: Point, config: Partial<EngineConfig> = {}, seed = 1) {
     const tracks = Array.isArray(track) ? track : [track];
     if (tracks.length === 0) throw new Error('at least one track is required');
     this.chains = tracks.map((t, i) => new Chain(t, i));
     this.config = { ...CANDIDATE, ...config };
+    this.lastDestroy = this.chains.map(() => null);
+    this.lastCoinTick = this.config.coinFirstTicks - this.config.coinRetryTicks;
     this.rng = new SeededRandom(seed);
     this.lives = this.config.lives;
     this.aim = { x: frog.x, y: frog.y - 1 };
@@ -722,10 +738,10 @@ export class ZumaEngine {
   }
 
   /**
-   * Declares the coin spots of the level (pack `treasure[]`). Points with a
-   * non-numeric position are dropped, `curve` is clamped to an existing chain and a
-   * non-finite or negative `dist` becomes 0. Schedules the first coin; an empty
-   * list schedules nothing and never touches the RNG.
+   * Declares the coin spots of the level (pack `treasure[]`). Points with a non-numeric position are
+   * dropped, `curve` is clamped to an existing chain and `dist` (a percentage) to 0..100, non-finite → 0.
+   * The first attempt is possible `coinFirstTicks` after this call (made at the level start). An empty
+   * list never touches the RNG (tickCoin returns at once).
    */
   setTreasure(points: TreasurePoint[]): void {
     const last = this.chains.length - 1;
@@ -733,13 +749,12 @@ export class ZumaEngine {
     for (const p of points) {
       if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
       const curve = Number.isFinite(p.curve) ? Math.max(0, Math.min(last, Math.trunc(p.curve))) : 0;
-      const dist = Number.isFinite(p.dist) && p.dist > 0 ? p.dist : 0;
+      const dist = Number.isFinite(p.dist) && p.dist > 0 ? Math.min(100, p.dist) : 0;
       clean.push({ x: p.x, y: p.y, curve, dist });
     }
     this.treasure = clean;
     this.coin = null;
-    this.nextCoinTick = Infinity;
-    if (clean.length > 0) this.scheduleCoin();
+    this.lastCoinTick = this.tick + this.config.coinFirstTicks - this.config.coinRetryTicks;
   }
 
   /**
@@ -1178,7 +1193,8 @@ export class ZumaEngine {
 
     const middle = run[Math.floor(run.length / 2)];
     const centre = this.ballPosition(middle, chain);
-    this.lastDestroy = { chain: chain.index, s: middle.s };
+    this.lastDestroy[chain.index] = middle.s;
+    this.lastDestroyChain = chain.index;
     let gapPoints = 0;
     let gapCount = 0;
     for (const b of run) {
@@ -1301,23 +1317,26 @@ export class ZumaEngine {
     const until = this.tick + this.config.destroyTicks;
     let total = 0;
     const chained: Array<{ ball: Ball; chain: Chain }> = [];
-    let front: { chain: number; s: number } | null = null; // most advanced victim: the tally starts there
+    let front: { chain: number; s: number } | null = null; // most advanced victim overall: the `clearing` point
     for (const chain of this.chains) {
       const victims = this.alive(chain).filter(b => {
         const p = this.ballPosition(b, chain);
         return Math.hypot(p.x - centre.x, p.y - centre.y) <= this.config.bombRadius;
       });
       if (victims.length === 0) continue;
+      let head = -Infinity; // most advanced victim of this chain: its tally marker starts there (D-30)
       for (const b of victims) {
         b.destroyingUntil = until;
         if (b.power) chained.push({ ball: b, chain });
         if (!front || b.s > front.s) front = { chain: chain.index, s: b.s };
+        head = Math.max(head, b.s);
       }
+      this.lastDestroy[chain.index] = head;
       chain.removals.push({ ids: victims.map(b => b.id), leftId: null, rightId: null, shotId: 0, depth: 1, due: until });
       total += victims.length;
     }
     if (total > 0) {
-      if (front) this.lastDestroy = front;
+      if (front) this.lastDestroyChain = front.chain;
       this.registerDestroyed(total);
       this.addScore(10 * total);
     }
@@ -1327,15 +1346,10 @@ export class ZumaEngine {
 
   // ------------------------------------------------------------------ coins
 
-  /** Next coin appears `coinMinGapTicks`..`coinMaxGapTicks` from now (RNG draw, only with treasure points). */
-  private scheduleCoin(): void {
-    const { coinMinGapTicks, coinMaxGapTicks } = this.config;
-    const span = Math.max(0, coinMaxGapTicks - coinMinGapTicks);
-    this.nextCoinTick = this.tick + coinMinGapTicks + this.rng.int(span + 1);
-  }
-
+  /** Places the coin (0x4177cf): visible `coinVisibleTicks`; the retry deadline counts from this appearance. */
   private placeCoin(point: TreasurePoint): void {
     this.coin = { id: this.nextId++, x: point.x, y: point.y, curve: point.curve, until: this.tick + this.config.coinVisibleTicks };
+    this.lastCoinTick = this.tick;
     this.emit('coin-appear', { id: this.coin.id, x: point.x, y: point.y });
   }
 
@@ -1346,32 +1360,43 @@ export class ZumaEngine {
     this.coin = null;
   }
 
-  /** A treasure point is free when no alive ball of its chain lies closer than `dist` (0 = always free). */
+  /**
+   * A treasure point is free (0x41765a–0x41777d, 0x40a900) when `dist` is 0, or when the head of its chain —
+   * the most advanced ball — has passed `dist` % of the track: ⌊100 × head / length⌋ ≥ dist. No ball → not free.
+   */
   private treasureFree(point: TreasurePoint): boolean {
     if (!(point.dist > 0)) return true;
     const chain = this.chains[Math.min(point.curve, this.chains.length - 1)];
-    for (const b of this.alive(chain)) {
-      if (b.s < 0 || b.s > chain.track.length) continue;
-      const p = chain.track.pointAt(b.s);
-      if (Math.hypot(p.x - point.x, p.y - point.y) < point.dist) return false;
-    }
-    return true;
+    if (chain.balls.length === 0 || !(chain.track.length > 0)) return false;
+    let head = -Infinity;
+    for (const b of chain.balls) if (b.s > head) head = b.s;
+    return Math.floor((100 * head) / chain.track.length) >= point.dist;
   }
 
-  /** Coin timeout and appearance (D-07); nothing runs without treasure points. */
+  /**
+   * Coins (0x417580, spike 03 Q4): a visible coin vanishes at its deadline. Otherwise, before ZUMA mode
+   * (score < target, 0x41760d) and once `coinRetryTicks` have passed since the previous appearance, one draw
+   * per tick (`Rand() % treasurefreq == 0`: 1/300 per maj ≈ 1/180 per tick); on success up to 2 × n draws of a
+   * point with replacement, the first free one gets the coin; none free → nothing, next attempt next tick.
+   * Nothing runs (no RNG) without treasure points.
+   */
   private tickCoin(): void {
     if (this.treasure.length === 0 || this.state !== 'playing') return;
     if (this.coin) {
-      if (this.tick >= this.coin.until) {
-        this.dropCoin();
-        this.scheduleCoin();
-      }
+      if (this.tick >= this.coin.until) this.dropCoin();
       return;
     }
-    if (this.tick < this.nextCoinTick) return;
-    const candidates = this.treasure.filter(p => this.treasureFree(p));
-    if (candidates.length === 0) return; // retry next tick, no draw
-    this.placeCoin(candidates[this.rng.int(candidates.length)]);
+    if (this.zumaMode) return;
+    if (this.tick - this.lastCoinTick < this.config.coinRetryTicks) return;
+    if (this.rng.next() >= this.config.coinChance) return;
+    const n = this.treasure.length;
+    for (let i = 0; i < 2 * n; i++) {
+      const point = this.treasure[this.rng.int(n)];
+      if (this.treasureFree(point)) {
+        this.placeCoin(point);
+        return;
+      }
+    }
   }
 
   // ------------------------------------------------------------ projectiles
@@ -1395,8 +1420,7 @@ export class ZumaEngine {
         this.coin = null;
         this.stats.coins++;
         this.addScore(coinPoints);
-        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints });
-        this.scheduleCoin();
+        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints }); // the retry deadline is not moved (0x4233fb)
       }
       let hit: Ball | undefined;
       let hitChain: Chain | undefined;
@@ -1538,19 +1562,22 @@ export class ZumaEngine {
   }
 
   /**
-   * Last ball destroyed in ZUMA mode (0x4288e6–0x428923, D-10): no more input, the coin is dropped,
-   * every curve pays its level bonus at once — (100 − coverage) × 100 with the board empty, hypothesis
-   * A3 — and the tally marker is set from the last explosion, aligned so that `cleanupStepPx` steps
-   * land exactly on the skull (0x421550). `steps` is bounded by the track length, so the tally
-   * always terminates.
+   * Last ball destroyed in ZUMA mode (0x4288e6–0x428923, D-10): no more input, the coin is dropped, every
+   * curve pays its level bonus at once — (100 − coverage) × 100 with the board empty, hypothesis A3 — and
+   * each chain gets a tally marker (D-30, user choice: all markers together, where research §7 reads a
+   * sequential tally with +50 maj between curves) starting from its last explosion — from the start of its
+   * track when it had none — aligned so that its `cleanupStepPx` steps land exactly on its skull (0x421550).
+   * `steps` is bounded by the track length, so the tally always terminates.
    */
   private startClearing(): void {
-    const index = this.lastDestroy?.chain ?? 0;
-    const chain = this.chains[Math.min(index, this.chains.length - 1)];
-    const length = chain.track.length;
     const { stepPx, stepTicks } = this.cleanupTiming();
-    const from = Math.max(0, Math.min(length, this.lastDestroy?.s ?? length));
-    const steps = Math.ceil((length - from) / stepPx);
+    const markers: CleanupMarker[] = this.chains.map(chain => {
+      const length = chain.track.length;
+      const from = Math.max(0, Math.min(length, this.lastDestroy[chain.index] ?? 0));
+      const steps = Math.ceil((length - from) / stepPx);
+      return { chain: chain.index, s: length - steps * stepPx, step: 0, steps };
+    });
+    const steps = markers.reduce((m, k) => Math.max(m, k.steps), 0);
     this.state = 'clearing';
     this.clearTick = this.tick;
     this.projectiles = [];
@@ -1559,10 +1586,8 @@ export class ZumaEngine {
     const bonus = this.config.levelBonus * this.chains.length;
     this.addScore(bonus);
     const { cleanupStartTicks, cleanupEndTicks } = this.config;
-    const s = length - steps * stepPx;
     this.cleanup = {
-      chain: chain.index,
-      s,
+      markers,
       step: 0,
       steps,
       nextTick: this.tick + cleanupStartTicks,
@@ -1571,30 +1596,40 @@ export class ZumaEngine {
       lastStepTick: this.tick + cleanupStartTicks + stepTicks * (steps - 1),
       endTick: steps === 0 ? this.tick + cleanupStartTicks + cleanupEndTicks : null,
     };
-    const pos = chain.track.pointAt(s);
-    this.emit('clearing', { x: pos.x, y: pos.y, chain: chain.index, levelBonus: bonus });
+    const lead = markers[Math.min(this.lastDestroyChain ?? 0, markers.length - 1)];
+    const pos = this.chains[lead.chain].track.pointAt(lead.s);
+    const list = markers.map(m => {
+      const p = this.chains[m.chain].track.pointAt(m.s);
+      return { chain: m.chain, x: p.x, y: p.y, steps: m.steps };
+    });
+    this.emit('clearing', { x: pos.x, y: pos.y, chain: lead.chain, levelBonus: bonus, markers: list });
   }
 
   /**
-   * Tally (0x421550): one step of `cleanupStepPx` at +`cleanupPoints` every `cleanupStepTicks`
-   * from `cleanupStartTicks`, a `cleanup-pop` cue every `cleanupPopTicks` while steps remain, then
-   * `won` `cleanupEndTicks` after the last step with the ACE TIME bonus computed — not credited.
+   * Tally (0x421550, D-30): at each shared step, every marker with steps left advances `cleanupStepPx`
+   * (its last step exactly on its skull) at +`cleanupPoints` and emits its `cleanup`, every `cleanupStepTicks`
+   * from `cleanupStartTicks`; one `cleanup-pop` every `cleanupPopTicks` on the shared clock while the longest
+   * marker has steps; `won` `cleanupEndTicks` after its last step, with the ACE TIME bonus computed — not credited.
    */
   private tickCleanup(): void {
     const cleanup = this.cleanup;
     if (this.state !== 'clearing' || !cleanup) return;
-    const chain = this.chains[cleanup.chain];
-    const { stepTicks, popTicks } = this.cleanupTiming();
+    const { stepPx, stepTicks, popTicks } = this.cleanupTiming();
     const EPS = 1e-9;
     if (cleanup.step < cleanup.steps && this.tick >= cleanup.nextTick - EPS) {
       cleanup.step++;
-      cleanup.s = cleanup.step === cleanup.steps ? chain.track.length : cleanup.s + this.cleanupTiming().stepPx;
       cleanup.nextTick = (this.clearTick ?? this.tick) + this.config.cleanupStartTicks + stepTicks * cleanup.step;
       const points = this.config.cleanupPoints;
-      this.cleanupScore += points;
-      this.addScore(points);
-      const pos = chain.track.pointAt(cleanup.s);
-      this.emit('cleanup', { x: pos.x, y: pos.y, points, step: cleanup.step, steps: cleanup.steps, progress: cleanup.step / cleanup.steps, chain: cleanup.chain });
+      for (const marker of cleanup.markers) {
+        if (marker.step >= marker.steps) continue;
+        const track = this.chains[marker.chain].track;
+        marker.step++;
+        marker.s = marker.step === marker.steps ? track.length : marker.s + stepPx;
+        this.cleanupScore += points;
+        this.addScore(points);
+        const pos = track.pointAt(marker.s);
+        this.emit('cleanup', { x: pos.x, y: pos.y, points, step: marker.step, steps: marker.steps, progress: marker.step / marker.steps, chain: marker.chain });
+      }
       if (cleanup.step === cleanup.steps) cleanup.endTick = this.tick + this.config.cleanupEndTicks;
     }
     if (cleanup.steps > 0 && cleanup.popNext <= cleanup.lastStepTick + EPS && this.tick >= cleanup.popNext - EPS) {
