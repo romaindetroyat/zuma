@@ -74,8 +74,8 @@ if (standalone) {
     walk(path.join(dist, 'assets'));
     const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.mo3': 'application/octet-stream' };
     const inline = Object.fromEntries(Object.entries(assets).map(([k, p]) => [k, `data:${mime[path.extname(p)] ?? 'application/octet-stream'};base64,${fs.readFileSync(p).toString('base64')}`]));
-    // Redirect fetch/Image loads of assets/* to the embedded data URLs.
-    html = html.replace('<script type="module">', `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n(function(){const map=window.__ZUMA_ASSETS__;const key=u=>String(u).replace(/^\\.?\\/?assets\\//,'');const f=window.fetch.bind(window);window.fetch=(u,o)=>{const k=key(u);return u!==undefined&&String(u).startsWith('assets/')&&map[k]?f(map[k]):f(u,o);};const d=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');Object.defineProperty(HTMLImageElement.prototype,'src',{set(v){const k=key(v);d.set.call(this,String(v).startsWith('assets/')&&map[k]?map[k]:v);},get(){return d.get.call(this);}});})();\n</script>\n<script type="module">`);
+    // src/original.ts resolves every asset path through window.__ZUMA_ASSETS__ when present.
+    html = html.replace('<script type="module">', `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n</script>\n<script type="module">`);
   }
   fs.mkdirSync(path.join(root, 'standalone'), { recursive: true });
   fs.writeFileSync(path.join(root, 'standalone', 'zuma-standalone.html'), html);

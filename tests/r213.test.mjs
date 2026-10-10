@@ -267,6 +267,10 @@ test('build output is a complete PWA shell and the publication guard passes', ()
   const html = fs.readFileSync('dist/index.html', 'utf8');
   assert.match(html, /<link rel="manifest"/);
   assert.match(html, /js\/main\.js/);
+  assert.match(html, /id="boot"/, 'boot overlay must be present for script-less previews');
+  assert.match(fs.readFileSync('dist/js/main.js', 'utf8'), /getElementById\('boot'\)/);
+  const bundler = fs.readFileSync('tools/build.mjs', 'utf8');
+  assert.doesNotMatch(bundler, /HTMLImageElement|window\.fetch\s*=/, 'standalone must not monkeypatch the platform');
   const sw = fs.readFileSync('dist/sw.js', 'utf8');
   assert.doesNotMatch(sw, /__BUILD__/);
   assert.doesNotMatch(fs.readFileSync('dist/js/main.js', 'utf8'), /__BUILD__(?!\s*:)/);

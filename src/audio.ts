@@ -4,6 +4,7 @@
  * WebAudio so the game stays audible without any proprietary file.
  */
 import type { SoundCue } from './feedback.js';
+import { assetUrl } from './original.js';
 
 interface Synth { type: OscillatorType; from: number; to: number; duration: number; gain: number; noise?: boolean }
 
@@ -39,12 +40,12 @@ export class AudioManager {
   private available = new Set<string>();
   private loading = new Set<string>();
 
-  constructor(private readonly assetBase = 'assets/sounds/') {}
+  constructor(private readonly assetBase = 'assets/') {}
 
   /** Reads the manifest produced by `build --local` to know which original sounds exist. */
   async discover(): Promise<void> {
     try {
-      const res = await fetch(`${this.assetBase}manifest.json`, { cache: 'no-store' });
+      const res = await fetch(assetUrl('sounds/manifest.json', this.assetBase), { cache: 'no-store' });
       if (!res.ok) return;
       const list = (await res.json()) as unknown;
       if (Array.isArray(list)) for (const key of list) if (typeof key === 'string') this.available.add(key);
@@ -89,7 +90,7 @@ export class AudioManager {
     if (!this.ctx || this.loading.has(key)) return;
     this.loading.add(key);
     try {
-      const res = await fetch(`${this.assetBase}${key}.ogg`);
+      const res = await fetch(assetUrl(`sounds/${key}.ogg`, this.assetBase));
       if (!res.ok) throw new Error(String(res.status));
       this.buffers.set(key, await this.ctx.decodeAudioData(await res.arrayBuffer()));
     } catch {

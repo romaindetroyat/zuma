@@ -7,6 +7,20 @@
  */
 import { Track, type Point } from './core.js';
 
+declare global {
+  interface Window { __ZUMA_ASSETS__?: Record<string, string> }
+}
+
+/**
+ * Resolves an asset path. A standalone build injects `window.__ZUMA_ASSETS__`
+ * (path → data URL); every other build reads files next to the page.
+ */
+export function assetUrl(path: string, base = 'assets/'): string {
+  const embedded = typeof window !== 'undefined' ? window.__ZUMA_ASSETS__ : undefined;
+  if (embedded && Object.prototype.hasOwnProperty.call(embedded, path)) return embedded[path];
+  return base + path;
+}
+
 export interface PackLayer { alpha: string | null; color: string | null }
 export interface PackCutout { image: string; x: number; y: number; priority: number }
 export interface PackOverlay { image: string; x: number; y: number; vx: number; vy: number }
@@ -63,7 +77,7 @@ export class OriginalPack {
 
   static async load(base = 'assets/'): Promise<OriginalPack | null> {
     try {
-      const res = await fetch(`${base}pack.json`, { cache: 'no-store' });
+      const res = await fetch(assetUrl('pack.json', base), { cache: 'no-store' });
       if (!res.ok) return null;
       const data = (await res.json()) as PackData;
       if (data.format !== 1 || !data.graphics) return null;
@@ -92,7 +106,7 @@ export class OriginalPack {
   private track(file: string): Promise<Track> {
     let p = this.curves.get(file);
     if (!p) {
-      p = fetch(this.base + file).then(async res => {
+      p = fetch(assetUrl(file, this.base)).then(async res => {
         if (!res.ok) throw new Error(`curve ${file}: ${res.status}`);
         const curve = (await res.json()) as CurveFile;
         return new Track(curve.points);
@@ -107,7 +121,7 @@ export class OriginalPack {
     const path = this.data.images[keyOrPath] ?? keyOrPath;
     let p = this.cache.get(path);
     if (!p) {
-      p = loadImage(this.base + path).catch(() => null);
+      p = loadImage(assetUrl(path, this.base)).catch(() => null);
       this.cache.set(path, p);
     }
     return p;

@@ -25,6 +25,12 @@ dt { opacity: 0.8; }
 dd { margin: 0; font-weight: bold; }
 .tip { font-size: 13px; font-style: italic; opacity: 0.85; margin: 0 0 14px; text-align: center; }
 
+/* Boot overlay: visible until the game loop starts, or forever when scripts cannot run. */
+.boot { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: var(--bg); color: var(--text); }
+.boot.hidden { display: none; }
+.boot-title { margin: 0; font-size: 28px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.boot.error #boot-message { color: #ff8a80; font-weight: bold; }
+
 /* R2.0.11 — STATS is one opaque monolithic panel: one title, one data layer, one tip, one OK. */
 .zuma-stats{display:block;background:radial-gradient(circle at 50% 0%,#4a3313 0%,#241709 60%,#160e05 100%);opacity:1}
 .zuma-stats h2{display:block}

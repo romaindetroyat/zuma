@@ -75,6 +75,7 @@ class Game {
     if (badge) badge.textContent = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
     this.loading = false;
     await this.newGame();
+    document.getElementById('boot')?.classList.add('hidden');
     requestAnimationFrame(t => this.loop(t));
   }
 
@@ -447,9 +448,24 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
   };
 }
 
+/** Shows a fatal initialisation error in the boot overlay instead of leaving a black canvas. */
+function reportBootError(error: unknown): void {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  console.error('Zuma: échec du démarrage', error);
+  const boot = document.getElementById('boot');
+  const text = document.getElementById('boot-message');
+  if (boot) boot.classList.remove('hidden');
+  if (boot) boot.classList.add('error');
+  if (text) text.textContent = `Échec du démarrage : ${message}`;
+}
+
 if (typeof document !== 'undefined' && document.getElementById('game')) {
-  const game = new Game();
-  void game.start();
+  try {
+    const game = new Game();
+    game.start().catch(reportBootError);
+  } catch (error) {
+    reportBootError(error);
+  }
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', () => { void navigator.serviceWorker.register('./sw.js'); });
   }
