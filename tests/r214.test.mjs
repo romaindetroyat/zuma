@@ -117,3 +117,73 @@ test('advancing balls roll forward, recoiling balls roll backwards', () => {
   assert.ok(rear.s > 0, 'no wrap-around over the recoil distance');
   assert.ok(rollFrame(rear.s, 50) < startFrame, `frame ${rollFrame(rear.s, 50)} < ${startFrame} after recoil`);
 });
+
+// ---------------------------------------------------------------- plan 04-06
+// Colour generation driven by the original `repeat` / `single` settings.
+
+/** Streams `count` colours from the spawn hole without moving the chain (the chain is emptied every tick). */
+const streamColours = (count, extra = {}, seed = 11) => {
+  const g = new ZumaEngine(straight(), frog, { ...quiet, ...extra, total: Number.POSITIVE_INFINITY }, seed);
+  const chain = g.chains[0];
+  const colours = [];
+  while (colours.length < count) {
+    chain.balls = [];
+    g.step();
+    for (const b of [...chain.balls].sort((a, b) => a.id - b.id)) colours.push(b.color);
+  }
+  return colours.slice(0, count);
+};
+const repeats = (colours) => colours.filter((c, i) => i > 0 && c === colours[i - 1]).length;
+const longestRun = (colours) => {
+  let best = 0;
+  let run = 0;
+  for (let i = 0; i < colours.length; i++) {
+    run = i > 0 && colours[i] === colours[i - 1] ? run + 1 : 1;
+    best = Math.max(best, run);
+  }
+  return best;
+};
+
+test('repeatChance repeats the previous colour at the configured rate and allows runs of three or more', () => {
+  assert.equal(CANDIDATE.repeatChance, 0.5);
+  assert.equal(CANDIDATE.singleChance, 0);
+  const colours = streamColours(4000, { repeatChance: 0.5, singleChance: 0, colors: 4 });
+  assert.equal(colours.length, 4000);
+  assert.ok(colours.every(c => c >= 0 && c < 4));
+  const share = repeats(colours) / (colours.length - 1);
+  assert.ok(share >= 0.46 && share <= 0.54, `immediate repeat share ${share.toFixed(3)}`);
+  assert.ok(longestRun(colours) >= 3, `longest run ${longestRun(colours)}`);
+});
+
+test('repeatChance 0 never repeats the previous colour', () => {
+  const colours = streamColours(4000, { repeatChance: 0, singleChance: 0, colors: 4 });
+  assert.equal(repeats(colours), 0);
+});
+
+test('singleChance 1 isolates every ball: no neighbour shares its colour', () => {
+  const colours = streamColours(4000, { repeatChance: 0.5, singleChance: 1, colors: 4 });
+  assert.equal(repeats(colours), 0);
+});
+
+test('singleChance injects isolated balls between runs', () => {
+  // A single is different from the ball before it and forces the next one to differ too.
+  const colours = streamColours(4000, { repeatChance: 0.9, singleChance: 0.5, colors: 4 });
+  const share = repeats(colours) / (colours.length - 1);
+  assert.ok(share < 0.9 * 0.5 + 0.05 && share > 0.9 * 0.5 - 0.1, `repeat share ${share.toFixed(3)}`);
+  assert.ok(longestRun(colours) >= 3);
+});
+
+test('colour generation is deterministic for a given seed', () => {
+  const a = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 42);
+  const b = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 42);
+  assert.deepEqual(a, b);
+  const c = streamColours(500, { repeatChance: 0.5, singleChance: 0.08, colors: 5 }, 43);
+  assert.notDeepEqual(a, c);
+});
+
+test('level 1-1 settings (repeat 50, 4 colours) show a run of three among the first 30 balls on three seeds', () => {
+  for (const seed of [1, 2, 3]) {
+    const colours = streamColours(30, { repeatChance: 0.5, singleChance: 0, colors: 4 }, seed);
+    assert.ok(longestRun(colours) >= 3, `seed ${seed}: longest run ${longestRun(colours)}`);
+  }
+});
