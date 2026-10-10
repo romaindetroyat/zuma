@@ -147,6 +147,8 @@ function parseManifest(raw: unknown): Record<string, string[]> {
 
 export class AudioManager {
   enabled = true;
+  /** « Sons » slider of the menu, 0..1 (D-24); the master gain is 0.8 × volume. `enabled` (key M) stays a separate mute. */
+  private sfxVolume = 1;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
@@ -159,6 +161,16 @@ export class AudioManager {
   private pulses = new Map<PulseKey, Pulse>();
 
   constructor(private readonly assetBase = 'assets/') {}
+
+  get volume(): number {
+    return this.sfxVolume;
+  }
+
+  /** Sets the « Sons » volume, bounded 0..1 (non-finite → 1, T-05-31), applied to the master gain at once. */
+  setVolume(v: number): void {
+    this.sfxVolume = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+    if (this.master) this.master.gain.value = 0.8 * this.volume;
+  }
 
   /** Reads the manifest produced by `build --local` and picks one playable format per key. */
   async discover(): Promise<void> {
@@ -196,7 +208,7 @@ export class AudioManager {
       if (!Ctor) return;
       this.ctx = new Ctor();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.8;
+      this.master.gain.value = 0.8 * this.volume;
       this.master.connect(this.ctx.destination);
       void this.preload();
     }

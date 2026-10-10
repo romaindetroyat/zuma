@@ -8,6 +8,7 @@ import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuState, type MenuWidgetId } from './menudialog.js';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
@@ -29,7 +30,7 @@ interface Progress { stage: number; level: number }
 const TIPS = [
   'Les balles de même couleur s\'attirent et créent des réactions en chaîne.',
   'Tirez à travers un trou dans la chaîne pour un bonus saut.',
-  'Bouton droit ou Espace pour échanger la balle courante et la suivante.',
+  'Clic droit pour échanger la balle courante et la suivante.',
   'La balle RALENTIR divise la vitesse de la chaîne par quatre.',
   'La balle RETOUR fait reculer toutes les portions de chaîne.',
   'La balle VISÉE trace votre tir et accélère le projectile.',
@@ -60,6 +61,17 @@ class Game {
   private statsTimers: number[] = [];
   /** Count-up timers (one armed at a time), purged with `statsTimers`. */
   private countTimers: number[] = [];
+  /** In-game MENU kit (D-24): the STATS kit + slider / check-box pictures, 1 × or 2 × like the STATS; null → vector dialog. */
+  private menuKitBase: MenuKit | null = null;
+  private menuKitHd: MenuKit | null = null;
+  private menuKit: MenuKit | null = null;
+  /** The composed MENU, child canvas of #menu while the menu is open. */
+  private menuCanvas: HTMLCanvasElement | null = null;
+  private menuState: MenuState = { view: 'menu', music: 0, sfx: 1, fullscreen: false, pixelated: false, hover: null, pressed: null, focus: 'back', tips: [], badge: '' };
+  /** Slider dragged with the pointer captured (only `sfx` is active). */
+  private menuDrag: MenuWidgetId | null = null;
+  /** Build badge (shown in the help view of the menu). */
+  private badge = `R${ENGINE_VERSION} · ${BUILD}`;
   private engine: ZumaEngine | null = null;
   private level: ResolvedLevel | null = null;
   private progress: Progress = { stage: 0, level: 0 };
@@ -89,9 +101,14 @@ class Game {
     this.canvas = canvas;
     this.renderer = new Renderer(canvas, null);
     try { this.pixelated = localStorage.getItem('zuma.pixelated') === '1'; } catch { /* storage unavailable */ }
+    // « Sons » volume of the menu (T-05-31): bounded 0..1 by setVolume, absent → 1.
+    try {
+      const raw = localStorage.getItem('zuma.sfx');
+      if (raw !== null) this.audio.setVolume(Number(raw));
+    } catch { /* storage unavailable */ }
     this.bindInput();
     this.bindPanels();
-    this.syncPixelsLabel();
+    this.bindMenu();
     this.bindScaling();
     this.applyScaling();
   }
@@ -114,8 +131,9 @@ class Game {
       this.renderer.resize(rect.width || WIDTH, dpr, false);
     }
     this.applyHd();
-    // The open dialog follows the new scale and assets (D-19).
+    // The open dialogs follow the new scale and assets (D-19).
     if (this.statsOpen) this.renderStats();
+    if (this.menuOpen) this.renderMenu();
   }
 
   /**
@@ -129,6 +147,9 @@ class Game {
     if (base) this.renderer.assets = hd ? (this.hdAssets ??= buildHdAssets(base)) : base;
     const kit = this.statsKitBase;
     this.statsKit = kit && hd ? (this.statsKitHd ??= upscaleStatsKit(kit)) : kit;
+    const menu = this.menuKitBase;
+    const statsHd = this.statsKitHd;
+    this.menuKit = menu && hd && statsHd ? (this.menuKitHd ??= upscaleMenuKit(menu, statsHd)) : menu;
   }
 
   private bindScaling(): void {
@@ -146,13 +167,8 @@ class Game {
   private togglePixels(): void {
     this.pixelated = !this.pixelated;
     try { localStorage.setItem('zuma.pixelated', this.pixelated ? '1' : '0'); } catch { /* storage unavailable */ }
-    this.syncPixelsLabel();
+    this.menuState.pixelated = this.pixelated;
     this.applyScaling();
-  }
-
-  private syncPixelsLabel(): void {
-    const btn = document.getElementById('menu-pixels');
-    if (btn) btn.textContent = this.pixelated ? 'Pixels nets : activés' : 'Pixels nets : désactivés';
   }
 
   async start(): Promise<void> {
@@ -162,11 +178,18 @@ class Game {
       this.strings = await this.pack.strings();
       this.baseAssets = await this.loadAssets(this.pack);
       this.applyHd();
-      // Loaded in the background: a STATS opened before the kit is ready uses the vector panel.
-      void loadStatsKit(this.pack).then(kit => { this.statsKitBase = kit; this.applyHd(); });
+      // Loaded in the background: a STATS opened before the kit is ready uses the vector panel, the menu its vector dialog.
+      const pack = this.pack;
+      void loadStatsKit(pack).then(async kit => {
+        this.statsKitBase = kit;
+        this.applyHd();
+        if (!kit) return;
+        this.menuKitBase = await loadMenuKit(pack, kit);
+        this.applyHd();
+        if (this.menuOpen) this.renderMenu();
+      });
     }
-    const badge = document.getElementById('build');
-    if (badge) badge.textContent = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
+    this.badge = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
     this.loading = false;
     await this.newGame();
     document.getElementById('boot')?.classList.add('hidden');
@@ -524,6 +547,10 @@ class Game {
     }, { passive: false });
     window.addEventListener('keydown', ev => {
       if (ev.repeat) return;
+      if (this.menuOpen) {
+        if (this.menuKey(ev.code)) ev.preventDefault();
+        return;
+      }
       if (ev.code === 'Space') { ev.preventDefault(); this.engine?.command({ kind: 'swap' }); }
       else if (ev.code === 'KeyP') this.togglePause();
       else if (ev.code === 'Escape') this.toggleMenu();
@@ -549,8 +576,6 @@ class Game {
 
   private toggleSound(): void {
     this.audio.enabled = !this.audio.enabled;
-    const btn = document.getElementById('menu-sound');
-    if (btn) btn.textContent = this.audio.enabled ? 'Son : activé' : 'Son : coupé';
   }
 
   // ----------------------------------------------------------------- panels
@@ -585,22 +610,217 @@ class Game {
       if (onOk || !this.statsOpen || !this.statsBonus || this.statsBonus.shown >= this.statsBonus.total) return;
       this.statsBonus.fast = true;
     }, { passive: true });
-    on('menu-resume', () => this.toggleMenu());
-    on('menu-new', () => { this.toggleMenu(); void this.newGame(); });
-    on('menu-sound', () => this.toggleSound());
-    on('menu-pixels', () => this.togglePixels());
-    on('menu-fullscreen', () => {
-      const root = document.documentElement;
-      if (document.fullscreenElement) void document.exitFullscreen();
-      else void root.requestFullscreen?.();
+  }
+
+  // ------------------------------------------------------------------- menu
+
+  /**
+   * In-game MENU (D-24): the OPTIONS dialog of the original in « in game » mode, composed on a canvas. Opening
+   * pauses the game first (0x44ac50 → 0x44aac0 → Board::Pause 0x4049d0) and cuts the loops; never with the STATS.
+   */
+  private toggleMenu(): void {
+    if (this.menuOpen) this.closeMenu();
+    else this.openMenu();
+  }
+
+  private openMenu(): void {
+    if (this.statsOpen || this.loading || this.menuOpen) return;
+    this.menuOpen = true;
+    this.audio.stopLoops();
+    const strings = this.menuKit?.stats.strings ?? this.strings;
+    this.menuState = {
+      view: 'menu', music: 0, sfx: this.audio.volume, fullscreen: document.fullscreenElement !== null && document.fullscreenElement !== undefined,
+      pixelated: this.pixelated, hover: null, pressed: null, focus: 'back', tips: menuTips(strings),
+      badge: this.badge,
+    };
+    this.menuDrag = null;
+    this.renderMenu();
+    document.getElementById('menu')?.classList.add('open');
+  }
+
+  private closeMenu(): void {
+    if (!this.menuOpen) return;
+    this.menuOpen = false;
+    this.menuDrag = null;
+    document.getElementById('menu')?.classList.remove('open');
+    this.menuCanvas?.remove();
+  }
+
+  /** Composes the menu at the renderer scale into the child canvas of #menu (recomposed at every state change and resize). */
+  private renderMenu(): void {
+    const host = document.getElementById('menu');
+    if (!host || !this.menuOpen) return;
+    const picture = this.menuCanvas ?? document.createElement('canvas');
+    picture.className = 'menu-picture';
+    this.menuCanvas = composeMenuDialog(this.menuKit, this.menuState, picture, this.renderer.scale);
+    if (picture.parentElement !== host) host.append(picture);
+  }
+
+  private menuStrings(): Record<string, string> | null {
+    return this.menuKit?.stats.strings ?? this.strings;
+  }
+
+  /** Logical 640 × 480 point of a pointer event over the menu (the canvas covers the stage). */
+  private menuPoint(ev: PointerEvent): Point {
+    const rect = (this.menuCanvas ?? this.canvas).getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return { x: -1, y: -1 };
+    return { x: ((ev.clientX - rect.left) / rect.width) * WIDTH, y: ((ev.clientY - rect.top) / rect.height) * HEIGHT };
+  }
+
+  /** Pointer on #menu: hover, press, slider drag (pointer captured), activation on release over the pressed widget. */
+  private bindMenu(): void {
+    const host = document.getElementById('menu');
+    if (!host) return;
+    host.addEventListener('contextmenu', ev => ev.preventDefault());
+    host.addEventListener('pointermove', ev => {
+      if (!this.menuOpen) return;
+      const p = this.menuPoint(ev);
+      const widgets = menuWidgets(this.menuState.view, this.menuStrings());
+      if (this.menuDrag === 'sfx') {
+        const sfx = widgets.find(w => w.id === 'sfx');
+        if (sfx) this.setSfx(sliderValue(sfx.rect, p.x), false);
+      }
+      const hover = hitMenu(widgets, p.x, p.y)?.id ?? null;
+      if (hover !== this.menuState.hover) {
+        this.menuState.hover = hover;
+        if (hover) this.menuState.focus = hover; // the focus follows the pointer: one lit widget at a time
+        this.renderMenu();
+      }
+    });
+    host.addEventListener('pointerdown', ev => {
+      if (!this.menuOpen) return;
+      ev.preventDefault();
+      this.audio.unlock();
+      if (ev.button !== 0) return;
+      const p = this.menuPoint(ev);
+      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings()), p.x, p.y);
+      if (!w) return;
+      this.menuState.pressed = w.id;
+      this.menuState.focus = w.id;
+      if (w.kind === 'slider') {
+        this.menuDrag = w.id;
+        try { host.setPointerCapture(ev.pointerId); } catch { /* not capturable */ }
+        if (w.id === 'sfx') this.setSfx(sliderValue(w.rect, p.x), false);
+      }
+      this.renderMenu();
+    });
+    const release = (ev: PointerEvent): void => {
+      if (!this.menuOpen) return;
+      const p = this.menuPoint(ev);
+      const pressed = this.menuState.pressed;
+      const dragged = this.menuDrag;
+      this.menuState.pressed = null;
+      this.menuDrag = null;
+      if (dragged === 'sfx') this.setSfx(this.audio.volume, true);
+      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings()), p.x, p.y);
+      if (pressed && w && w.id === pressed && w.kind !== 'slider') this.menuActivate(w.id);
+      else this.renderMenu();
+    };
+    host.addEventListener('pointerup', release);
+    host.addEventListener('pointercancel', () => { this.menuState.pressed = null; this.menuDrag = null; if (this.menuOpen) this.renderMenu(); });
+    host.addEventListener('pointerleave', () => {
+      if (!this.menuOpen || this.menuDrag || this.menuState.hover === null) return;
+      this.menuState.hover = null;
+      this.renderMenu();
+    });
+    document.addEventListener('fullscreenchange', () => {
+      this.menuState.fullscreen = !!document.fullscreenElement;
+      if (this.menuOpen) this.renderMenu();
     });
   }
 
-  private toggleMenu(): void {
-    if (this.statsOpen) return;
-    this.menuOpen = !this.menuOpen;
-    if (this.menuOpen) this.audio.stopLoops();
-    document.getElementById('menu')?.classList.toggle('open', this.menuOpen);
+  /** « Sons »: master volume 0..1, persisted as zuma.sfx when `persist` (T-05-31). */
+  private setSfx(value: number, persist: boolean): void {
+    this.audio.setVolume(value);
+    this.menuState.sfx = this.audio.volume;
+    if (persist) {
+      try { localStorage.setItem('zuma.sfx', String(this.audio.volume)); } catch { /* storage unavailable */ }
+    }
+    this.renderMenu();
+  }
+
+  /**
+   * Action of a menu widget (pointer release or Enter / Space on the focused widget). « Retour au menu principal »
+   * asks LEAVE_GAME_? / QUIT_THE_GAME_? then starts a new game: there is no main menu before phase 6.
+   */
+  private menuActivate(id: MenuWidgetId): void {
+    const state = this.menuState;
+    const button = id === 'help' || id === 'main-menu' || id === 'back' || id === 'help-done' || id === 'leave' || id === 'cancel';
+    if (button) this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    switch (id) {
+      case 'fullscreen': {
+        // Called from a user gesture (pointerup / keydown), guarded (T-05-32).
+        try {
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+          else void document.documentElement.requestFullscreen?.().catch(() => undefined);
+        } catch { /* fullscreen unavailable */ }
+        break;
+      }
+      case 'pixels':
+        this.togglePixels();
+        break;
+      case 'help':
+        state.view = 'help';
+        state.focus = 'help-done';
+        break;
+      case 'help-done':
+        state.view = 'menu';
+        state.focus = 'help';
+        break;
+      case 'main-menu':
+        state.view = 'confirm';
+        state.focus = 'cancel';
+        break;
+      case 'cancel':
+        state.view = 'menu';
+        state.focus = 'main-menu';
+        break;
+      case 'leave':
+        this.closeMenu();
+        void this.newGame();
+        return;
+      case 'back':
+        this.closeMenu();
+        return;
+      default:
+        break; // sliders: driven by the pointer or Left / Right
+    }
+    state.hover = null;
+    this.renderMenu();
+  }
+
+  /**
+   * Keyboard while the menu is open: Escape closes (or returns to the menu view from help / confirm), Enter / Space
+   * activate the focused widget (initial focus « Retour à la partie »), Up / Down move the focus over the enabled
+   * widgets, Left / Right change « Sons » by 0.1. Returns true when the key was handled.
+   */
+  private menuKey(code: string): boolean {
+    const state = this.menuState;
+    const widgets = menuWidgets(state.view, this.menuStrings()).filter(w => w.enabled);
+    if (code === 'Escape') {
+      if (state.view === 'help') this.menuActivate('help-done');
+      else if (state.view === 'confirm') this.menuActivate('cancel');
+      else this.closeMenu();
+      return true;
+    }
+    if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+      const focus = widgets.find(w => w.id === state.focus) ?? widgets[widgets.length - 1];
+      if (focus) this.menuActivate(focus.id);
+      return true;
+    }
+    if (code === 'ArrowUp' || code === 'ArrowDown') {
+      const i = widgets.findIndex(w => w.id === state.focus);
+      const step = code === 'ArrowDown' ? 1 : -1;
+      const next = widgets[((i < 0 ? 0 : i + step) + widgets.length) % widgets.length];
+      state.focus = next?.id ?? null;
+      this.renderMenu();
+      return true;
+    }
+    if ((code === 'ArrowLeft' || code === 'ArrowRight') && state.view === 'menu') {
+      this.setSfx(Math.round((this.audio.volume + (code === 'ArrowRight' ? 0.1 : -0.1)) * 10) / 10, true);
+      return true;
+    }
+    return false;
   }
 
   private statsOutcome: 'live' | 'won' | 'lost' | 'gameover' = 'live';
@@ -837,6 +1057,12 @@ function readBestTime(key: string): number | null {
   } catch {
     return null;
   }
+}
+
+/** The original tips for the help view of the menu (`&cr;` kept, wrapped as a space), else the built-in ones. */
+function menuTips(strings: Record<string, string> | null): string[] {
+  const pool = strings ? TIP_KEYS.map(k => strings[k]).filter((t): t is string => typeof t === 'string' && t.length > 0) : [];
+  return pool.length > 0 ? pool : TIPS;
 }
 
 /** An original tip (strings.json, `&cr;` → space) when the kit is loaded, else one of the built-in tips. */

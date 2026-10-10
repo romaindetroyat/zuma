@@ -3,7 +3,7 @@ const VERSION = '__BUILD__';
 const CACHE = `zuma-${VERSION}`;
 const SHELL = [
   './', './index.html', './public/style.css', './public/manifest.webmanifest', './public/icon.svg',
-  './js/core.js', './js/feedback.js', './js/levels.js', './js/audio.js', './js/upscale.js', './js/original.js', './js/bitmapfont.js', './js/statsdialog.js', './js/render.js', './js/main.js',
+  './js/core.js', './js/feedback.js', './js/levels.js', './js/audio.js', './js/upscale.js', './js/original.js', './js/bitmapfont.js', './js/statsdialog.js', './js/render.js', './js/menudialog.js', './js/main.js',
 ];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));

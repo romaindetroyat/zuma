@@ -29,7 +29,7 @@ fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(path.join(dist, 'js'), { recursive: true });
 fs.mkdirSync(path.join(dist, 'public'), { recursive: true });
 
-const MODULES = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'main'];
+const MODULES = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'];
 for (const name of MODULES) {
   const src = fs.readFileSync(path.join(compiled, `${name}.js`), 'utf8').replace(/__BUILD__/g, JSON.stringify(build));
   fs.writeFileSync(path.join(dist, 'js', `${name}.js`), src);
