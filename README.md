@@ -1,5 +1,9 @@
 # Zuma PWA
 
+Baseline: **R2.0.12**.
+
+# Zuma PWA
+
 Reconstruction web/PWA expérimentale d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
 ## Baseline
