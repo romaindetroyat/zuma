@@ -8,14 +8,23 @@
  * propagated from segment to segment, attraction that only reconnects after
  * physical contact, immutable projectile colour, the four power-up families,
  * coins on the treasure points (one at a time, clearance by `dist`, grabbed by a
- * projectile without breaking the streak) and the end-of-level tally that walks
- * from the last explosion to the skull before the time and level bonuses.
+ * projectile without breaking the streak), and — from R2.0.16, transcribed from
+ * the original executable (05-RESEARCH.md) — the pusher kinematics (±50 / 1000
+ * px/s² ramp, 24-tick stop after an insertion into the rear segment, end-of-track
+ * slow zone), the computed fast feed from `start` % with « PARTEZ » on the speed
+ * condition and the level clock from `go`, the `repeat` / `single` colour
+ * generation, the per-tick ammo refresh, the conditional ZUMA rollback (> 50 %
+ * coverage) and the end-of-level tally (60 px / 2.4 ticks / +100, level bonus per
+ * curve at clearing, ACE TIME bonus credited by the STATS count-up).
+ *
+ * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
+ * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
  *
  * A level may run several chains at once (the original "dual" boards); the
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.15';
+export const ENGINE_VERSION = '2.0.16';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {

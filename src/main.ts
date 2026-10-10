@@ -1,5 +1,5 @@
 /** Browser entry point: game flow, input, HUD/STATS panels and PWA wiring. */
-import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, type EngineConfig, type GameEvent, type Point } from './core.js';
+import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
 import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
@@ -198,15 +198,16 @@ class Game {
       const settings = this.pack.settings(stage.settings[idx]);
       if (graphics && graphics.curveFiles.length > 0) {
         const tracks = await this.pack.tracks(graphics);
+        const config = configFromSettings(settings, this.progress.stage, tracks.length);
         return {
           id: graphics.id,
           label: `${this.progress.stage + 1}-${idx + 1}`,
           name: graphics.name,
           tracks,
           frog: graphics.frog,
-          config: configFromSettings(settings, this.progress.stage),
+          config,
           graphics,
-          parTime: settings?.partime ?? null,
+          parTime: config.parTime ?? null,
         };
       }
     }
@@ -715,39 +716,58 @@ function pickTip(strings: Record<string, string> | null): string {
 export { formatSeconds } from './statsdialog.js';
 
 /**
- * Maps original level settings (100 Hz update units) onto the engine configuration.
- * Interpretation (documented in README « Réglages originaux »): `score` = points to fill the
- * gauge (ZUMA mode), `repeat` = % chance of repeating the previous colour, `single` = % chance
- * of an isolated ball. The level bonus stays a fixed 1000 points: `score` is an objective, not a bonus.
- * `partime` = expert time (s) shown as OBJECTIF and used for the time bonus; `zumaslow` / `zumaback`
- * (100 Hz steps) × 0.6 → ticks of slowdown / rollback when the ZUMA mode starts (hypotheses, README).
+ * Maps original level settings onto the engine configuration (README « Réglages originaux »).
+ * Units: the original simulates at 100 Hz (1 maj = 10 ms); px/maj × 100 = px/s, maj × 0.6 = ticks.
+ * `speed` px/maj → px/s; `start` % of the curve length → `startFraction`; `repeat` → `(repeat + 1) / 100`
+ * (hypothesis A1: the pack's last duplicated attribute wins); `single` → `singleLimit` (repair
+ * threshold, 10 = off); `slowfactor` / `slowspeed` (→ speed / slowspeed) → `endSlowFactor` of the
+ * end-of-track slow zone (the SLOW power-up keeps `CANDIDATE.slowFactor`); `danger` / `slowdistance`
+ * → px; `zumaback` / `zumaslow` (300 / 1100 maj by default) → ticks; `partime` (s) or, when absent,
+ * `defaultParTime(score, curves)` (hypothesis A7); `score` → `target` and `coinPoints` =
+ * max(500, 100 × ⌊score / 600⌋); `levelBonus` 10 000 per curve (hypothesis A3).
+ * Every value is untrusted pack data (T-05-13): finite, bounded, defaulted.
  */
-export function configFromSettings(settings: PackSettings | undefined, stage: number): Partial<EngineConfig> {
-  const s = settings ?? { id: 'default' };
-  const colors = s.colors ?? (stage < 3 ? 4 : stage < 6 ? 5 : 6);
-  const powerfreq = s.powerfreq ?? 3000;
-  // T-05-11: pack numbers are untrusted — finite, non-negative, 100 Hz steps × 0.6 → 60 Hz ticks.
-  const ticks = (steps: unknown): number => {
-    const v = Number(steps);
-    return Number.isFinite(v) && v > 0 ? Math.round(v * 0.6) : 0;
+export function configFromSettings(settings: PackSettings | undefined, stage: number, curves = 1): Partial<EngineConfig> {
+  const s: PackSettings = settings ?? { id: 'default' };
+  const num = (v: unknown, fallback: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
   };
-  const parTime = Number(s.partime);
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+  /** 100 Hz steps × 0.6 → 60 Hz ticks; absent or non-finite → `fallback` steps, negative → 0. */
+  const ticks = (v: unknown, fallback: number): number => {
+    const steps = num(v, fallback);
+    return steps > 0 ? Math.round(steps * 0.6) : 0;
+  };
+  const nonNeg = (v: unknown, fallback: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  const colors = num(s.colors, stage < 3 ? 4 : stage < 6 ? 5 : 6);
+  const powerfreq = num(s.powerfreq, 3000);
+  const speed = num(s.speed, 0.5); // px/maj
+  const target = num(s.score, 1000);
+  const slowspeed = num(s.slowspeed, 0);
+  const partime = num(s.partime, 0);
   return {
-    colors: Math.max(3, Math.min(6, colors)),
-    startFraction: Math.max(0, Math.min(1, (s.start ?? 40) / 100)), // interim: Task 5 rewrites configFromSettings
+    colors: clamp(Math.trunc(colors), 3, 6),
+    startFraction: clamp(num(s.start, 40) / 100, 0, 1),
     total: Number.POSITIVE_INFINITY,
-    target: s.score ?? 1000,
-    repeatChance: Math.max(0, Math.min(1, (s.repeat ?? 50) / 100)),
-    singleLimit: Math.trunc(Math.max(0, Math.min(10, s.single ?? 10))), // interim: Task 5 rewrites configFromSettings
-    speed: (s.speed ?? 0.5) * 100,
-    slowFactor: Math.max(1, s.slowfactor ?? 4),
-    projectileSpeed: ((s.firespeed ?? 6) * 100) / 60,
+    target,
+    repeatChance: clamp((num(s.repeat, 40) + 1) / 100, 0, 1),
+    singleLimit: Math.trunc(clamp(num(s.single, 10), 0, 10)),
+    speed: speed * 100,
+    endSlowFactor: slowspeed > 0 ? Math.max(1, speed / slowspeed) : Math.max(1, num(s.slowfactor, 4)),
+    dangerDistance: nonNeg(s.danger, 600),
+    slowDistance: nonNeg(s.slowdistance, 500),
+    projectileSpeed: (num(s.firespeed, 6) * 100) / 60,
     powerGuardTicks: Math.round(powerfreq * 0.3),
     powerChance: 1 / Math.max(60, powerfreq * 0.3),
-    levelBonus: 1000,
-    parTime: Number.isFinite(parTime) && parTime > 0 ? parTime : 0,
-    zumaBackTicks: ticks(s.zumaback),
-    zumaSlowTicks: ticks(s.zumaslow),
+    levelBonus: 10000,
+    parTime: partime > 0 ? partime : defaultParTime(target, curves),
+    coinPoints: Math.max(500, 100 * Math.floor(target / 600)),
+    zumaBackTicks: ticks(s.zumaback, 300),
+    zumaSlowTicks: ticks(s.zumaslow, 1100),
   };
 }
 
