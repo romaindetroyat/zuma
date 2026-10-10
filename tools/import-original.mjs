@@ -267,6 +267,13 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
       if (copied) images[stem.toLowerCase()] = `images/${copied}`;
     }
   }
+  // Measured layout of the painted STATS values (fractions of stats_bg): copied as-is.
+  let statsLayout = null;
+  const layoutSrc = path.join(extraDir, 'stats_layout.json');
+  if (images.stats_bg && fs.existsSync(layoutSrc)) {
+    fs.copyFileSync(layoutSrc, path.join(out, 'stats_layout.json'));
+    statsLayout = 'stats_layout.json';
+  }
 
   const pack = {
     format: 1,
@@ -278,6 +285,7 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     stages,
     sounds,
     images,
+    statsLayout,
     music: music ? 'zuma' + path.extname(music).toLowerCase() : null,
   };
   fs.writeFileSync(path.join(out, 'pack.json'), JSON.stringify(pack, null, 1));

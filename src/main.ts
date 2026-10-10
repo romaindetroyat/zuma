@@ -3,7 +3,7 @@ import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, type EngineConfig, type G
 import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels } from './audio.js';
-import { OriginalPack, tintSheet, type PackGraphics, type PackSettings } from './original.js';
+import { OriginalPack, tintSheet, type PackGraphics, type PackSettings, type StatsArt } from './original.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
@@ -37,6 +37,10 @@ class Game {
   private readonly renderer: Renderer;
   private readonly audio = new AudioManager();
   private pack: OriginalPack | null = null;
+  /** Original STATS dialog (cleaned picture + measured slots); null → vector STATS panel. */
+  private statsArt: StatsArt | null = null;
+  private statsArtApplied = false;
+  private statsTimers: number[] = [];
   private engine: ZumaEngine | null = null;
   private level: ResolvedLevel | null = null;
   private progress: Progress = { stage: 0, level: 0 };
@@ -121,7 +125,11 @@ class Game {
   async start(): Promise<void> {
     this.pack = await OriginalPack.load();
     await this.audio.discover();
-    if (this.pack) this.renderer.assets = await this.loadAssets(this.pack);
+    if (this.pack) {
+      this.renderer.assets = await this.loadAssets(this.pack);
+      // Cleaned in the background: the first STATS opened before it is ready uses the vector panel.
+      void this.pack.statsArt().then(art => { this.statsArt = art; });
+    }
     const badge = document.getElementById('build');
     if (badge) badge.textContent = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
     this.loading = false;
@@ -495,45 +503,95 @@ class Game {
       this.best = engine.score;
       try { localStorage.setItem('zuma.best', String(this.best)); } catch { /* storage unavailable */ }
     }
-    const title = document.getElementById('stats-title');
+    const title = document.getElementById('results-title');
     if (title) {
-      title.textContent = outcome === 'won' ? 'Niveau terminé' : outcome === 'lost' ? 'Vie perdue' : outcome === 'gameover' ? 'Partie terminée' : 'Statistiques';
+      title.textContent = outcome === 'won' ? 'NIVEAU TERMINÉ' : outcome === 'lost' ? 'VIE PERDUE' : outcome === 'gameover' ? 'PARTIE TERMINÉE' : 'STATISTIQUES';
     }
     const s = engine.stats;
     const seconds = Math.round(engine.tick / engine.config.tickHz);
-    const accuracy = s.shots ? Math.round((100 * s.hits) / s.shots) : 0;
-    const rows: Array<[string, string]> = [
-      ['Niveau', `${this.level?.label ?? ''} · ${this.level?.name ?? ''}`],
-      ['Score', String(engine.score)],
-      ['Meilleur score', String(this.best)],
-      ['Tirs', `${s.shots} (${accuracy} % utiles)`],
-      ['Groupes détruits', `${s.matches} · ${s.destroyed} balles`],
-      ['Enchaînement max', `x${s.maxCombo}`],
-      ['Série max', `x${s.maxStreak}`],
-      ['Bonus saut', String(s.gaps)],
-      ['Power-ups', `Bombe ${s.powers.bomb} · Ralentir ${s.powers.slow} · Retour ${s.powers.backwards} · Visée ${s.powers.accuracy}`],
-      ['Temps', `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, '0')} s${this.level?.parTime ? ` (par ${this.level.parTime} s)` : ''}`],
-      ['Vies restantes', String(Math.max(0, engine.lives))],
-    ];
-    const list = document.getElementById('stats-data');
-    if (list) {
-      list.replaceChildren(...rows.flatMap(([k, v]) => {
-        const dt = document.createElement('dt');
-        dt.textContent = k;
-        const dd = document.createElement('dd');
-        dd.textContent = v;
-        return [dt, dd];
-      }));
+    const parTime = this.level?.parTime ?? null;
+    const values: Record<string, string> = {
+      'result-points': String(engine.score),
+      'result-combo': String(s.combos),
+      'result-coins': '0',
+      'result-gaps': String(s.gaps),
+      'result-chain': String(s.maxStreak),
+      'result-combo-max': String(s.maxCombo),
+      'result-time': formatSeconds(seconds),
+      'result-objective': parTime ? formatSeconds(Math.round(parTime)) : '—',
+      // The original prints « PAS DE BONUS »; « AUCUN » keeps the live value inside the painted frame.
+      'result-expert': outcome === 'won' ? `+${engine.config.levelBonus}` : 'AUCUN',
+      'result-record': String(this.best),
+    };
+    for (const [id, text] of Object.entries(values)) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
     }
-    const tip = document.getElementById('stats-tip');
+    const tip = document.getElementById('stats-tip-text');
     if (tip) tip.textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
     const ok = document.getElementById('result-continue');
     if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : outcome === 'gameover' ? 'Nouvelle partie' : 'OK';
-    document.getElementById('stats')?.classList.add('open');
+    const panel = document.getElementById('stats');
+    const original = this.statsArt !== null;
+    panel?.classList.toggle('stats-original', original);
+    if (this.statsArt) this.layoutOriginalStats(this.statsArt);
+    panel?.classList.add('open');
+    if (original) this.revealStats();
+  }
+
+  /**
+   * Lays the live values inside the original dialog: the cleaned picture as inline
+   * background, each `strong#result-*` on the band of the erased digits (right-aligned,
+   * painted colour, size relative to the stage height) and the OK control on the painted button.
+   */
+  private layoutOriginalStats(art: StatsArt): void {
+    if (this.statsArtApplied) return;
+    const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
+    if (!dialog) return;
+    dialog.style.backgroundImage = `url("${art.url}")`;
+    const pct = (v: number): string => `${(v * 100).toFixed(2)}%`;
+    for (const [key, id] of Object.entries(STATS_SLOT_IDS)) {
+      const slot = art.layout.slots[key];
+      const el = document.getElementById(id);
+      if (!slot || !el) continue;
+      const { box } = slot;
+      el.style.left = pct(box.x);
+      el.style.right = pct(1 - box.x - box.w);
+      el.style.top = pct(box.y);
+      el.style.height = pct(box.h);
+      el.style.fontSize = `${(slot.fontSize * 100).toFixed(2)}cqh`;
+      el.style.color = slot.color;
+      el.style.justifyContent = slot.align === 'left' ? 'flex-start' : 'flex-end';
+    }
+    const ok = document.getElementById('result-continue');
+    if (ok) {
+      ok.style.left = pct(art.layout.ok.x);
+      ok.style.top = pct(art.layout.ok.y);
+      ok.style.width = pct(art.layout.ok.w);
+      ok.style.height = pct(art.layout.ok.h);
+    }
+    this.statsArtApplied = true;
+  }
+
+  /** Progressive reveal of the live values (90 ms per line), as in the reference build. */
+  private revealStats(): void {
+    this.clearStatsReveal();
+    Object.values(STATS_SLOT_IDS).forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      this.statsTimers.push(window.setTimeout(() => el.classList.add('stats-reveal'), 90 * (i + 1)));
+    });
+  }
+
+  private clearStatsReveal(): void {
+    for (const t of this.statsTimers) clearTimeout(t);
+    this.statsTimers = [];
+    for (const id of Object.values(STATS_SLOT_IDS)) document.getElementById(id)?.classList.remove('stats-reveal');
   }
 
   private async closeStats(): Promise<void> {
     document.getElementById('stats')?.classList.remove('open');
+    this.clearStatsReveal();
     this.statsOpen = false;
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
@@ -541,6 +599,26 @@ class Game {
     else if (outcome === 'lost') await this.retryLevel();
     else if (outcome === 'gameover') await this.newGame();
   }
+}
+
+/** Layout slot keys (stats_layout.json) → ids of the R2.0.12 STATS structure, in reveal order. */
+const STATS_SLOT_IDS: Record<string, string> = {
+  points: 'result-points',
+  combos: 'result-combo',
+  coins: 'result-coins',
+  gaps: 'result-gaps',
+  chain: 'result-chain',
+  comboMax: 'result-combo-max',
+  time: 'result-time',
+  objective: 'result-objective',
+  bonus: 'result-expert',
+  record: 'result-record',
+};
+
+/** « 29 s » under a minute, « 1:42 » beyond, like the original dialog. */
+export function formatSeconds(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 /** Maps original level settings (100 Hz update units) onto the engine configuration. */

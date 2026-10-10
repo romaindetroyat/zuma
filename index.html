@@ -32,12 +32,30 @@
     </div>
   </section>
   <section id="stats" class="overlay" aria-label="Statistiques">
-    <div class="panel zuma-stats">
-      <h2 id="stats-title">Statistiques</h2>
-      <dl id="stats-data"></dl>
-      <p id="stats-tip" class="tip"></p>
+    <section class="panel zuma-stats" aria-labelledby="results-title">
+      <div class="stats-idol" aria-hidden="true">☼</div>
+      <h2 id="results-title">STATISTIQUES</h2>
+      <div class="stats-columns">
+        <div class="stats-left">
+          <div><span>POINTS</span><strong id="result-points">0</strong></div>
+          <div><span>COMBOS</span><strong id="result-combo">0</strong></div>
+          <div><span>PIÈCES</span><strong id="result-coins">0</strong></div>
+          <div><span>SAUTS</span><strong id="result-gaps">0</strong></div>
+          <div><span>ENCH. MAX.</span><strong id="result-chain">0</strong></div>
+          <div><span>COMBO MAX.</span><strong id="result-combo-max">0</strong></div>
+        </div>
+        <div class="stats-right">
+          <div><span>TEMPS</span><strong id="result-time">—</strong></div>
+          <div><span>OBJECTIF</span><strong id="result-objective">—</strong></div>
+          <div class="stats-rule"></div>
+          <div><span>BONUS</span><strong id="result-expert">AUCUN</strong></div>
+          <div class="stats-gap"></div>
+          <div><span>RECORD</span><strong id="result-record">—</strong></div>
+        </div>
+      </div>
+      <p id="stats-tip" class="stats-tip"><b>ASTUCE</b> <span id="stats-tip-text"></span></p>
       <button id="result-continue" class="stats-ok" type="button">OK</button>
-    </div>
+    </section>
   </section>
 </main>
 <script type="module" src="js/main.js"></script>

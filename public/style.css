@@ -41,3 +41,29 @@ dd { margin: 0; font-weight: bold; }
 .zuma-stats dl{display:grid}
 .zuma-stats .tip{display:block}
 .stats-ok{display:block;width:100%;background:linear-gradient(#f0b429,#c98a12);color:#1a1004}
+
+/* R2.0.14 — STATS keeps the reference structure (columns, rule, gap, tip, one OK) in vector mode… */
+.stats-idol{display:none}
+.stats-columns{display:grid;grid-template-columns:1fr 1fr;gap:4px 28px;margin:0 0 12px;font-size:14px}
+.stats-left>div,.stats-right>div{display:flex;justify-content:space-between;gap:16px;line-height:1.6;white-space:nowrap}
+.stats-columns span{opacity:.8}
+.stats-columns strong{font-variant-numeric:lining-nums tabular-nums}
+.stats-rule{height:1px;margin:5px 0;background:var(--panel-edge);opacity:.6}
+.stats-gap{height:6px}
+.stats-tip{margin:0 0 14px;font-size:13px;text-align:center;opacity:.85}
+.stats-tip b{color:var(--accent)}
+
+/* …and, with the private pack, becomes the original dialog itself: the cleaned picture fills the
+   stage (inline background set by main.ts), its painted title, labels, tip and OK stay visible,
+   the structure's own texts are hidden, and only the live values are written inside the frames
+   at the positions of the erased digits. No superimposed panel. */
+#stats.stats-original{background:transparent;container-type:size}
+#stats.stats-original .zuma-stats{position:absolute;inset:0;min-width:0;max-width:none;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;background-size:100% 100%;background-repeat:no-repeat;overflow:hidden;font-family:Georgia,"Times New Roman",serif;animation:statsIn .32s ease-out}
+#stats.stats-original .zuma-stats h2,#stats.stats-original .stats-columns span,#stats.stats-original .stats-tip,#stats.stats-original .stats-rule,#stats.stats-original .stats-gap{opacity:0;pointer-events:none}
+#stats.stats-original .stats-columns{position:absolute;inset:0;display:block;margin:0}
+#stats.stats-original .stats-columns strong{position:absolute;display:flex;align-items:center;justify-content:flex-end;margin:0;line-height:1;font-weight:700;white-space:nowrap;letter-spacing:.01em;text-shadow:.03em .03em 0 #0d0b05,.06em .06em 0 #0d0b05;opacity:0;transform:translateY(.1em);transition:opacity .18s ease,transform .18s ease}
+#stats.stats-original .stats-columns strong.stats-reveal{opacity:1;transform:none}
+#stats.stats-original .stats-ok{position:absolute;width:auto;margin:0;padding:0;border:0;border-radius:.8cqw;background:transparent;color:transparent;font-size:0;box-shadow:none;cursor:pointer;outline-offset:2px}
+#stats.stats-original .stats-ok:hover,#stats.stats-original .stats-ok:focus-visible{background:rgba(255,255,230,.14);backdrop-filter:brightness(1.15)}
+#stats.stats-original .stats-ok:active{background:rgba(0,0,0,.18);backdrop-filter:none}
+@keyframes statsIn{from{opacity:0}to{opacity:1}}

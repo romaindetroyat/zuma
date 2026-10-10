@@ -59,9 +59,36 @@ export interface PackData {
   stages: Array<{ levels: string[]; settings: string[] }>;
   sounds: string[];
   images: Record<string, string>;
+  /** Measured layout of the painted STATS dialog values (`stats_layout.json`), when `images.stats_bg` exists. */
+  statsLayout?: string | null;
   music: string | null;
 }
 export interface CurveFile { version: number; controls: number[][]; points: Array<[number, number, number]> }
+
+/** Rectangle in fractions of the STATS picture (x, w of its width; y, h of its height). */
+export interface LayoutRect { x: number; y: number; w: number; h: number }
+export interface StatsSlot {
+  /** Band where the live value is written (right-aligned on the painted right edge). */
+  box: LayoutRect;
+  /** Painted digits (with their drop shadow) to erase. */
+  erase: LayoutRect;
+  /** Clean texture of the same size cloned over `erase`. */
+  patch: LayoutRect;
+  align: 'left' | 'right';
+  color: string;
+  /** Font size as a fraction of the picture height. */
+  fontSize: number;
+}
+export interface StatsLayout {
+  format: number;
+  image: { width: number; height: number };
+  hudStrip: LayoutRect;
+  title: LayoutRect;
+  ok: LayoutRect;
+  slots: Record<string, StatsSlot>;
+}
+/** The original STATS dialog, cleaned of its baked values and HUD strip, ready to lay live values on. */
+export interface StatsArt { canvas: HTMLCanvasElement; layout: StatsLayout; url: string }
 
 export type Bitmap = HTMLCanvasElement | HTMLImageElement;
 
@@ -154,6 +181,35 @@ export class OriginalPack {
       for (let i = 0; i < d.length; i += 4) if (d[i] === kr && d[i + 1] === kg && d[i + 2] === kb) d[i + 3] = 0;
       ctx.putImageData(pixels, 0, 0);
       return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Original STATS dialog (`stats_bg`) with every painted value erased by cloning the
+   * neighbouring panel texture (feathered 2 px seam) and the baked HUD strip made
+   * transparent so the live canvas HUD shows through. Null without picture or layout.
+   */
+  async statsArt(): Promise<StatsArt | null> {
+    const file = this.data.statsLayout;
+    if (!file || !this.data.images.stats_bg) return null;
+    const [image, layout] = await Promise.all([this.image('stats_bg'), this.json<StatsLayout>(file)]);
+    if (!image || !layout || !layout.slots || !layout.hudStrip) return null;
+    try {
+      const canvas = cleanStats(image, layout);
+      if (!canvas) return null;
+      return { canvas, layout, url: await bitmapUrl(canvas) };
+    } catch {
+      return null;
+    }
+  }
+
+  private async json<T>(file: string): Promise<T | null> {
+    try {
+      const res = await fetch(assetUrl(file, this.base));
+      if (!res.ok) return null;
+      return (await res.json()) as T;
     } catch {
       return null;
     }
@@ -263,6 +319,46 @@ export function applyMask(color: Bitmap, alpha: Bitmap, tile: boolean): HTMLCanv
   for (let i = 0; i < data.length; i += 4) data[i + 3] = mask[i];
   ctx.putImageData(pixels, 0, 0);
   return out;
+}
+
+/**
+ * Copies `patch` over `erase` for every slot, then clears the HUD strip. The clone is
+ * drawn in three passes (4 px and 2 px wider at reduced alpha, then opaque) so the seam
+ * fades into the surrounding texture instead of showing a step. Nothing else is painted.
+ */
+export function cleanStats(image: Bitmap, layout: StatsLayout): HTMLCanvasElement | null {
+  const W = image.width;
+  const H = image.height;
+  const out = canvasOf(W, H);
+  const ctx = out.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(image, 0, 0, W, H);
+  const px = (r: LayoutRect) => ({ x: Math.round(r.x * W), y: Math.round(r.y * H), w: Math.round(r.w * W), h: Math.round(r.h * H) });
+  const passes: Array<[number, number]> = [[4, 0.35], [2, 0.6], [0, 1]];
+  for (const slot of Object.values(layout.slots)) {
+    const e = px(slot.erase);
+    const p = px(slot.patch);
+    if (e.w <= 0 || e.h <= 0 || p.w <= 0 || p.h <= 0) continue;
+    for (const [k, alpha] of passes) {
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(image, p.x - k, p.y - k, p.w + 2 * k, p.h + 2 * k, e.x - k, e.y - k, e.w + 2 * k, e.h + 2 * k);
+    }
+  }
+  ctx.globalAlpha = 1;
+  const hud = px(layout.hudStrip);
+  if (hud.w > 0 && hud.h > 0) ctx.clearRect(hud.x, hud.y, hud.w, hud.h);
+  return out;
+}
+
+/** Object URL of the canvas as PNG (data URL when `toBlob` is unavailable): keeps a 1445×1089 picture out of the style attribute. */
+function bitmapUrl(canvas: HTMLCanvasElement): Promise<string> {
+  return new Promise(resolve => {
+    if (typeof canvas.toBlob !== 'function' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      resolve(canvas.toDataURL('image/png'));
+      return;
+    }
+    canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : canvas.toDataURL('image/png')), 'image/png');
+  });
 }
 
 function cutFromBackground(background: Bitmap, alpha: Bitmap, x: number, y: number): HTMLCanvasElement {

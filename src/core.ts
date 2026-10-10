@@ -284,6 +284,8 @@ export interface Stats {
   maxCombo: number;
   maxStreak: number;
   gaps: number;
+  /** Destructions caused by a previous destruction (combo depth > 1) — the STATS « COMBOS » line. */
+  combos: number;
   powers: Record<PowerKind, number>;
 }
 
@@ -324,7 +326,7 @@ export class ZumaEngine {
   accuracyTicks = 0;
   aim: Point;
   stats: Stats = {
-    shots: 0, hits: 0, misses: 0, matches: 0, destroyed: 0, maxCombo: 0, maxStreak: 0, gaps: 0,
+    shots: 0, hits: 0, misses: 0, matches: 0, destroyed: 0, maxCombo: 0, maxStreak: 0, gaps: 0, combos: 0,
     powers: { bomb: 0, slow: 0, backwards: 0, accuracy: 0 },
   };
 
@@ -743,6 +745,7 @@ export class ZumaEngine {
     this.score += points;
     this.stats.matches++;
     this.stats.maxCombo = Math.max(this.stats.maxCombo, depth);
+    if (depth > 1) this.stats.combos++;
     this.emit('destroy', { depth, count: run.length, color: run[0].color, x: centre.x, y: centre.y, points, ids: run.map(b => b.id), chain: chain.index });
     this.registerDestroyed(run.length);
     for (const b of run) if (b.power) this.activatePower(b, chain);
