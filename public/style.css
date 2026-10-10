@@ -31,6 +31,10 @@ dd { margin: 0; font-weight: bold; }
 .boot-title { margin: 0; font-size: 28px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
 .boot.error #boot-message { color: #ff8a80; font-weight: bold; }
 
+/* R2.0.14 — « Pixels nets »: integer CSS scale (--k) of the native 640×480 store, no smoothing. */
+.stage.pixelated { width: calc(640px * var(--k, 1)); height: calc(480px * var(--k, 1)); aspect-ratio: auto; }
+.stage.pixelated #game { image-rendering: pixelated; }
+
 /* R2.0.11 — STATS is one opaque monolithic panel: one title, one data layer, one tip, one OK. */
 .zuma-stats{display:block;background:radial-gradient(circle at 50% 0%,#4a3313 0%,#241709 60%,#160e05 100%);opacity:1}
 .zuma-stats h2{display:block}

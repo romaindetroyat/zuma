@@ -56,6 +56,8 @@ class Game {
   private pointer: Point = { x: WIDTH / 2, y: HEIGHT };
   private best = 0;
   private loading = true;
+  /** « Pixels nets »: integer CSS scale with image-rendering: pixelated (persisted as zuma.pixelated). */
+  private pixelated = false;
 
   constructor() {
     const canvas = document.getElementById('game');
@@ -63,8 +65,55 @@ class Game {
     this.canvas = canvas;
     this.renderer = new Renderer(canvas, null);
     try { this.best = Number(localStorage.getItem('zuma.best') ?? 0) || 0; } catch { /* storage unavailable */ }
+    try { this.pixelated = localStorage.getItem('zuma.pixelated') === '1'; } catch { /* storage unavailable */ }
     this.bindInput();
     this.bindPanels();
+    this.syncPixelsLabel();
+    this.bindScaling();
+    this.applyScaling();
+  }
+
+  // ---------------------------------------------------------------- scaling
+
+  /** Matches the canvas backing store to the displayed size and devicePixelRatio (or an integer CSS scale). */
+  private applyScaling(): void {
+    const stage = this.canvas.parentElement;
+    const dpr = window.devicePixelRatio || 1;
+    if (this.pixelated) {
+      const k = Math.max(1, Math.floor(Math.min(window.innerWidth / WIDTH, window.innerHeight / HEIGHT)));
+      stage?.style.setProperty('--k', String(k));
+      stage?.classList.add('pixelated');
+      this.renderer.resize(WIDTH * k, dpr, true);
+      return;
+    }
+    stage?.classList.remove('pixelated');
+    stage?.style.removeProperty('--k');
+    const rect = this.canvas.getBoundingClientRect();
+    this.renderer.resize(rect.width || WIDTH, dpr, false);
+  }
+
+  private bindScaling(): void {
+    window.addEventListener('resize', () => this.applyScaling());
+    const stage = this.canvas.parentElement;
+    if (typeof ResizeObserver !== 'undefined' && stage) new ResizeObserver(() => this.applyScaling()).observe(stage);
+    // devicePixelRatio has no change event: re-arm a one-shot media query at each new ratio.
+    const watchDpr = (): void => {
+      if (typeof matchMedia !== 'function') return;
+      matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => { this.applyScaling(); watchDpr(); }, { once: true });
+    };
+    watchDpr();
+  }
+
+  private togglePixels(): void {
+    this.pixelated = !this.pixelated;
+    try { localStorage.setItem('zuma.pixelated', this.pixelated ? '1' : '0'); } catch { /* storage unavailable */ }
+    this.syncPixelsLabel();
+    this.applyScaling();
+  }
+
+  private syncPixelsLabel(): void {
+    const btn = document.getElementById('menu-pixels');
+    if (btn) btn.textContent = this.pixelated ? 'Pixels nets : activés' : 'Pixels nets : désactivés';
   }
 
   async start(): Promise<void> {
@@ -357,6 +406,7 @@ class Game {
     on('menu-resume', () => this.toggleMenu());
     on('menu-new', () => { this.toggleMenu(); void this.newGame(); });
     on('menu-sound', () => this.toggleSound());
+    on('menu-pixels', () => this.togglePixels());
     on('menu-fullscreen', () => {
       const root = document.documentElement;
       if (document.fullscreenElement) void document.exitFullscreen();
