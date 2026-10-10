@@ -1,4 +1,4 @@
-/** Presentation rules anchored to M11_*.asm.txt. Never consume the simulation RNG here.
+  if(event.kind==='power-activate'){const key=({bomb:'powerbomb',slow:'powerslow',backwards:'powerback',accuracy:'poweraccuracy'} as Record<string,string>)[String(event.power)];return key?[{key,gain:1,rate:1}]:[];}\n/** Presentation rules anchored to M11_*.asm.txt. Never consume the simulation RNG here.
  * Timing in ticks is static evidence; the conversion to seconds follows the still-candidate engine Hz. */
 import {SeededRandom,type GameEvent} from './core.js';
 export interface SoundCue {key:string;gain:number;rate:number}
