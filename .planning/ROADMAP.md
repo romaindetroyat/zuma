@@ -53,9 +53,9 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Importateur corrigé (fond 640×480, thumb.jpg, extensions image, .m4a), fond 1:1 + overlays sous les billes, DPR et option « Pixels nets »
-- [ ] 04-02-PLAN.md — Moteur : insertion progressive (width/mergeTicks), détection différée, muzzleOffset, rollFrame ; verrous r214 ; baseline R2.0.14
-- [ ] 04-03-PLAN.md — Rendu de l'insertion, grenouille fidèle (bouche/écoutille/langue/clignement), audio original (formats, préchargement, boucles rolling/warning), vérification de bout en bout
+- [x] 04-01-PLAN.md — Importateur corrigé (fond 640×480, thumb.jpg, extensions image, .m4a), fond 1:1 + overlays sous les billes, DPR et option « Pixels nets »
+- [x] 04-02-PLAN.md — Moteur : insertion progressive (width/mergeTicks), détection différée, muzzleOffset, rollFrame ; verrous r214 ; baseline R2.0.14
+- [x] 04-03-PLAN.md — Rendu de l'insertion, grenouille fidèle (bouche/écoutille/langue/clignement), audio original (formats, préchargement, boucles rolling/warning), vérification de bout en bout
 
 #### Phase 5: Règles originales complètes
 **Goal**: Interpréter tous les réglages de `levels.xml` et ajouter les éléments de niveau manquants
@@ -101,7 +101,7 @@ Plans:
 | 1. Moteur de simulation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
-| 4. Point de validation jouable | v1.1 | 0/2 | Not started | - |
+| 4. Point de validation jouable | v1.1 | 6/6 | In progress (UAT) | - |
 | 5. Règles originales complètes | v1.1 | 0/TBD | Not started | - |
 | 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
