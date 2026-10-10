@@ -215,3 +215,81 @@ test('statsdialog.js: the tip is laid out by layoutTip, left-aligned after « AS
   const lum = font.slice(font.indexOf('function luminanceToAlpha('), font.indexOf('function multipliedAtlas('));
   assert.match(lum, /normalizeGlyphAlpha\(/, 'applied when the mask becomes an alpha picture');
 });
+
+// ---------------------------------------------------------------- compte à rebours D-21 (U24)
+import { bonusCountStep, bonusCountUp, bonusPopRate, BONUS_FAST_STEP } from '../.compiled/statsdialog.js';
+
+test('bonusCountStep: 100 up to 2 000, else the multiple of 100 ≥ total / 20 (≈ 2 s of count-up, D-21)', () => {
+  assert.equal(bonusCountStep(0), 100);
+  assert.equal(bonusCountStep(1000), 100);
+  assert.equal(bonusCountStep(2000), 100);
+  assert.equal(bonusCountStep(2100), 200);
+  assert.equal(bonusCountStep(10900), 600);
+  assert.equal(bonusCountStep(24100), 1300);
+  assert.equal(bonusCountStep(40000), 2000);
+  assert.equal(bonusCountStep(NaN), 100);
+  assert.equal(bonusCountStep(-500), 100);
+  for (let total = 2100; total <= 60000; total += 100) {
+    const step = bonusCountStep(total);
+    assert.equal(step % 100, 0, `multiple of 100 (${total} → ${step})`);
+    assert.ok(step >= total / 20, `≥ total / 20 (${total} → ${step})`);
+    assert.ok(step < total / 20 + 100, `smallest such multiple (${total} → ${step})`);
+  }
+});
+
+test('bonusCountUp(total, ms, step): nothing before 1 s, then one step every 100 ms, capped; default step = bonusCountStep(total)', () => {
+  assert.equal(bonusCountUp(10900, 999), 0);
+  assert.equal(bonusCountUp(10900, 1000), 600);
+  assert.equal(bonusCountUp(10900, 1950), 6000);
+  assert.equal(bonusCountUp(10900, 2900), 10900, 'capped at the total');
+  assert.equal(bonusCountUp(1500, 1000), 100, '≤ 2 000: 100 per step as before');
+  assert.equal(bonusCountUp(1500, 2400), 1500);
+  assert.equal(bonusCountUp(1100, 1100), 200, 'r216 cases hold under 2 000');
+  assert.equal(bonusCountUp(250, 1250), 250);
+  for (let total = 2100; total <= 60000; total += 100) assert.equal(bonusCountUp(total, 1000 + 1900), total, `≤ 20 steps: done 2.9 s after the opening (${total})`);
+  assert.equal(BONUS_FAST_STEP, 2500, '0x440b82–0x440b9b: 2 500 per step');
+  assert.equal(bonusCountUp(10900, 1000, BONUS_FAST_STEP), 2500);
+  assert.equal(bonusCountUp(10900, 1400, 2500), 10900);
+  assert.equal(bonusCountUp(10900, 1000, NaN), 600, 'bad step → default');
+  assert.equal(bonusCountUp(10900, 1000, 0), 600);
+  assert.equal(bonusPopRate(0, 1100), 1, 'bonusPopRate unchanged');
+  assert.equal(bonusPopRate(1100, 1100), 1.5);
+});
+
+test('main.js: one timer at a time from bonusCountStep, click outside OK → fast mode, OK still credits the remainder (deliberate deviation)', () => {
+  const main = read('.compiled/main.js');
+  assert.match(main, /bonusCountStep\(/);
+  assert.match(main, /BONUS_FAST_STEP/);
+  const start = main.indexOf("addEventListener('pointerdown'");
+  assert.ok(start > 0, 'pointerdown handler on the dialog');
+  const handler = main.slice(start, main.indexOf('passive: true', start));
+  assert.match(handler, /result-continue/, 'OK is excluded from the fast mode');
+  assert.match(handler, /fast = true/, 'fast mode armed');
+  const closeStart = main.indexOf('async closeStats()');
+  const close = main.slice(closeStart, main.indexOf('\n  }\n', closeStart));
+  assert.match(close, /creditBonus\(/, 'the remainder is credited on close (r216 lock kept)');
+  assert.match(main + read('.compiled/statsdialog.js'), /no acceleration|deliberate deviation/i, 'the deviation from the original is written down');
+  assert.doesNotMatch(main, /for \(let k = 1; k <= steps; k\+\+\)/, 'no pre-armed timer per step');
+});
+
+// ---------------------------------------------------------------- roulement (deferred-items 05-07)
+import { rampPlan, ROLLING_GAIN, ROLLING_FADE_SECONDS } from '../.compiled/audio.js';
+
+test('rampPlan: a ramp only when the loop target changes — 50 ms in to ROLLING_GAIN, ROLLING_FADE_SECONDS out to 0', () => {
+  assert.deepEqual(rampPlan(null, 1), { to: ROLLING_GAIN, seconds: 0.05 });
+  assert.deepEqual(rampPlan(0, 1), { to: 0.6, seconds: 0.05 });
+  assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: ROLLING_FADE_SECONDS });
+  assert.deepEqual(rampPlan(1, 0), { to: 0, seconds: 0.15 });
+  assert.equal(rampPlan(1, 1), null, 'same target: the running ramp is left alone');
+  assert.equal(rampPlan(0, 0), null);
+  assert.equal(rampPlan(null, 0), null);
+  assert.deepEqual(rampPlan(0.5, 1), { to: 0.6, seconds: 0.05 });
+  const audio = read('.compiled/audio.js');
+  const start = audio.indexOf('setLoop(key, level)');
+  const body = audio.slice(start, audio.indexOf('pulse(key, level)', start));
+  assert.match(body, /idleSince: null, target: 0/, 'Loop carries its target');
+  assert.match(body, /rampPlan\(loop\.target, target\)/, 'planned from the previous target');
+  assert.equal((body.match(/cancelScheduledValues/g) || []).length, 1);
+  assert.ok(body.indexOf('if (plan)') > 0 && body.indexOf('if (plan)') < body.indexOf('cancelScheduledValues'), 'the running ramp is cancelled only when a new one is planned');
+  assert.match(body, /loop\.target = target/);
+});

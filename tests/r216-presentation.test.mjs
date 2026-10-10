@@ -78,8 +78,11 @@ test('audio.js: setLoop fades with linearRampToValueAtTime / ROLLING_FADE_SECOND
   const end = src.indexOf('pulse(key, level)', start);
   const body = src.slice(start, end);
   assert.match(body, /linearRampToValueAtTime/, 'ramps (attack and fade) are linear');
-  assert.match(body, /ROLLING_FADE_SECONDS/, 'fade-out length is the constant');
-  assert.match(body, /ROLLING_GAIN/, 'the loop plays at ROLLING_GAIN');
+  // R2.0.17: the ramp is planned by rampPlan (armed once per target change, deferred-items 05-07); the constants live there.
+  assert.match(body, /rampPlan\(/, 'ramp planned by rampPlan');
+  const plan = src.slice(src.indexOf('export function rampPlan('), src.indexOf('\n}\n', src.indexOf('export function rampPlan(')));
+  assert.match(plan, /ROLLING_FADE_SECONDS/, 'fade-out length is the constant');
+  assert.match(plan, /ROLLING_GAIN/, 'the loop plays at ROLLING_GAIN');
   assert.doesNotMatch(body, /playbackRate\.value =/, 'pitch stays at 1');
   assert.doesNotMatch(src, /LOOP_BASE/, 'LOOP_BASE replaced by ROLLING_GAIN');
   const main = fs.readFileSync('.compiled/main.js', 'utf8');
@@ -259,7 +262,8 @@ test('end to end: the STATS values of the r215 cleared level are the expected li
   });
   // The dialog opens on « +0 » and counts the bonus into the level score (creditBonus); the final frame shows everything.
   assert.equal(statsValues({ ...input, timeBonusShown: 0 }).bonus, '+0');
-  assert.equal(statsValues({ ...input, timeBonusShown: bonusCountUp(g.timeBonus, 1000) }).bonus, '+100');
+  // R2.0.17 (D-21): above 2 000 the step is the multiple of 100 ≥ total / 20 — 1 300 for 24 100 (≈ 2 s instead of 24 s).
+  assert.equal(statsValues({ ...input, timeBonusShown: bonusCountUp(g.timeBonus, 1000) }).bonus, '+1300');
   assert.equal(g.timeBonusCredited, 0, 'nothing credited before the count-up');
   g.creditBonus(g.timeBonus);
   assert.equal(g.levelScore, 3330 + 24100);
