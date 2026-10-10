@@ -37,7 +37,7 @@ test('frog offsets measured on SMALLFROGonPAD are exported by the renderer', () 
 });
 
 // ---------------------------------------------------------------- audio (D-06, D-08, D-09)
-import { pickFormat, loopLevels, warningLevel, warningInterval, warningGain, WARNING_DISTANCE, WARNING_INTERVAL_FAR, WARNING_INTERVAL_NEAR } from '../.compiled/audio.js';
+import { pickFormat, loopLevels, warningLevel, warningInterval, warningGain, WARNING_DISTANCE, WARNING_GAIN, ROLLING_GAIN } from '../.compiled/audio.js';
 import { soundCues } from '../.compiled/feedback.js';
 
 test('pickFormat picks the first format canPlayType accepts', () => {
@@ -49,47 +49,49 @@ test('pickFormat picks the first format canPlayType accepts', () => {
   assert.equal(pickFormat(['flac', 'ogg'], chrome), 'ogg', 'unknown formats are ignored');
 });
 
-test('loopLevels: rolling follows the chain speed (the warning is a pulse, not a loop)', () => {
-  const base = { speed: 0, feedSpeed: 360, playing: true };
+test('loopLevels: rolling is on whenever the chain moves (the warning is a pulse, not a loop)', () => {
+  // R2.0.16 (D-17): binary level at a constant ROLLING_GAIN above 2 px/s instead of a gain proportional to feedSpeed.
+  const base = { speed: 0, playing: true };
   assert.deepEqual(loopLevels(base), { rolling: 0 }, 'no warning entry any more');
-  assert.equal(loopLevels({ ...base, speed: 360 }).rolling, 1, 'full gain at feedSpeed');
-  assert.equal(loopLevels({ ...base, speed: 900 }).rolling, 1, 'clamped above feedSpeed');
-  assert.equal(loopLevels({ ...base, speed: 180 }).rolling, 0.5, 'proportional below');
-  assert.equal(loopLevels({ ...base, speed: 180, feedSpeed: 0 }).rolling, 0, 'feedSpeed <= 0 → silent');
+  assert.equal(loopLevels({ ...base, speed: 360 }).rolling, 1, 'on at cruise speed');
+  assert.equal(loopLevels({ ...base, speed: 900 }).rolling, 1, 'on at feed speed');
+  assert.equal(loopLevels({ ...base, speed: 1 }).rolling, 0, 'off under 2 px/s (recoil settling, stop)');
   assert.equal(loopLevels({ ...base, speed: 180, playing: false }).rolling, 0, 'no rolling when not playing');
+  assert.equal(ROLLING_GAIN, 0.6, 'constant loop gain');
 });
 
 // Plan 04-05: the original `warning1` is a 0.37 s hit repeated faster and louder as the head nears the skull.
 test('warningLevel: 0 outside WARNING_DISTANCE, 1 at the skull, cut while draining', () => {
-  assert.equal(WARNING_DISTANCE, 220);
-  assert.equal(warningLevel(400, true), 0, 'far away');
-  assert.equal(warningLevel(220, true), 0, 'threshold');
-  assert.equal(warningLevel(110, true), 0.5, 'half-way');
+  // R2.0.16 (U15, §5): the zone is the original `danger` setting, 600 px (was 220).
+  assert.equal(WARNING_DISTANCE, 600);
+  assert.equal(warningLevel(1000, true), 0, 'far away');
+  assert.equal(warningLevel(600, true), 0, 'threshold');
+  assert.equal(warningLevel(300, true), 0.5, 'half-way');
   assert.equal(warningLevel(0, true), 1, 'at the skull');
   assert.equal(warningLevel(-10, true), 1, 'clamped past the skull');
   assert.equal(warningLevel(50, false), 0, 'cut while draining/paused');
   assert.equal(warningLevel(null, true), 0, 'no ball → no warning');
 });
 
-test('warningInterval shrinks monotonically from 1.1 s to 0.22 s; warningGain rises from 0.35 to 1', () => {
-  assert.equal(WARNING_INTERVAL_FAR, 1.1);
-  assert.equal(WARNING_INTERVAL_NEAR, 0.22);
-  assert.equal(warningInterval(0), 1.1);
-  assert.equal(warningInterval(1), 0.22);
-  assert.equal(warningInterval(-1), 1.1, 'clamped below');
-  assert.equal(warningInterval(2), 0.22, 'clamped above');
-  assert.equal(warningInterval(NaN), 1.1, 'NaN treated as 0');
+test('warningInterval shrinks monotonically from 4.1 s to 0.6 s; warningGain is constant', () => {
+  // R2.0.16 (U15, §5): the original delay is 100 + 4000 × rem / danger ms, floored by the trail light
+  // (rem / 11 + 60 updates); the volume is not modulated (the 0.35 → 1 ramp was ours). Table in r216-presentation.
+  assert.equal(warningInterval(0), 4.1);
+  assert.equal(warningInterval(1), 0.6);
+  assert.equal(warningInterval(-1), 4.1, 'clamped below');
+  assert.equal(warningInterval(2), 0.6, 'clamped above');
+  assert.equal(warningInterval(NaN), 4.1, 'NaN treated as 0');
   let previous = Infinity;
   for (let i = 0; i <= 20; i++) {
     const v = warningInterval(i / 20);
     assert.ok(v < previous, `strictly decreasing at level ${i / 20}`);
-    assert.ok(v >= 0.22 && v <= 1.1, 'within bounds');
+    assert.ok(v >= 0.6 && v <= 4.1, 'within bounds');
     previous = v;
   }
-  assert.equal(warningGain(0), 0.35);
+  assert.equal(WARNING_GAIN, 1);
+  assert.equal(warningGain(0), 1);
   assert.equal(warningGain(1), 1);
-  assert.ok(warningGain(0.5) > 0.35 && warningGain(0.5) < 1, 'gain rises with the threat');
-  assert.ok(warningGain(0.25) < warningGain(0.75), 'monotone');
+  assert.equal(warningGain(0.5), 1, 'constant');
 });
 
 test('pitCoverFrame: closed lid at threat 0, last frame at the skull, monotone in between', () => {
