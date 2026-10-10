@@ -115,6 +115,6 @@ Plans:
 | 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
-| 5. Règles originales complètes | v1.1 | 4/4 | In progress (UAT) | - |
+| 5. Règles originales complètes | v1.1 | 9/11 | In progress (UAT 7 à venir) | - |
 | 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
