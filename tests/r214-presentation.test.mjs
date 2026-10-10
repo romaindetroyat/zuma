@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { insertionPose } from '../.compiled/feedback.js';
+import { readFileSync } from 'node:fs';
 import { FROG_FRONT, FROG_BACK, pitCoverFrame } from '../.compiled/render.js';
 
 const from = { x: 100, y: 300 };
@@ -106,6 +107,20 @@ test('pitCoverFrame: closed lid at threat 0, last frame at the skull, monotone i
     assert.ok(f >= previous, 'non-decreasing');
     previous = f;
   }
+});
+
+// Plan 04-05 Task 2b (U11): BackgroundAlpha layers are drawn static — no drift / zoom of the screen on level 1-3.
+test('drawOverlays draws the BackgroundAlpha layers at their fixed (x, y), without oscillation', () => {
+  const src = readFileSync('.compiled/render.js', 'utf8');
+  const start = src.search(/\n\s*drawOverlays\(view\) \{/);
+  assert.ok(start > 0, 'Renderer.drawOverlays(view) is compiled (method definition, not the call site)');
+  const end = src.indexOf('drawCutouts(', start);
+  const body = src.slice(start, end);
+  assert.doesNotMatch(body, /Math\.(sin|cos)/, 'no oscillation');
+  assert.doesNotMatch(body, /wobble|phase|frame/, 'no time-dependent offset');
+  assert.doesNotMatch(body, /\bvx\b|\bvy\b/, 'the (vx, vy) vector is not applied');
+  assert.doesNotMatch(body, /scale\(/, 'no scaling');
+  assert.match(body, /drawImage\(o\.image, o\.x, o\.y\)/, 'drawn exactly at (x, y)');
 });
 
 test('gap keeps its original cue and recoil adds none (D-09)', () => {

@@ -134,7 +134,7 @@ export class Renderer {
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     ctx.imageSmoothingEnabled = true;
     this.drawBackground(view);
-    this.drawOverlays(view, frame);
+    this.drawOverlays(view);
     this.drawHoles(view, fx);
     for (const chain of engine.chains) this.drawChain(engine, chain, frame);
     this.drawProjectiles(engine, frame);
@@ -262,21 +262,15 @@ export class Renderer {
   }
 
   /**
-   * BackgroundAlpha layers shimmer under the balls; Cutout tunnels stay above them.
-   * The shimmer is a slow drift along (vx, vy), normalised to at most 3 px.
+   * BackgroundAlpha layers (mosaics) are drawn static at (x, y) under the balls; Cutout
+   * tunnels stay above them. No drift, no scaling: the previous oscillation read as a
+   * zoom of the whole screen on level 1-3 (U11). Their (vx, vy) vector is kept in the data
+   * but intentionally unused.
    */
-  private drawOverlays(view: LevelView, frame: number): void {
+  private drawOverlays(view: LevelView): void {
     if (!view.art) return;
     const ctx = this.ctx;
-    const phase = Math.sin(frame / 90);
-    for (const o of view.art.overlays) {
-      const vx = o.vx ?? 0;
-      const vy = o.vy ?? 0;
-      const len = Math.hypot(vx, vy) || 1;
-      const dx = Math.round((vx / len) * 3 * phase);
-      const dy = Math.round((vy / len) * 3 * phase);
-      ctx.drawImage(o.image, o.x + dx, o.y + dy);
-    }
+    for (const o of view.art.overlays) ctx.drawImage(o.image, o.x, o.y);
   }
 
   private drawCutouts(view: LevelView): void {
