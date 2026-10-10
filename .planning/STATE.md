@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-10-10)
 
 **Core value:** Retrouver les sensations du Zuma original dans un navigateur.
-**Current focus:** Phase 4 — Point de validation jouable
+**Current focus:** Phase 5 — Règles originales complètes (UAT 5 → plan 05-08)
 
 ## Current Position
 
 Phase: 5 of 7 (Règles originales complètes)
-Plan: 4 of 4 executed (01-04)
-Status: Awaiting UAT verdict (R2.0.15 standalone sent)
-Last activity: 2026-10-10 - Phase 5 exécutée (R2.0.15, 100 tests) : STATS natif + record, pièces, décompte de fin de niveau, Attention/PARTEZ ; standalone envoyé
+Plan: 7 of 7 executed (01-07) ; 05-08 à planifier (UAT 5)
+Status: UAT 5 received on R2.0.16 (U22–U25) ; spike 02 (bonus de brèche, combos, mode rapide STATS) en cours
+Last activity: 2026-10-10 - Plans 05-05..05-07 exécutés (R2.0.16, 142 tests) : règles lues dans Zuma.exe (vitesse, pousseur, zone lente, arrivée, repeat/single, munitions, décompte, ACE TIME, pièces), alerte 600 px, roulement, bannière ZUMA, STATS couleurs/décompte ; standalone envoyé ; UAT 5 : flou, alignement STATS, décompte trop long, bonus de brèche
 
 Progress: [█████░░░░░] 57% (4/7 phases)
 
@@ -67,6 +67,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-10 08:10
-Stopped at: phase 5 exécutée, en attente des retours UAT ; prochaine commande `/gsd:verify-work 5` puis `/gsd:plan-phase 6`
+Last session: 2026-10-10 17:30
+Stopped at: UAT 5 enregistrée (U22–U25, D-19..D-22) ; prochaine étape : plan 05-08 après `05-RESEARCH-02.md`, exécution, standalone R2.0.17
 Resume file: None

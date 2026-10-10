@@ -15,7 +15,7 @@
 
 Navigateur : macOS (à préciser). Validés implicitement : pièces, « Attention / PARTEZ », STATS natif dans son principe, RECORD affiché.
 
-## Cinquième session (à remplir)
+## Cinquième session (2026-10-10, standalone R2.0.16, macOS)
 
 Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome), niveau 1-1 puis un niveau à plusieurs courbes. Notes de version : `R216_RELEASE_NOTES.md`.
 
@@ -54,4 +54,9 @@ Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome),
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
-| | | | |
+| U22 | « Les écrans sont flous » (captures 2000 × 1500 : canvas ≈ 1000 px CSS sur Retina, soit ≈ 3,1 × le 640 × 480) | Tout est composé en 640 × 480 avec les bitmaps d'origine (fond, polices, cadre) puis rééchantillonné ; le STATS est composé à 1 × puis étiré une seconde fois ; R2.0.12 dessinait les textes en polices vectorielles (Georgia), nettes à toute échelle | Plan 05-08 : composition du STATS et des textes HUD à l'échelle du canvas (un seul rééchantillonnage) ; agrandissement pixel-art 2 × (xBR/Scale2x) des polices, du cadre, des boutons et des sprites de billes avant affichage ; le fond de niveau reste bilinéaire (D-19) |
+| U23 | « Textes mal alignés » (STATS) | Sur la capture : BONUS entre PIÈCES et SAUTS au lieu d'être sur la ligne SAUTS, RECORD sur ENCH. MAX. ; « + » du bonus teinté autrement que les chiffres ; OBJECTIF « 1:00 » contre TEMPS « 34 s » ; astuce centrée sur 3 lignes, collée à l'étiquette | Plan 05-08 : colonne droite calée sur la grille de gauche (TEMPS = POINTS, OBJECTIF = COMBOS, filet = PIÈCES, BONUS = SAUTS, RECORD = ENCH. MAX.), signe et chiffres de même teinte, formateur unique minutes:secondes, astuce alignée à gauche à côté de l'étiquette avec césure sur 2 lignes (D-20) ; géométrie vérifiée contre le constructeur du dialogue si le spike 02 la livre |
+| U24 | « Le comptage du bonus est trop long » (10 900 → 11 s) | +100 toutes les 100 ms sans mode rapide ; l'original a un mode rapide (2 500 par pas, déclencheur recherché par le spike 02) | Plan 05-08 : durée plafonnée à ≈ 2 s (pas = multiple de 100 ≥ total/20), un clic sur le dialogue crédite le reste aussitôt ; déclencheur original repris si le spike le livre (D-21) |
+| U25 | « Les tirs dans les brèches doivent rapporter plus de points quand ils sont des succès » | Moteur : +100 par brèche traversée à l'insertion, réussie ou non | Spike 02 (bonus de brèche, barème des combos) puis plan 05-08 : bonus crédité seulement si l'insertion produit une destruction, montant original (D-22) |
+
+Validés implicitement : arrivée rapide, couleurs, alerte, roulement, bannière ZUMA, décompte « +100 », couleurs du STATS, record. Le +10 000 par courbe n'a pas été relevé (16 260 points au 1-1 affichés sans remarque) : conservé jusqu'à avis contraire.
