@@ -135,24 +135,28 @@ test('main.js opens the native STATS through composeStatsDialog / bestTimeKey an
 import { configFromSettings } from '../.compiled/main.js';
 
 test('configFromSettings: partime, zumaslow/zumaback (×0.6 → ticks), single and the temple colours (lvl35)', () => {
+  // R2.0.16: start → startFraction, single → singleLimit (repair threshold), coinPoints derived from score (r216 locks the rest).
   const c = configFromSettings({ id: 'lvl35', speed: 0.6, start: 45, score: 4500, single: 8, zumaslow: 500, zumaback: 200, partime: 130 }, 3);
   assert.equal(c.parTime, 130, 'partime (s) → parTime');
   assert.equal(c.zumaSlowTicks, 300, 'zumaslow 500 steps at 100 Hz → 300 ticks');
   assert.equal(c.zumaBackTicks, 120, 'zumaback 200 steps at 100 Hz → 120 ticks');
-  assert.equal(c.singleLimit, 8, 'R2.0.16: single is the isolated-group repair threshold');
+  assert.equal(c.singleLimit, 8, 'single 8 → isolated-group repair threshold 8');
   assert.equal(c.target, 4500, 'score → target');
   assert.equal(c.colors, 5, 'temple 4 (stage index 3) → 5 colours');
-  assert.equal(c.startFraction, 0.45, 'R2.0.16: start is a share of the track length');
+  assert.equal(c.startFraction, 0.45, 'start 45 % of the track length');
+  assert.equal(c.coinPoints, 700, '100 × ⌊4500 / 600⌋');
   assert.ok(Math.abs(c.speed - 60) < 1e-9, 'speed 0.6 px/step → 60 px/s');
 });
 
-test('configFromSettings: defaults, bounds and temple colours (T-05-11)', () => {
+test('configFromSettings: defaults, bounds and temple colours (T-05-11 / T-05-13)', () => {
+  // R2.0.16: partime defaults to defaultParTime(score, curves) = 35 s at 1000 points, zumaslow / zumaback to 1100 / 300 maj (660 / 180 ticks).
   const d = configFromSettings({ id: 'x' }, 0);
   assert.equal(d.colors, 4, 'temple 1 → 4 colours');
-  assert.equal(d.parTime, 0);
-  assert.equal(d.zumaSlowTicks, 0);
-  assert.equal(d.zumaBackTicks, 0);
-  assert.equal(d.singleLimit, 10, 'R2.0.16: repair disabled by default');
+  assert.equal(d.parTime, 35);
+  assert.equal(d.zumaSlowTicks, 660);
+  assert.equal(d.zumaBackTicks, 180);
+  assert.equal(d.singleLimit, 10, 'repair disabled by default');
+  assert.equal(d.startFraction, 0.4);
   assert.equal(configFromSettings({ id: 'x' }, 6).colors, 6, 'temple 7 → 6 colours');
   assert.equal(configFromSettings({ id: 'x' }, 4).colors, 5, 'temple 5 → 5 colours');
   assert.equal(configFromSettings({ id: 'x', colors: 9 }, 0).colors, 6, 'colors bounded to 6');
@@ -160,10 +164,10 @@ test('configFromSettings: defaults, bounds and temple colours (T-05-11)', () => 
   assert.equal(configFromSettings({ id: 'x', single: 150 }, 0).singleLimit, 10, 'single bounded to 10');
   assert.equal(configFromSettings({ id: 'x', single: -5 }, 0).singleLimit, 0);
   assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaSlowTicks, 0, 'negative → 0');
-  assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaBackTicks, 0, 'NaN → 0');
-  assert.equal(configFromSettings({ id: 'x', zumaslow: Number.POSITIVE_INFINITY }, 0).zumaSlowTicks, 0, 'non-finite → 0');
-  assert.equal(configFromSettings({ id: 'x', partime: -3 }, 0).parTime, 0, 'negative partime → 0');
-  assert.equal(configFromSettings(undefined, 0).parTime, 0, 'no settings → defaults');
+  assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaBackTicks, 180, 'NaN → default');
+  assert.equal(configFromSettings({ id: 'x', zumaslow: Number.POSITIVE_INFINITY }, 0).zumaSlowTicks, 660, 'non-finite → default');
+  assert.equal(configFromSettings({ id: 'x', partime: -3 }, 0).parTime, 35, 'negative partime → default par time');
+  assert.equal(configFromSettings(undefined, 0).parTime, 35, 'no settings → defaults');
 });
 
 test('render.js draws the coin and its sparkle; main.js shows GET_READY then reacts to go (D-08, D-11)', () => {

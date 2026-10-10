@@ -26,8 +26,9 @@ const stepUntil = (g, kind, limit) => {
   throw new Error(`no ${kind} within ${limit} ticks`);
 };
 
-test('baseline R2.0.15', () => {
-  assert.equal(ENGINE_VERSION, '2.0.15');
+const atLeast = (v, min) => { const a = v.split('.').map(Number), b = min.split('.').map(Number); for (let i = 0; i < 3; i++) { if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0); } return true; };
+test('baseline R2.0.15 is preserved by the current engine version', () => {
+  assert.ok(atLeast(ENGINE_VERSION, '2.0.15'), ENGINE_VERSION); // R2.0.16: the exact lock moved to r216
 });
 
 // ------------------------------------------------------------------ pièces (D-07, D-09)

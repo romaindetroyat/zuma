@@ -3,7 +3,9 @@
 // repeat / single, munitions (D-14), décompte de fin de niveau, ACE TIME, pièce, configFromSettings.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Track, ZumaEngine, CANDIDATE, endZoneFactor, feedSpeed, aceTimeBonus, defaultParTime } from '../.compiled/core.js';
+import fs from 'node:fs';
+import { Track, ZumaEngine, CANDIDATE, ENGINE_VERSION, endZoneFactor, feedSpeed, aceTimeBonus, defaultParTime } from '../.compiled/core.js';
+import { configFromSettings } from '../.compiled/main.js';
 
 const straight = (length = 640) => new Track([[0, 240], [length, 240]]);
 const frog = { x: 320, y: 400 };
@@ -561,4 +563,85 @@ test('tally: a board emptied without an explosion has no step and wins 12 + 30 t
   assert.equal(ofKind(g, 'cleanup-pop').length, 0);
   assert.equal(g.cleanupScore, 0);
   assert.equal(g.score, CANDIDATE.levelBonus);
+});
+
+// ------------------------------------------------------------ configFromSettings (GAME-01, T-05-13), baseline
+
+test('baseline R2.0.16', () => {
+  assert.equal(ENGINE_VERSION, '2.0.16');
+  assert.equal(ENGINE_VERSION, JSON.parse(fs.readFileSync('package.json', 'utf8')).version);
+});
+
+test('configFromSettings: level 1-1 (lvl11) → the original rules in engine units', () => {
+  const c = configFromSettings({ id: 'lvl11', speed: 0.5, start: 35, score: 1000, repeat: 50, colors: 4, firespeed: 6, partime: 25 }, 0);
+  near(c.speed, 50, 1e-9, '0.5 px/maj × 100');
+  assert.equal(c.startFraction, 0.35);
+  assert.equal(c.repeatChance, 0.51, '(repeat + 1) / 100');
+  assert.equal(c.singleLimit, 10);
+  assert.equal(c.endSlowFactor, 4);
+  assert.equal(c.slowDistance, 500);
+  assert.equal(c.dangerDistance, 600);
+  assert.equal(c.parTime, 25);
+  assert.equal(c.coinPoints, 500, 'max(500, 100 × ⌊1000 / 600⌋)');
+  assert.equal(c.levelBonus, 10000);
+  assert.equal(c.zumaBackTicks, 180, '300 maj by default');
+  assert.equal(c.zumaSlowTicks, 660, '1100 maj by default');
+  assert.equal(c.target, 1000);
+  assert.equal(c.colors, 4);
+  assert.equal(c.projectileSpeed, 10, '6 px/maj → 600 px/s → 10 px/tick');
+  assert.equal(c.total, Number.POSITIVE_INFINITY);
+  for (const key of ['start', 'feedSpeed', 'singleChance', 'slowFactor']) assert.equal(key in c, false, `${key} is not written`);
+});
+
+test('configFromSettings: lvl35 (single 8, zumaslow / zumaback, partime 130, score 4500)', () => {
+  const c = configFromSettings({ id: 'lvl35', speed: 0.6, start: 45, score: 4500, single: 8, zumaslow: 500, zumaback: 200, partime: 130 }, 3);
+  assert.equal(c.startFraction, 0.45);
+  assert.equal(c.singleLimit, 8);
+  assert.equal(c.repeatChance, 0.41, 'repeat defaults to 40');
+  assert.equal(c.zumaSlowTicks, 300);
+  assert.equal(c.zumaBackTicks, 120);
+  assert.equal(c.parTime, 130);
+  assert.equal(c.coinPoints, 700, '100 × ⌊4500 / 600⌋');
+  assert.equal(c.colors, 5);
+  near(c.speed, 60, 1e-9);
+});
+
+test('configFromSettings: defaults and bounds (T-05-13)', () => {
+  const d = configFromSettings({ id: 'x' }, 0);
+  assert.equal(d.startFraction, 0.4, 'start defaults to 40 %');
+  assert.equal(d.repeatChance, 0.41);
+  assert.equal(d.singleLimit, 10);
+  assert.equal(d.parTime, 35, 'defaultParTime(1000, 1)');
+  assert.equal(d.coinPoints, 500);
+  assert.equal(d.endSlowFactor, 4);
+  assert.equal(d.zumaBackTicks, 180);
+  assert.equal(d.zumaSlowTicks, 660);
+  assert.equal(configFromSettings(undefined, 0).parTime, 35, 'no settings → defaults');
+  assert.equal(configFromSettings({ id: 'x', score: 2000 }, 0, 2).parTime, 135, 'two curves');
+  const one = (settings, key) => configFromSettings({ id: 'x', ...settings }, 0)[key];
+  assert.equal(one({ start: 200 }, 'startFraction'), 1);
+  assert.equal(one({ start: -5 }, 'startFraction'), 0);
+  assert.equal(one({ start: 'abc' }, 'startFraction'), 0.4);
+  assert.equal(one({ single: 150 }, 'singleLimit'), 10);
+  assert.equal(one({ single: -5 }, 'singleLimit'), 0);
+  assert.equal(one({ single: 2.7 }, 'singleLimit'), 2);
+  assert.equal(one({ slowfactor: 0.5 }, 'endSlowFactor'), 1);
+  assert.equal(one({ slowfactor: 3.5 }, 'endSlowFactor'), 3.5);
+  assert.equal(one({ slowspeed: 0.25, speed: 0.5 }, 'endSlowFactor'), 2, 'slowspeed → speed / slowspeed (0x42ad98)');
+  assert.equal(one({ slowspeed: 2, speed: 0.5 }, 'endSlowFactor'), 1, 'never below 1');
+  assert.equal(one({ danger: 400, slowdistance: 100 }, 'dangerDistance'), 400);
+  assert.equal(one({ danger: 400, slowdistance: 100 }, 'slowDistance'), 100);
+  assert.equal(one({ danger: -1 }, 'dangerDistance'), 600);
+  assert.equal(one({ slowdistance: Number.NaN }, 'slowDistance'), 500);
+  assert.equal(one({ repeat: 150 }, 'repeatChance'), 1);
+  assert.equal(one({ repeat: -10 }, 'repeatChance'), 0);
+  assert.equal(one({ partime: -3 }, 'parTime'), 35);
+  assert.equal(one({ partime: Number.NaN }, 'parTime'), 35);
+  assert.equal(one({ score: 3600 }, 'coinPoints'), 600);
+  assert.equal(one({ score: 3600 }, 'target'), 3600);
+  assert.equal(one({ zumaslow: Number.NaN }, 'zumaSlowTicks'), 660, 'non-finite → default, not 0');
+  assert.equal(one({ zumaslow: -10 }, 'zumaSlowTicks'), 0, 'negative → 0');
+  assert.equal(one({ zumaback: Number.POSITIVE_INFINITY }, 'zumaBackTicks'), 180);
+  assert.equal(one({ colors: 9 }, 'colors'), 6);
+  assert.equal(one({ colors: 1 }, 'colors'), 3);
 });
