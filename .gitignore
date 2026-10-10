@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.compiled/
+private_assets/
+standalone/
+*.exe
+*.ogg
+*.mo3
+*.pack.json
+*.zip
+.DS_Store
