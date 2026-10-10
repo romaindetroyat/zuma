@@ -65,6 +65,8 @@ export class Renderer {
   private readonly ctx: CanvasRenderingContext2D;
   private view: LevelView | null = null;
   private trackCache: HTMLCanvasElement | null = null;
+  /** Backing-store pixels per logical pixel (devicePixelRatio × CSS scale, capped at 4). */
+  private scale = 1;
 
   constructor(readonly canvas: HTMLCanvasElement, public assets: RenderAssets | null) {
     canvas.width = WIDTH;
@@ -77,6 +79,23 @@ export class Renderer {
   setLevel(view: LevelView): void {
     this.view = view;
     this.trackCache = null;
+  }
+
+  /**
+   * Sizes the backing store so text and vectors stay crisp at the displayed size.
+   * Game logic, HUD and hit testing keep working in logical 640×480 coordinates;
+   * `draw()` applies the scale through `setTransform`. In pixelated mode the store
+   * stays 640×480 and the CSS integer scale does the (unsmoothed) enlargement.
+   */
+  resize(cssWidth: number, dpr: number, pixelated: boolean): void {
+    const scale = pixelated ? 1 : Math.min(4, Math.max(1, (cssWidth / WIDTH) * dpr));
+    const w = Math.round(WIDTH * scale);
+    const h = Math.round(HEIGHT * scale);
+    if (w !== this.canvas.width || h !== this.canvas.height) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
+    this.scale = scale;
   }
 
   /** Returns the HUD button under canvas coordinates, if any. */
@@ -93,12 +112,14 @@ export class Renderer {
     const view = this.view;
     if (!view) return;
     ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+    ctx.imageSmoothingEnabled = true;
     this.drawBackground(view);
+    this.drawOverlays(view, frame);
     this.drawHoles(view);
     for (const chain of engine.chains) this.drawChain(engine, chain, frame);
     this.drawProjectiles(engine, frame);
-    this.drawCutouts(view, frame);
+    this.drawCutouts(view);
     this.drawFrog(engine, view, frame);
     this.drawEffects(engine, fx);
     this.drawHud(hud, frame);
@@ -107,10 +128,15 @@ export class Renderer {
 
   // ------------------------------------------------------------ background
 
+  /** Original backgrounds are drawn 1:1 (cropped if larger, letterboxed if smaller), never scaled. */
   private drawBackground(view: LevelView): void {
     const ctx = this.ctx;
-    if (view.art?.background) {
-      ctx.drawImage(view.art.background, 0, 0, WIDTH, HEIGHT);
+    const bg = view.art?.background;
+    if (bg) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      if (bg.width >= WIDTH && bg.height >= HEIGHT) ctx.drawImage(bg, 0, 0, WIDTH, HEIGHT, 0, 0, WIDTH, HEIGHT);
+      else ctx.drawImage(bg, 0, 0);
       return;
     }
     if (!this.trackCache) this.trackCache = this.paintProceduralBoard(view);
@@ -210,14 +236,28 @@ export class Renderer {
     }
   }
 
-  private drawCutouts(view: LevelView, frame: number): void {
+  /**
+   * BackgroundAlpha layers shimmer under the balls; Cutout tunnels stay above them.
+   * The shimmer is a slow drift along (vx, vy), normalised to at most 3 px.
+   */
+  private drawOverlays(view: LevelView, frame: number): void {
+    if (!view.art) return;
+    const ctx = this.ctx;
+    const phase = Math.sin(frame / 90);
+    for (const o of view.art.overlays) {
+      const vx = o.vx ?? 0;
+      const vy = o.vy ?? 0;
+      const len = Math.hypot(vx, vy) || 1;
+      const dx = Math.round((vx / len) * 3 * phase);
+      const dy = Math.round((vy / len) * 3 * phase);
+      ctx.drawImage(o.image, o.x + dx, o.y + dy);
+    }
+  }
+
+  private drawCutouts(view: LevelView): void {
     if (!view.art) return;
     const ctx = this.ctx;
     for (const c of view.art.cutouts) ctx.drawImage(c.image, c.x, c.y);
-    for (const o of view.art.overlays) {
-      const wobble = Math.sin(frame / 40) * 2;
-      ctx.drawImage(o.image, o.x + (o.vx ?? 0) * wobble, o.y + (o.vy ?? 0) * wobble);
-    }
   }
 
   // ----------------------------------------------------------------- balls
