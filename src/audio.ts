@@ -1,7 +1,9 @@
 /**
  * Sound dispatch. Original Zuma resources are loaded when a local build supplies
- * them under assets/sounds/<key>.ogg; otherwise each cue is synthesised with
- * WebAudio so the game stays audible without any proprietary file.
+ * them under assets/sounds/<key>.<ogg|m4a> (see sounds/manifest.json); otherwise
+ * each cue is synthesised with WebAudio so the game stays audible without any
+ * proprietary file. Every pack sound is decoded in parallel on the first user
+ * gesture (D-07) so the first occurrence of a cue is already the original.
  */
 import type { SoundCue } from './feedback.js';
 import { assetUrl } from './original.js';
@@ -32,29 +34,102 @@ const SYNTH: Record<string, Synth> = {
   poweraccuracy: { type: 'triangle', from: 1000, to: 2000, duration: 0.4, gain: 0.25 },
 };
 
+/** MIME types probed with `canPlayType` for each container shipped by the importer (D-06). */
+const MIME: Record<string, string> = {
+  ogg: 'audio/ogg; codecs="vorbis"',
+  m4a: 'audio/mp4; codecs="mp4a.40.2"',
+};
+
+/** First listed format the browser reports playable (`canPlayType` non-empty); unknown formats are skipped. */
+export function pickFormat(formats: string[], canPlay: (mime: string) => string): string | null {
+  for (const format of formats) {
+    const mime = MIME[format];
+    if (mime && canPlay(mime)) return format;
+  }
+  return null;
+}
+
+/** Distance (track px) between the head ball and the skull under which the warning loop plays (D-08). */
+export const WARNING_DISTANCE = 160;
+
+export type LoopKey = 'rolling' | 'warning';
+
+/** Loop gains derived from the simulation: rolling follows the chain speed, warning the head distance (D-08). */
+export function loopLevels(input: { speed: number; feedSpeed: number; headDistance: number | null; playing: boolean }): { rolling: number; warning: number } {
+  const rolling = input.playing && input.feedSpeed > 0 ? Math.max(0, Math.min(1, input.speed / input.feedSpeed)) : 0;
+  const warning = input.playing && input.headDistance !== null && input.headDistance < WARNING_DISTANCE ? 1 : 0;
+  return { rolling, warning };
+}
+
+/** Base volume of each loop at level 1. */
+const LOOP_BASE: Record<LoopKey, number> = { rolling: 0.5, warning: 0.8 };
+/** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
+const LOOP_IDLE_SECONDS = 2;
+
+interface Loop { src: AudioBufferSourceNode; gain: GainNode; idleSince: number | null }
+
+/** Sound manifest produced by tools/import-original.mjs: format 2 lists the containers per key; legacy is a key array. */
+function parseManifest(raw: unknown): Record<string, string[]> {
+  const sounds: Record<string, string[]> = {};
+  if (Array.isArray(raw)) {
+    for (const key of raw) if (typeof key === 'string') sounds[key] = ['ogg'];
+    return sounds;
+  }
+  if (raw && typeof raw === 'object' && (raw as { format?: unknown }).format === 2) {
+    const list = (raw as { sounds?: unknown }).sounds;
+    if (list && typeof list === 'object') {
+      for (const [key, formats] of Object.entries(list as Record<string, unknown>)) {
+        if (Array.isArray(formats)) sounds[key] = formats.filter((f): f is string => typeof f === 'string');
+      }
+    }
+  }
+  return sounds;
+}
+
 export class AudioManager {
   enabled = true;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private buffers = new Map<string, AudioBuffer>();
+  /** Keys the pack provides in a playable format; a key is removed when its decode fails (synth fallback). */
   private available = new Set<string>();
+  /** Chosen container per key. */
+  private formats = new Map<string, string>();
   private loading = new Set<string>();
+  private loops = new Map<LoopKey, Loop>();
 
   constructor(private readonly assetBase = 'assets/') {}
 
-  /** Reads the manifest produced by `build --local` to know which original sounds exist. */
+  /** Reads the manifest produced by `build --local` and picks one playable format per key. */
   async discover(): Promise<void> {
     try {
       const res = await fetch(assetUrl('sounds/manifest.json', this.assetBase), { cache: 'no-store' });
       if (!res.ok) return;
-      const list = (await res.json()) as unknown;
-      if (Array.isArray(list)) for (const key of list) if (typeof key === 'string') this.available.add(key);
+      const sounds = parseManifest((await res.json()) as unknown);
+      const canPlay = this.probe();
+      for (const [key, formats] of Object.entries(sounds)) {
+        const format = pickFormat(formats, canPlay);
+        if (!format) continue;
+        this.formats.set(key, format);
+        this.available.add(key);
+      }
     } catch {
       /* no original assets: synthesis only */
     }
   }
 
-  /** Must be called from a user gesture so the context can start. */
+  /** `canPlayType` of a throw-away <audio>; without one, assume Vorbis/Ogg. */
+  private probe(): (mime: string) => string {
+    try {
+      const audio = document.createElement('audio');
+      if (typeof audio.canPlayType === 'function') return mime => audio.canPlayType(mime);
+    } catch {
+      /* no DOM */
+    }
+    return mime => (mime.startsWith('audio/ogg') ? 'maybe' : '');
+  }
+
+  /** Must be called from a user gesture so the context can start; decodes every pack sound in parallel (D-07). */
   unlock(): void {
     if (!this.ctx) {
       const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
@@ -63,8 +138,14 @@ export class AudioManager {
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.8;
       this.master.connect(this.ctx.destination);
+      void this.preload();
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  /** Fetches and decodes every available key at once; each failure only disables that key. */
+  private async preload(): Promise<void> {
+    await Promise.all([...this.available].map(key => this.load(key)));
   }
 
   play(cue: SoundCue): void {
@@ -81,20 +162,70 @@ export class AudioManager {
         src.start();
         return;
       }
+      // Still decoding: stay silent rather than doubling the original with the synth.
       void this.load(cue.key);
+      return;
     }
     this.synth(cue);
   }
 
+  /**
+   * Drives a looping pack sound (rolling / warning). `level` 0..1 scales the loop's
+   * base volume with a short ramp; a loop left at 0 for LOOP_IDLE_SECONDS is stopped.
+   */
+  setLoop(key: LoopKey, level: number): void {
+    const ctx = this.ctx;
+    const master = this.master;
+    const target = this.enabled && ctx && master ? Math.max(0, Math.min(1, level)) : 0;
+    let loop = this.loops.get(key);
+    if (!loop) {
+      if (target <= 0 || !ctx || !master) return;
+      const buffer = this.buffers.get(key);
+      if (!buffer) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(gain).connect(master);
+      src.start();
+      loop = { src, gain, idleSince: null };
+      this.loops.set(key, loop);
+    }
+    if (!ctx) return;
+    loop.gain.gain.setTargetAtTime(target * LOOP_BASE[key], ctx.currentTime, 0.05);
+    if (target > 0) {
+      loop.idleSince = null;
+      return;
+    }
+    if (loop.idleSince === null) loop.idleSince = ctx.currentTime;
+    else if (ctx.currentTime - loop.idleSince > LOOP_IDLE_SECONDS) this.stopLoop(key, loop);
+  }
+
+  /** Stops and releases every loop (level change, panels, pause). */
+  stopLoops(): void {
+    for (const [key, loop] of this.loops) this.stopLoop(key, loop);
+  }
+
+  private stopLoop(key: LoopKey, loop: Loop): void {
+    try { loop.src.stop(); } catch { /* already stopped */ }
+    loop.src.disconnect();
+    loop.gain.disconnect();
+    this.loops.delete(key);
+  }
+
   private async load(key: string): Promise<void> {
-    if (!this.ctx || this.loading.has(key)) return;
+    if (!this.ctx || this.loading.has(key) || this.buffers.has(key)) return;
     this.loading.add(key);
     try {
-      const res = await fetch(assetUrl(`sounds/${key}.ogg`, this.assetBase));
+      const format = this.formats.get(key) ?? 'ogg';
+      const res = await fetch(assetUrl(`sounds/${key}.${format}`, this.assetBase));
       if (!res.ok) throw new Error(String(res.status));
       this.buffers.set(key, await this.ctx.decodeAudioData(await res.arrayBuffer()));
     } catch {
       this.available.delete(key);
+    } finally {
+      this.loading.delete(key);
     }
   }
 

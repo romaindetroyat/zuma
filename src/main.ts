@@ -2,7 +2,7 @@
 import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, type EngineConfig, type GameEvent, type Point } from './core.js';
 import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
-import { AudioManager } from './audio.js';
+import { AudioManager, loopLevels } from './audio.js';
 import { OriginalPack, tintSheet, type PackGraphics, type PackSettings } from './original.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
@@ -58,6 +58,8 @@ class Game {
   private loading = true;
   /** « Pixels nets »: integer CSS scale with image-rendering: pixelated (persisted as zuma.pixelated). */
   private pixelated = false;
+  /** Ball id → arc position at the previous frame, to measure the chain speed for the rolling loop. */
+  private lastPositions = new Map<number, number>();
 
   constructor() {
     const canvas = document.getElementById('game');
@@ -187,14 +189,33 @@ class Game {
   }
 
   private async newGame(): Promise<void> {
-    this.progress = { stage: 0, level: 0 };
+    this.progress = this.requestedProgress();
     this.levelIndex = 0;
     this.lives = CANDIDATE.lives;
     this.carriedScore = 0;
     await this.startLevel();
   }
 
+  /**
+   * `?level=S-L` (e.g. `1-3`) opens a pack level directly for review. Ignored
+   * without a pack, when malformed or out of the pack's stage/level bounds (T-04-10).
+   */
+  private requestedProgress(): Progress {
+    const first: Progress = { stage: 0, level: 0 };
+    if (!this.pack?.hasStages) return first;
+    let raw: string | null = null;
+    try { raw = new URLSearchParams(location.search).get('level'); } catch { return first; }
+    if (!raw || !/^\d+-\d+$/.test(raw)) return first;
+    const [stage, level] = raw.split('-').map(Number);
+    const stages = this.pack.data.stages;
+    if (stage < 1 || stage > stages.length) return first;
+    if (level < 1 || level > stages[stage - 1].levels.length) return first;
+    return { stage: stage - 1, level: level - 1 };
+  }
+
   private async startLevel(): Promise<void> {
+    this.audio.stopLoops();
+    this.lastPositions.clear();
     this.level = await this.resolveLevel();
     this.seed = (this.seed * 1664525 + 1013904223) >>> 0;
     // With the original sprite the projectile leaves from the measured mouth offset (ROADMAP SC2).
@@ -256,13 +277,44 @@ class Game {
         steps++;
       }
       this.checkOutcome(engine);
+      if (steps > 0) this.updateLoops(engine, steps);
     } else {
       this.accumulator = 0;
+      this.audio.setLoop('rolling', 0);
+      this.audio.setLoop('warning', 0);
     }
     this.frame++;
     this.fx.bursts = this.fx.bursts.filter(b => engine.tick - b.start < 40);
     this.fx.floats = this.fx.floats.filter(f => engine.tick - f.start < 70);
     this.renderer.draw(engine, this.fx, this.hud(engine), this.frame);
+  }
+
+  /**
+   * Rolling loop from the fastest ball displacement since the previous frame,
+   * warning loop from the head ball's distance to the skull (D-08). Recoil adds no sound (D-09).
+   */
+  private updateLoops(engine: ZumaEngine, steps: number): void {
+    const seconds = steps / engine.config.tickHz;
+    const positions = new Map<number, number>();
+    let moved = 0;
+    let headDistance: number | null = null;
+    for (const chain of engine.chains) {
+      let head = -Infinity;
+      for (const ball of engine.alive(chain)) {
+        positions.set(ball.id, ball.s);
+        const last = this.lastPositions.get(ball.id);
+        if (last !== undefined) moved = Math.max(moved, Math.abs(ball.s - last));
+        head = Math.max(head, ball.s);
+      }
+      if (head > -Infinity) {
+        const d = chain.track.length - head;
+        headDistance = headDistance === null ? d : Math.min(headDistance, d);
+      }
+    }
+    this.lastPositions = positions;
+    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.feedSpeed, headDistance, playing: engine.state === 'playing' });
+    this.audio.setLoop('rolling', lv.rolling);
+    this.audio.setLoop('warning', lv.warning);
   }
 
   private hud(engine: ZumaEngine): HudState {
@@ -397,6 +449,7 @@ class Game {
   private togglePause(): void {
     if (this.statsOpen || this.menuOpen) return;
     this.paused = !this.paused;
+    if (this.paused) this.audio.stopLoops();
   }
 
   private toggleSound(): void {
@@ -426,6 +479,7 @@ class Game {
   private toggleMenu(): void {
     if (this.statsOpen) return;
     this.menuOpen = !this.menuOpen;
+    if (this.menuOpen) this.audio.stopLoops();
     document.getElementById('menu')?.classList.toggle('open', this.menuOpen);
   }
 
@@ -436,6 +490,7 @@ class Game {
     if (!engine || this.statsOpen) return;
     this.statsOutcome = outcome;
     this.statsOpen = true;
+    this.audio.stopLoops();
     if (engine.score > this.best) {
       this.best = engine.score;
       try { localStorage.setItem('zuma.best', String(this.best)); } catch { /* storage unavailable */ }
