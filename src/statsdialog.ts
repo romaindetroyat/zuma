@@ -245,17 +245,24 @@ export const STAGE_WIDTH = 640;
 export const STAGE_HEIGHT = 480;
 
 /**
- * Draws the whole dialog on a 640×480 canvas (reused when given): 9-slice frame, head,
- * title, rules, labels, the first `options.revealed` values in `STATS_ORDER`, the tip and
- * the OK button in its `options.button` state. Returns the canvas.
+ * Draws the whole dialog on a canvas (reused when given) of 640 × 480 logical pixels composed at
+ * `scale` backing-store pixels per logical pixel (1..4, D-19: one resampling only, the canvas
+ * being shown at its physical size): 9-slice frame, head, title, rules, labels, the first
+ * `options.revealed` values in `STATS_ORDER`, the tip and the OK button in its `options.button`
+ * state. Returns the canvas.
  */
-export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: ComposeOptions, canvas?: HTMLCanvasElement): HTMLCanvasElement {
+export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: ComposeOptions, canvas?: HTMLCanvasElement, scale = 1): HTMLCanvasElement {
   const out = canvas ?? document.createElement('canvas');
-  if (out.width !== STAGE_WIDTH) out.width = STAGE_WIDTH;
-  if (out.height !== STAGE_HEIGHT) out.height = STAGE_HEIGHT;
+  const s = Math.max(1, Math.min(4, Number.isFinite(scale) ? scale : 1));
+  const width = Math.round(STAGE_WIDTH * s);
+  const height = Math.round(STAGE_HEIGHT * s);
+  if (out.width !== width) out.width = width;
+  if (out.height !== height) out.height = height;
   const ctx = out.getContext('2d');
   if (!ctx) return out;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, out.width, out.height);
+  ctx.setTransform(s, 0, 0, s, 0, 0);
   ctx.imageSmoothingEnabled = true;
   const L = STATS_LAYOUT;
   const C = STATS_COLORS;

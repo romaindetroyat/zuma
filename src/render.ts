@@ -92,7 +92,12 @@ export class Renderer {
   private view: LevelView | null = null;
   private trackCache: HTMLCanvasElement | null = null;
   /** Backing-store pixels per logical pixel (devicePixelRatio × CSS scale, capped at 4). */
-  private scale = 1;
+  private storeScale = 1;
+
+  /** Backing-store pixels per logical pixel, as set by `resize` (the STATS dialog is composed at this scale, D-19). */
+  get scale(): number {
+    return this.storeScale;
+  }
 
   constructor(readonly canvas: HTMLCanvasElement, public assets: RenderAssets | null) {
     canvas.width = WIDTH;
@@ -121,7 +126,7 @@ export class Renderer {
       this.canvas.width = w;
       this.canvas.height = h;
     }
-    this.scale = scale;
+    this.storeScale = scale;
   }
 
   /** Returns the HUD button under canvas coordinates, if any. */
@@ -138,7 +143,7 @@ export class Renderer {
     const view = this.view;
     if (!view) return;
     ctx.save();
-    ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+    ctx.setTransform(this.storeScale, 0, 0, this.storeScale, 0, 0);
     ctx.imageSmoothingEnabled = true;
     this.drawBackground(view);
     this.drawOverlays(view);

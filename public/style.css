@@ -66,3 +66,7 @@ dd { margin: 0; font-weight: bold; }
 #stats.stats-original .stats-ok{position:absolute;left:40.625%;top:79.58%;width:18.75%;height:10%;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:transparent;font-size:0;box-shadow:none;cursor:pointer;outline-offset:2px}
 #stats.stats-original .stats-ok:hover,#stats.stats-original .stats-ok:active,#stats.stats-original .stats-ok:focus-visible{background:transparent}
 @keyframes statsIn{from{opacity:0}to{opacity:1}}
+
+/* R2.0.17 (plan 05-08, D-19): the dialog is composed at the canvas scale into a child <canvas class="stats-picture">
+   of .zuma-stats (inserted first, under the OK control) instead of an inline background: one resampling only. */
+#stats.stats-original .stats-picture{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none}

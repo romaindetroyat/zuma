@@ -354,7 +354,7 @@ test('upscale2x: EPX smooths diagonals without inventing colours (differs from n
   const soft2 = upscale2x(soft);
   for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) assert.equal(px(soft2, x, y)[3], 90);
   const src = read('.compiled/upscale.js');
-  assert.doesNotMatch(src, /^(?!.*function).*\bdocument\b/m, 'no DOM access at module level');
+  assert.doesNotMatch(src, /^\S[^\n]*\bdocument\b/m, 'no DOM access at module level (column-0 statements)');
 });
 
 test('composeStatsDialog composes at the backing-store scale; main.js shows it in a child canvas, no PNG, no background image (D-19)', () => {

@@ -3,7 +3,7 @@ import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type Engi
 import { EXPLOSION_RGB, ballCss, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
-import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
+import { OriginalPack, tintSheet, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont } from './bitmapfont.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
@@ -45,15 +45,12 @@ class Game {
   private strings: Record<string, string> | null = null;
   /** Native STATS (D-01): original pieces + fonts + strings; null → vector STATS panel. */
   private statsKit: StatsKit | null = null;
+  /** The composed dialog, shown as the first child of `.zuma-stats` while the STATS are open (D-19). */
   private statsCanvas: HTMLCanvasElement | null = null;
-  private statsUrl: string | null = null;
   private statsRevealed = 0;
   private statsButton: ButtonState = 'normal';
   private statsTip = '';
   private statsValues: StatsValues | null = null;
-  /** Composition sequence and the sequence currently displayed: an encoded picture is applied only if it is newer than the one shown (monotonic), never dropped just because a newer composition started. */
-  private statsRender = 0;
-  private statsShown = 0;
   private statsTimers: number[] = [];
   /** Count-up timers (one armed at a time), purged with `statsTimers`. */
   private countTimers: number[] = [];
@@ -110,6 +107,8 @@ class Game {
     stage?.style.removeProperty('--k');
     const rect = this.canvas.getBoundingClientRect();
     this.renderer.resize(rect.width || WIDTH, dpr, false);
+    // The open dialog follows the new scale (D-19).
+    if (this.statsOpen) this.renderStats();
   }
 
   private bindScaling(): void {
@@ -586,8 +585,8 @@ class Game {
 
   /**
    * Opens the STATS dialog. The ten values go to the `strong#result-*` of the structure
-   * (vector panel) and, with the kit, into the composed 640×480 picture laid as the inline
-   * background of `.zuma-stats` (D-01). The best time per level is persisted under
+   * (vector panel) and, with the kit, into the dialog composed at the canvas scale and shown
+   * as a child canvas of `.zuma-stats` (D-01, D-19). The best time per level is persisted under
    * zuma.best.<id> on a win and always displayed as RECORD (D-04).
    */
   private openStats(outcome: 'live' | 'won' | 'lost' | 'gameover'): void {
@@ -636,8 +635,7 @@ class Game {
       this.renderStats();
       this.revealStats();
     } else {
-      const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
-      if (dialog) dialog.style.backgroundImage = '';
+      this.statsCanvas?.remove();
     }
     this.scheduleBonusCountUp();
     panel?.classList.add('open');
@@ -694,22 +692,21 @@ class Game {
     this.renderStats();
   }
 
-  /** Composes the dialog for the current reveal / button state and lays it as the inline background. */
+  /**
+   * Composes the dialog for the current reveal / button state at the renderer scale, straight into
+   * the child canvas of `.zuma-stats` (D-19: no 1 × intermediate, no PNG — at 3 × the ≈ 2000 × 1500
+   * picture would cost ~100 ms to encode at every count-up step). The dialog is still composed at run
+   * time with one OK and no `url(` in the stylesheet (D-01); only the display element changed.
+   */
   private renderStats(): void {
     const kit = this.statsKit;
     const values = this.statsValues;
     const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
     if (!kit || !values || !dialog || !this.statsOpen) return;
-    this.statsCanvas = composeStatsDialog(kit, values, { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip }, this.statsCanvas ?? undefined);
-    const seq = ++this.statsRender;
-    void preload(bitmapUrl(this.statsCanvas)).then(url => {
-      if (!this.statsOpen || seq <= this.statsShown) { revokeUrl(url); return; }
-      this.statsShown = seq;
-      const previous = this.statsUrl;
-      this.statsUrl = url;
-      dialog.style.backgroundImage = `url("${url}")`;
-      revokeUrl(previous);
-    });
+    const picture = this.statsCanvas ?? document.createElement('canvas');
+    picture.className = 'stats-picture';
+    this.statsCanvas = composeStatsDialog(kit, values, { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip }, picture, this.renderer.scale);
+    if (picture.parentElement !== dialog) dialog.prepend(picture);
   }
 
   /** Reveals the ten values one line every 90 ms with a `pop` (D-05); timers are purged by closeStats(). */
@@ -742,11 +739,7 @@ class Game {
     }
     this.statsBonus = null;
     this.statsOpen = false;
-    this.statsShown = ++this.statsRender; // drop any composition still being encoded
-    const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
-    if (dialog) dialog.style.backgroundImage = '';
-    revokeUrl(this.statsUrl);
-    this.statsUrl = null;
+    this.statsCanvas?.remove();
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
     if (outcome === 'won') await this.nextLevel();
@@ -779,21 +772,6 @@ function readBestTime(key: string): number | null {
   } catch {
     return null;
   }
-}
-
-/** Resolves once the browser has decoded the picture, so the background swap never paints an empty frame. */
-function preload(url: string): Promise<string> {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => resolve(url);
-    img.onerror = () => resolve(url);
-    img.src = url;
-  });
-}
-
-function revokeUrl(url: string | null): void {
-  if (!url || !url.startsWith('blob:')) return;
-  try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
 }
 
 /** An original tip (strings.json, `&cr;` → space) when the kit is loaded, else one of the built-in tips. */
