@@ -22,3 +22,11 @@
 3. Insertion : la bille glisse de son point d'impact vers la chaîne qui s'ouvre progressivement (~0,2 s), la destruction n'est évaluée qu'une fois la place faite.
 4. Rendu net à l'échelle de l'écran (texte, vecteurs) ; option de mise à l'échelle entière sans lissage.
 5. Recul : les billes roulent visiblement en arrière sur la distance du recul.
+
+## Deuxième session (2026-10-10, standalone R2.0.14 vagues 1-2)
+
+| # | Constat | Cause identifiée | Statut |
+|---|---------|------------------|--------|
+| U8 | Alerte près du trou beaucoup trop rapide et stressante d'un coup ; l'original s'accélère progressivement | `warning1.ogg` est un battement de 0,37 s joué en boucle continue par R2.0.14 ; l'original le répète à un rythme croissant | Plan 04-05 |
+| U9 | Trop de billes isolées, pas assez de groupes de couleur dans les premiers niveaux | `repeat`/`single` de `levels.xml` non utilisés ; séries limitées à 2 à l'apparition ; `repeat` pris pour un objectif de billes | Plan 04-06 |
+| U10 | Écrans STATS ne correspondent pas à l'original (vu sur la version sans 04-04) ; « creuser dans le .exe » | 04-04 livré depuis l'image R2.0.12 ; les ressources du .exe (dialogbox, GodHead, DialogButton, polices Cancun12 / NativeAlienExtended18, chaînes STATS) permettent une reconstruction native si l'image R2.0.12 n'est pas jugée fidèle | À valider sur le standalone 04-04 ; plan 04-07 si rejeté |
