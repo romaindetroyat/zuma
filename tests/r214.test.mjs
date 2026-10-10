@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Track, ZumaEngine, CANDIDATE } from '../.compiled/core.js';
+import { rollFrame, BALL_CIRCUMFERENCE } from '../.compiled/feedback.js';
 
 const straight = () => new Track([[0, 240], [640, 240]]);
 const frog = { x: 320, y: 400 };
@@ -84,4 +85,35 @@ test('projectiles leave from muzzleOffset', () => {
   near.command({ kind: 'shoot', x: 320, y: 0 });
   near.step();
   assert.ok(Math.abs(near.projectiles[0].y - (400 - CANDIDATE.ballRadius - CANDIDATE.projectileSpeed)) < 1e-9, `y=${near.projectiles[0].y}`);
+});
+
+test('rollFrame is monotone in s, wraps around the circumference and covers every frame', () => {
+  const frames = 50;
+  const c = BALL_CIRCUMFERENCE;
+  assert.ok(Math.abs(c - 2 * Math.PI * 16) < 1e-12);
+  const forward = [];
+  for (let s = 0; s < c - 1e-9; s += 0.5) forward.push(rollFrame(s, frames));
+  for (let i = 1; i < forward.length; i++) assert.ok(forward[i] >= forward[i - 1], `forward frame dropped at ${i}`);
+  assert.deepEqual([...new Set(forward)].sort((a, b) => a - b), Array.from({ length: frames }, (_, i) => i));
+  const backward = [];
+  for (let s = c - 0.25; s > 0; s -= 0.5) backward.push(rollFrame(s, frames));
+  for (let i = 1; i < backward.length; i++) assert.ok(backward[i] <= backward[i - 1], `backward frame rose at ${i}`);
+  assert.equal(rollFrame(-1, frames), rollFrame(c - 1, frames), 'negative s wraps');
+  assert.equal(rollFrame(123.4, 1), 0);
+  assert.equal(rollFrame(123.4, 0), 0);
+  assert.equal(rollFrame(20, frames, 200), rollFrame(10, frames), 'custom circumference scales the frame');
+});
+
+test('advancing balls roll forward, recoiling balls roll backwards', () => {
+  assert.ok(rollFrame(28, 50) > rollFrame(20, 50), 'advance increases the frame');
+  // r213 "local recoil" fixture: the destruction behind the rear segment makes it roll back.
+  const g = fixture([{ color: 3, s: 100 }, { color: 2, s: 132 }, { color: 0, s: 164 }, { color: 0, s: 196 }, { color: 3, s: 228 }]);
+  const rear = g.balls[0];
+  const startFrame = rollFrame(rear.s, 50);
+  g.command({ kind: 'shoot', x: 180, y: 240 });
+  run(g, 30);
+  assert.ok(g.events.some(e => e.kind === 'destroy'));
+  assert.ok(rear.s < 100, `rear ball recoiled (${rear.s})`);
+  assert.ok(rear.s > 0, 'no wrap-around over the recoil distance');
+  assert.ok(rollFrame(rear.s, 50) < startFrame, `frame ${rollFrame(rear.s, 50)} < ${startFrame} after recoil`);
 });
