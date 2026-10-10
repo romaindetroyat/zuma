@@ -21,7 +21,8 @@ export interface StatsKit {
   head: Bitmap | null;
   /** `DialogButton` with its mask: 360×48 = normal / hover / pressed, 120 px each. */
   button: Bitmap;
-  fonts: { title: BitmapFont; text: BitmapFont; tip: BitmapFont | null };
+  /** `tip` = Arial12Bold (else Cancun10); `tipSmall` = Cancun10 when a bigger tip font exists, tried before the ellipsis (D-20). */
+  fonts: { title: BitmapFont; text: BitmapFont; tip: BitmapFont | null; tipSmall: BitmapFont | null };
   strings: Record<string, string>;
 }
 
@@ -47,8 +48,11 @@ export const STATS_LAYOUT = {
   /** Columns: label at labelX, value right-aligned at valueRight; baselines from `statsRows(lineHeight, first)` (D-18). */
   left: { labelX: 135, valueRight: 299, first: 219 },
   right: { labelX: 335, valueRight: 489, first: 219 },
-  /** Tip inset: « ASTUCE : » at `labelX`, text lines centred on `x`, wrapped on `maxWidth`. */
-  tip: { x: 363, labelX: 150, baseline: 350, maxWidth: 270, lineHeight: 14, maxLines: 4, box: { x: 133, y: 320, w: 374, h: 60 } as Rect },
+  /**
+   * Tip inset (D-20): « ASTUCE : » at `labelX`, the text left-aligned `gap` px after the label on `maxLines`
+   * lines at most, wrapped on the room left in the box (never more than `maxWidth`).
+   */
+  tip: { labelX: 150, baseline: 350, gap: 6, maxWidth: 270, lineHeight: 14, maxLines: 2, align: 'left' as const, box: { x: 133, y: 320, w: 374, h: 60 } as Rect },
   ok: { x: 260, y: 382, w: 120, h: 48 } as Rect,
   okLabelBaseline: 412,
 };
@@ -72,19 +76,15 @@ export const STATS_LINE_MAX = 20;
 export interface StatsRows { left: number[]; right: { time: number; objective: number; rule: number; bonus: number; record: number } }
 
 /**
- * Baselines of the six left rows and of the right column for a line height: TEMPS / OBJECTIF one line
- * apart, the rule 0.63 line under OBJECTIF, BONUS 1.63 lines under it, RECORD 1.26 lines further (the
- * R2.0.12 reference proportions at 19 px).
+ * Baselines of the six left rows and of the right column for a line height (D-20): one grid for both
+ * columns — TEMPS on POINTS, OBJECTIF on COMBOS, the rule in the middle of the PIÈCES row, BONUS on
+ * SAUTS, RECORD on ENCH. MAX. Research 02 Q4 reads the right labels at x0 + 200 and the line height as
+ * font height + 1; the exact y of each line was not read, hence the shared grid.
  */
 export function statsRows(lineHeight: number, first = 219): StatsRows {
   const lh = Number.isFinite(lineHeight) ? lineHeight : STATS_LINE_FALLBACK;
   const left = Array.from({ length: 6 }, (_, i) => Math.round(first + i * lh));
-  const time = Math.round(first);
-  const objective = Math.round(first + lh);
-  const rule = objective + Math.round(0.63 * lh);
-  const bonus = objective + Math.round(1.63 * lh);
-  const record = bonus + Math.round(1.26 * lh);
-  return { left, right: { time, objective, rule, bonus, record } };
+  return { left, right: { time: left[0], objective: left[1], rule: left[2] - Math.round(0.35 * lh), bonus: left[3], record: left[4] } };
 }
 
 /**
@@ -165,6 +165,29 @@ export function wrapText(text: string, maxWidth: number, measure: (s: string) =>
   return lines;
 }
 
+/**
+ * Tip lines (D-20): wrapped with `measure` on `maxWidth`; when that takes more than two lines and a
+ * smaller font is available (`measureSmall`), wrapped again with it (`small` = true); when it still
+ * overflows, the second line is cut word by word until `line + '…'` fits. Never more than two lines.
+ */
+export function layoutTip(text: string, maxWidth: number, measure: (s: string) => number, measureSmall: ((s: string) => number) | null): { lines: string[]; small: boolean } {
+  const MAX = 2;
+  let lines = wrapText(text, maxWidth, measure);
+  let small = false;
+  let m = measure;
+  if (lines.length > MAX && measureSmall) {
+    lines = wrapText(text, maxWidth, measureSmall);
+    small = true;
+    m = measureSmall;
+  }
+  if (lines.length > MAX) {
+    const words = lines[MAX - 1].split(' ');
+    while (words.length > 0 && m(`${words.join(' ')}…`) > maxWidth) words.pop();
+    lines = [...lines.slice(0, MAX - 1), `${words.join(' ')}…`];
+  }
+  return { lines, small };
+}
+
 /** Keys of the original tips shown under « ASTUCE » (strings.json). */
 export const TIP_KEYS = [
   'SHOOT_COINS_FOR_EXTRA_POINTS', 'SCORE_POINTS_TO_FILL_THE_ORANGE_GAUGE', 'CREATE_COMBOS_OF_2_OR_MORE_EXPLOSIONS',
@@ -191,7 +214,7 @@ export async function loadStatsKit(pack: OriginalPack): Promise<StatsKit | null>
       pack.strings(),
     ]);
     if (!frame || !button || !title || !text || !strings) return null;
-    return { frame, head, button, fonts: { title, text, tip: arial ?? cancun10 }, strings };
+    return { frame, head, button, fonts: { title, text, tip: arial ?? cancun10, tipSmall: arial ? cancun10 : null }, strings };
   } catch {
     return null;
   }
@@ -258,12 +281,18 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
     if (shown) text.draw(ctx, value, row.right, row.baseline, { tint: row.color, align: 'right' });
   });
 
-  // Tip inset (a darker band as in the reference), label and wrapped lines.
+  // Tip inset (a darker band as in the reference): « ASTUCE : » then the text left-aligned after it on two
+  // lines at most (D-20) — the smaller font first, the ellipsis last (layoutTip).
   insetBox(ctx, L.tip.box);
-  text.draw(ctx, `${str('TIP', 'ASTUCE')} :`, L.tip.labelX, L.tip.baseline, { tint: C.label });
-  const lines = wrapText(options.tip, L.tip.maxWidth, s => tipFont.measure(s)).slice(0, L.tip.maxLines);
-  const firstBaseline = L.tip.baseline - (lines.length > 1 ? Math.round(((lines.length - 1) * L.tip.lineHeight) / 2) : 0);
-  lines.forEach((line, i) => tipFont.draw(ctx, line, L.tip.x, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'center' }));
+  const tipLabel = `${str('TIP', 'ASTUCE')} :`;
+  text.draw(ctx, tipLabel, L.tip.labelX, L.tip.baseline, { tint: C.label });
+  const textX = L.tip.labelX + text.measure(tipLabel) + L.tip.gap;
+  const tipWidth = Math.min(L.tip.maxWidth, L.tip.box.x + L.tip.box.w - 10 - textX);
+  const tipSmall = kit.fonts.tipSmall;
+  const tip = layoutTip(options.tip, tipWidth, s => tipFont.measure(s), tipSmall ? s => tipSmall.measure(s) : null);
+  const lineFont = tip.small && tipSmall ? tipSmall : tipFont;
+  const firstBaseline = L.tip.baseline - (tip.lines.length > 1 ? Math.round(L.tip.lineHeight / 2) : 0);
+  tip.lines.slice(0, L.tip.maxLines).forEach((line, i) => lineFont.draw(ctx, line, textX, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'left' }));
 
   // OK button: one of the three painted states, label centred (nudged when pressed).
   const state = options.button === 'hover' ? 1 : options.button === 'pressed' ? 2 : 0;

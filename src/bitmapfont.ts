@@ -374,11 +374,12 @@ export class BitmapFont {
     return atlas;
   }
 
-  /** Mask-only font: solid `rgb` kept where the mask luminance says so. */
+  /** Mask-only font: solid `rgb` kept where the mask luminance says so (glyph alpha normalised per rect, D-20). */
   private tintedAtlas(stem: string, mask: Bitmap, rgb: Rgb): HTMLCanvasElement | null {
     let alphaMask = this.alphaMasks.get(stem);
     if (alphaMask === undefined) {
-      alphaMask = luminanceToAlpha(mask);
+      const rects = this.script.layers.filter(l => l.image === stem).flatMap(l => [...l.rects.values()]);
+      alphaMask = luminanceToAlpha(mask, rects);
       this.alphaMasks.set(stem, alphaMask);
     }
     if (!alphaMask) return null;
@@ -421,8 +422,32 @@ function inkHeight(image: Bitmap, rect: FontRect, maskPicture: boolean): number 
   }
 }
 
-/** White picture whose alpha is the red channel of `mask` (PopCap `_name.gif` convention). */
-function luminanceToAlpha(mask: Bitmap): HTMLCanvasElement | null {
+/**
+ * Raises the alpha of every glyph whose peak sits under 255 so that its peak reaches 255, the other
+ * pixels of the rect scaled proportionally (D-20: in Cancun12 the « + » mask peaks at 187 where the
+ * digits reach 255, so the BONUS sign came out duller than its figures). Solid and empty glyphs and
+ * the pixels outside `rects` are untouched; a rect reaching outside the picture is clipped. Pure.
+ */
+export function normalizeGlyphAlpha(data: Uint8ClampedArray, width: number, rects: FontRect[]): void {
+  const height = width > 0 ? Math.floor(data.length / 4 / width) : 0;
+  for (const r of rects) {
+    const x0 = Math.max(0, r.x);
+    const y0 = Math.max(0, r.y);
+    const x1 = Math.min(width, r.x + r.w);
+    const y1 = Math.min(height, r.y + r.h);
+    let max = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) max = Math.max(max, data[(y * width + x) * 4 + 3]);
+    if (max === 0 || max >= 255) continue;
+    const k = 255 / max;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * width + x) * 4 + 3;
+      data[i] = Math.round(data[i] * k);
+    }
+  }
+}
+
+/** White picture whose alpha is the red channel of `mask` (PopCap `_name.gif` convention), each glyph of `rects` normalised. */
+function luminanceToAlpha(mask: Bitmap, rects: FontRect[] = []): HTMLCanvasElement | null {
   try {
     const out = canvasOf(mask.width, mask.height);
     const ctx = out.getContext('2d');
@@ -434,6 +459,7 @@ function luminanceToAlpha(mask: Bitmap): HTMLCanvasElement | null {
       d[i + 3] = d[i];
       d[i] = d[i + 1] = d[i + 2] = 255;
     }
+    normalizeGlyphAlpha(d, out.width, rects);
     ctx.putImageData(pixels, 0, 0);
     return out;
   } catch {
