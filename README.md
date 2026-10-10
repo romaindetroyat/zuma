@@ -45,6 +45,24 @@ npm run standalone                                                        # stan
 
 L'import décode les fichiers de courbes (`CURV` : points de contrôle puis polyligne échantillonnée au pixel avec drapeaux de tunnel), `levels.xml` (positions de la grenouille, découpes, réglages de difficulté, progression par temples) et renomme les sons selon les clés de `feedback.ts`.
 
+### Réglages originaux (`levels.xml` → `configFromSettings`)
+
+Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`configFromSettings`) les traduit en `EngineConfig`. Leur sémantique n'est documentée nulle part dans les données : le tableau distingue ce qui est vérifié (en jeu, sur l'original) de ce qui reste une hypothèse.
+
+| Réglage | Valeurs observées | Interprétation retenue | Statut |
+| --- | --- | --- | --- |
+| `score` | 1000 → 5000 (10000 en Gauntlet) | Points à marquer dans le niveau pour remplir la jauge orange et passer en mode ZUMA (`target`). Chaîne originale : « Marquez des points pour remplir la barre orange ». Le bonus de fin de niveau reste fixe (1000). | hypothèse (cohérente avec le texte d'aide) |
+| `repeat` | 40–50 (42 → 50 sur les plateaux doubles) | Probabilité (%) qu'une nouvelle bille répète la couleur de la précédente (`repeatChance`) ; des séries de 3 ou 4 apparaissent donc naturellement. | hypothèse (confirmée par l'impression de jeu : groupes constitués dès 1-1) |
+| `single` | 7–9, niveaux avancés seulement | Probabilité (%) d'une bille isolée : différente de la précédente et de la suivante (`singleChance`). | hypothèse |
+| `start` | 35 → 45 | Nombre de billes envoyées à vitesse rapide avant que la chaîne ralentisse à `speed`. | vérifié |
+| `speed` | 0,5 → 0,6 (px par pas à 100 Hz) | Vitesse de croisière de la chaîne, ×100 → px/s. | vérifié |
+| `slowfactor` | 4 | Diviseur de vitesse de la balle RALENTIR. | vérifié |
+| `firespeed` | 6 (px par pas à 100 Hz) | Vitesse du projectile, ×100/60 → px par tick. | vérifié |
+| `powerfreq` | 3000 (pas à 100 Hz) | Intervalle moyen entre deux power-ups ; garde = 30 % de la valeur, puis tirage par tick. | hypothèse |
+| `partime` | 90 → 130 (s) | Temps de référence affiché sur l'écran STATS (« OBJECTIF »). | vérifié |
+| `colors` | 4 (1-1 à 1-3 seulement) | Nombre de couleurs ; sinon déduit du temple (4, 5, 6). | hypothèse pour la déduction |
+| `zumaslow`, `zumaback`, `mergespeed`, `reloaddelay` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks`. | à confirmer |
+
 ### Écran STATS d'origine
 
 Avec le pack, l'écran STATS est le dialogue original lui-même (tête de divinité, titre, libellés, astuce et bouton OK peints) : les chiffres figés de l'image sont effacés au chargement par clonage de la texture voisine, puis les valeurs vivantes s'inscrivent exactement aux mêmes emplacements, dans la même typographie et les mêmes couleurs, sans aucun panneau superposé ; le bandeau HUD figé de l'image est rendu transparent pour laisser le HUD vivant du canvas. L'image vient d'un standalone R2.0.12 et n'entre jamais dans le dépôt :
@@ -99,4 +117,4 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.14 est une baseline jouable, pas une revendication de reproduction bit-à-bit. La loi RNG exacte des power-ups et plusieurs réglages originaux (`single`, `zumaslow`, `zumaback`, pièces bonus) restent à documenter.
+R2.0.14 est une baseline jouable, pas une revendication de reproduction bit-à-bit. La loi RNG exacte des power-ups et plusieurs réglages originaux (`zumaslow`, `zumaback`, pièces bonus) restent à documenter ; `repeat`, `single` et `score` sont interprétés comme décrit dans « Réglages originaux » (hypothèses à confirmer sur l'original).

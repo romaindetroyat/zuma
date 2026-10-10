@@ -4,11 +4,11 @@
 
 ## Tech Debt
 
-**Réglages originaux partiellement interprétés (`src/main.ts` `configFromSettings`):**
-- Issue: `single`, `zumaslow`, `zumaback`, `mergespeed`, `reloaddelay` ignorés ; `repeat` interprété comme objectif ZUMA ; nombre de couleurs déduit du temple faute de valeur explicite
+**Réglages originaux interprétés par hypothèse (`src/main.ts` `configFromSettings`, plan 04-06):**
+- Issue: depuis R2.0.14, `repeat` = probabilité (%) de répéter la couleur précédente, `single` = probabilité (%) de bille isolée, `score` = points à marquer dans le niveau pour remplir la jauge ZUMA (le bonus de fin de niveau reste fixe à 1000). Ces trois lectures sont des hypothèses : cohérentes avec le texte d'aide original (« Marquez des points pour remplir la barre orange ») et avec le retour utilisateur (groupes de couleurs dès 1-1), mais non mesurées sur l'original. Restent ignorés : `zumaslow`, `zumaback` (vraisemblablement vitesse/recul en mode ZUMA), `mergespeed` (n'a inspiré que `mergeTicks`), `reloaddelay` ; le nombre de couleurs est déduit du temple (4/5/6) quand `colors` est absent
 - Why: sémantique non documentée dans `levels.xml`
-- Impact: difficulté et rythme peuvent s'écarter de l'original
-- Fix approach: audit comportemental niveau par niveau avec le jeu original, puis verrouiller par tests
+- Impact: difficulté et rythme peuvent s'écarter de l'original (jauge trop rapide ou trop lente, fréquence des billes isolées)
+- Fix approach: mesurer sur le jeu original la taille des groupes à l'apparition (niveau 1-1 et un niveau à `single`), le nombre de points au passage en mode ZUMA, puis le comportement de la chaîne en mode ZUMA (`zumaslow`/`zumaback`) ; verrouiller par tests (`tests/r214.test.mjs` fixe déjà la loi actuelle)
 
 **Recul et poussoir (`moveChain`):**
 - Issue: quand un recul repousse la composante 0, le poussoir est bloqué pour le tick ; approximation du comportement original
