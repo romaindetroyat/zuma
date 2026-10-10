@@ -44,18 +44,63 @@ export const STATS_LAYOUT = {
   title: { x: 320, baseline: 174 },
   rule: { y: 188, x1: 150, x2: 490 },
   separator: { x: 321, y1: 200, y2: 312 },
-  left: { labelX: 135, valueRight: 299, baselines: [219, 238, 257, 276, 294, 313] },
-  right: { labelX: 335, valueRight: 489, baselines: { time: 219, objective: 238, rule: 250, bonus: 269, record: 293 } },
+  /** Columns: label at labelX, value right-aligned at valueRight; baselines from `statsRows(lineHeight, first)` (D-18). */
+  left: { labelX: 135, valueRight: 299, first: 219 },
+  right: { labelX: 335, valueRight: 489, first: 219 },
   /** Tip inset: « ASTUCE : » at `labelX`, text lines centred on `x`, wrapped on `maxWidth`. */
   tip: { x: 363, labelX: 150, baseline: 350, maxWidth: 270, lineHeight: 14, maxLines: 4, box: { x: 133, y: 320, w: 374, h: 60 } as Rect },
   ok: { x: 260, y: 382, w: 120, h: 48 } as Rect,
   okLabelBaseline: 412,
 };
 
-/** D-02 (locked): labels yellow, values cream, TEMPS/BONUS green, OBJECTIF orange, RECORD gold, title = the gif's own tint. */
-export const STATS_COLORS: { label: string; value: string; time: string; objective: string; bonus: string; record: string; title: null } = {
-  label: '#f5d65b', value: '#fcf4d0', time: '#58d828', objective: '#f0962c', bonus: '#58d828', record: '#fcdc80', title: null,
+/**
+ * Colours read in the original dialog (0x4525f0, §8): 0xffff00 before TEMPS, 0xffa500 before OBJECTIF,
+ * 0x2aff03 for BONUS, 0x9dcba2 for NO_TIME_BONUS; labels yellow, values cream, RECORD gold (D-02) and the
+ * NativeAlienExtended18 title multiplied by gold (D-18).
+ */
+export const STATS_COLORS = {
+  label: '#f5d65b', value: '#fcf4d0', time: '#ffff00', objective: '#ffa500', bonus: '#2aff03', noBonus: '#9dcba2', record: '#fcdc80', title: '#f0c040',
 };
+
+/** Line height of the two columns as a multiple of the text font's capital height (D-18). */
+export const STATS_LINE_RATIO = 1.65;
+/** Line height used when the font gives no usable capital height, and the bounds that keep the rows above the tip box (T-05-18). */
+export const STATS_LINE_FALLBACK = 19;
+export const STATS_LINE_MIN = 16;
+export const STATS_LINE_MAX = 20;
+
+export interface StatsRows { left: number[]; right: { time: number; objective: number; rule: number; bonus: number; record: number } }
+
+/**
+ * Baselines of the six left rows and of the right column for a line height: TEMPS / OBJECTIF one line
+ * apart, the rule 0.63 line under OBJECTIF, BONUS 1.63 lines under it, RECORD 1.26 lines further (the
+ * R2.0.12 reference proportions at 19 px).
+ */
+export function statsRows(lineHeight: number, first = 219): StatsRows {
+  const lh = Number.isFinite(lineHeight) ? lineHeight : STATS_LINE_FALLBACK;
+  const left = Array.from({ length: 6 }, (_, i) => Math.round(first + i * lh));
+  const time = Math.round(first);
+  const objective = Math.round(first + lh);
+  const rule = objective + Math.round(0.63 * lh);
+  const bonus = objective + Math.round(1.63 * lh);
+  const record = bonus + Math.round(1.26 * lh);
+  return { left, right: { time, objective, rule, bonus, record } };
+}
+
+/**
+ * Time bonus shown `elapsedMs` after the dialog opened (0x440b00, §8): nothing during the first
+ * second, then +100 every 100 ms (100 updates, then every 10) up to `total`; the last step is partial.
+ */
+export function bonusCountUp(total: number, elapsedMs: number): number {
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(elapsedMs) || elapsedMs < 1000) return 0;
+  return Math.min(total, 100 * (Math.floor((elapsedMs - 1000) / 100) + 1));
+}
+
+/** Pitch of the `endoflevelpop1` of each count-up step: 1 → 1.5 with the shown share (hypothesis A5: the original passes shown / 1000). */
+export function bonusPopRate(shown: number, total: number): number {
+  const share = total > 0 && Number.isFinite(shown) ? Math.max(0, Math.min(1, shown / total)) : 0;
+  return 1 + 0.5 * share;
+}
 
 /** « 29 s » under a minute, « 1:42 » beyond, like the original dialog. */
 export function formatSeconds(seconds: number): string {
@@ -66,12 +111,17 @@ export function formatSeconds(seconds: number): string {
 export interface StatsInput {
   levelScore: number; combos: number; coins: number; gaps: number; maxStreak: number; maxCombo: number;
   seconds: number; parTime: number; timeBonus: number; won: boolean; bestSeconds: number | null; noBonusLabel: string;
+  /** Share of `timeBonus` already counted up in the dialog (default: the whole bonus). */
+  timeBonusShown?: number;
 }
 
-/** The ten displayed strings (D-04, D-05): BONUS is `+N` only on a win with a time bonus; RECORD falls back to the current time. */
+/**
+ * The ten displayed strings (D-04, D-05): BONUS is `+N` only on a win with a time bonus (N = the counted-up
+ * share while the dialog is open, `timeBonusShown`); RECORD falls back to the current time.
+ */
 export function statsValues(input: StatsInput): StatsValues {
   const int = (v: number): string => String(Math.max(0, Math.round(Number.isFinite(v) ? v : 0)));
-  const bonus = input.won && input.timeBonus > 0 ? `+${int(input.timeBonus)}` : input.noBonusLabel;
+  const bonus = input.won && input.timeBonus > 0 ? `+${int(input.timeBonusShown ?? input.timeBonus)}` : input.noBonusLabel;
   return {
     points: int(input.levelScore),
     combos: int(input.combos),
@@ -177,19 +227,26 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   drawNineSlice(ctx, kit.frame, L.source, L.inset, L.frame);
   if (kit.head) ctx.drawImage(kit.head, L.head.x, L.head.y);
 
-  title.draw(ctx, str('STATS', 'STATISTIQUES'), L.title.x, L.title.baseline, { align: 'center' });
+  // Title in its own colours multiplied by gold (D-18); rows spaced 1.65 × the capital height, bounded (T-05-18).
+  title.draw(ctx, str('STATS', 'STATISTIQUES'), L.title.x, L.title.baseline, { align: 'center', multiply: C.title });
+  const cap = text.capHeight;
+  const lineHeight = Number.isFinite(cap) && cap > 0 ? Math.max(STATS_LINE_MIN, Math.min(STATS_LINE_MAX, Math.round(STATS_LINE_RATIO * cap))) : STATS_LINE_FALLBACK;
+  const leftRows = statsRows(lineHeight, L.left.first);
+  const rightRows = statsRows(lineHeight, L.right.first).right;
   rule(ctx, L.rule.x1, L.rule.y, L.rule.x2, L.rule.y);
   rule(ctx, L.separator.x, L.separator.y1, L.separator.x, L.separator.y2);
-  rule(ctx, L.right.labelX, L.right.baselines.rule, L.right.valueRight, L.right.baselines.rule);
+  rule(ctx, L.right.labelX, rightRows.rule, L.right.valueRight, rightRows.rule);
 
   // The ten rows in STATS_ORDER: label (yellow) at labelX, value right-aligned at `right`.
+  // The BONUS value without a « + » is the NO_TIME_BONUS label and takes its own tint (0x9dcba2).
   const leftLabels: Array<[string, string]> = [['POINTS', 'POINTS'], ['COMBOS', 'COMBOS'], ['COINS', 'PIÈCES'], ['GAPS', 'SAUTS'], ['MAX_CHAIN', 'ENCH. MAX.'], ['MAX_COMBO', 'COMBO MAX.']];
+  const bonusColor = values.bonus.startsWith('+') ? C.bonus : C.noBonus;
   const rows: Array<{ key: keyof StatsValues; label: string; labelX: number; right: number; baseline: number; color: string }> = [
-    ...leftLabels.map(([k, fb], i) => ({ key: STATS_ORDER[i], label: str(k, fb), labelX: L.left.labelX, right: L.left.valueRight, baseline: L.left.baselines[i], color: C.value })),
-    { key: 'time', label: str('YOUR_TIME', 'TEMPS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.time, color: C.time },
-    { key: 'objective', label: str('ACE_TIME', 'OBJECTIF'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.objective, color: C.objective },
-    { key: 'bonus', label: str('BONUS', 'BONUS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.bonus, color: C.bonus },
-    { key: 'record', label: str('BEST_TIME', 'RECORD'), labelX: L.right.labelX, right: L.right.valueRight, baseline: L.right.baselines.record, color: C.record },
+    ...leftLabels.map(([k, fb], i) => ({ key: STATS_ORDER[i], label: str(k, fb), labelX: L.left.labelX, right: L.left.valueRight, baseline: leftRows.left[i], color: C.value })),
+    { key: 'time', label: str('YOUR_TIME', 'TEMPS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: rightRows.time, color: C.time },
+    { key: 'objective', label: str('ACE_TIME', 'OBJECTIF'), labelX: L.right.labelX, right: L.right.valueRight, baseline: rightRows.objective, color: C.objective },
+    { key: 'bonus', label: str('BONUS', 'BONUS'), labelX: L.right.labelX, right: L.right.valueRight, baseline: rightRows.bonus, color: bonusColor },
+    { key: 'record', label: str('BEST_TIME', 'RECORD'), labelX: L.right.labelX, right: L.right.valueRight, baseline: rightRows.record, color: C.record },
   ];
   const revealed = Math.max(0, Math.min(STATS_ORDER.length, Math.floor(options.revealed)));
   rows.forEach((row, i) => {

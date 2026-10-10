@@ -263,7 +263,14 @@ export function measureText(font: FontScript, text: string): number {
 
 // ------------------------------------------------------------- canvas drawing
 
-export interface DrawOptions { tint?: string; align?: 'left' | 'center' | 'right'; alpha?: number }
+export interface DrawOptions {
+  /** Glyph colour of a mask-only font (default white); ignored by colour fonts. */
+  tint?: string;
+  align?: 'left' | 'center' | 'right';
+  alpha?: number;
+  /** Colour font only: the picture is multiplied by this colour (gold STATS title, D-18); ignored by mask fonts. */
+  multiply?: string;
+}
 
 type Rgb = [number, number, number];
 
@@ -293,6 +300,12 @@ const clamp255 = (v: number): number => Math.max(0, Math.min(255, Math.round(v))
 export class BitmapFont {
   readonly ascent: number;
   readonly height: number;
+  /**
+   * Height of a capital letter: the ink rows of the glyph 'A' in the first layer that defines it
+   * (the atlas cell is taller than the letter: Cancun12 keeps 'A' in 11 of its 21 rows), else the
+   * cell height, else `ascent`. Drives the STATS line height (D-18).
+   */
+  readonly capHeight: number;
   private readonly atlases = new Map<string, HTMLCanvasElement | null>();
   private readonly alphaMasks = new Map<string, HTMLCanvasElement | null>();
 
@@ -300,6 +313,18 @@ export class BitmapFont {
     const m = fontMetrics(script);
     this.ascent = m.ascent;
     this.height = m.height;
+    this.capHeight = this.measureCapHeight();
+  }
+
+  private measureCapHeight(): number {
+    for (const layer of this.script.layers) {
+      const rect = layer.rects.get('A');
+      if (!rect) continue;
+      const image = this.images.get(layer.image) ?? this.images.values().next().value ?? null;
+      const ink = image ? inkHeight(image, rect, this.maskOnly) : 0;
+      return ink > 0 ? ink : rect.h > 0 ? rect.h : this.ascent;
+    }
+    return this.ascent;
   }
 
   measure(text: string): number {
@@ -314,7 +339,8 @@ export class BitmapFont {
     const oy = Math.round(y);
     const alpha = options.alpha ?? 1;
     const tint = parseColor(options.tint);
-    const sources = this.script.layers.map(layer => this.sourceFor(layer, tint));
+    const multiply = options.multiply ? parseColor(options.multiply) : null;
+    const sources = this.script.layers.map(layer => this.sourceFor(layer, tint, multiply));
     const savedAlpha = ctx.globalAlpha;
     for (const g of layout.glyphs) {
       const src = sources[g.layer];
@@ -327,15 +353,19 @@ export class BitmapFont {
     return layout.width;
   }
 
-  /** Bitmap to cut a layer's glyphs from: the picture itself, or a cached tinted / multiplied atlas. */
-  private sourceFor(layer: FontLayer, tint: Rgb): Bitmap | null {
+  /**
+   * Bitmap to cut a layer's glyphs from: the picture itself, or a cached tinted (mask font) /
+   * multiplied (colour font: `multiply` option × `LayerSetColorMult`) atlas.
+   */
+  private sourceFor(layer: FontLayer, tint: Rgb, multiply: Rgb | null): Bitmap | null {
     const base = this.images.get(layer.image) ?? this.images.values().next().value ?? null;
     if (!base) return null;
     const mult = layer.colorMult;
-    if (!this.maskOnly && !mult) return base;
-    const rgb: Rgb = this.maskOnly ? [...tint] : [255, 255, 255];
+    const multiplied = !this.maskOnly && multiply !== null;
+    if (!this.maskOnly && !mult && !multiplied) return base;
+    const rgb: Rgb = this.maskOnly ? [...tint] : multiplied ? [...multiply] : [255, 255, 255];
     if (mult) for (let i = 0; i < 3; i++) rgb[i] = clamp255(rgb[i] * mult[i]);
-    const key = `${layer.image}|${rgb.join(',')}`;
+    const key = this.maskOnly ? `${layer.image}|tint|${rgb.join(',')}` : `${layer.image}|mult|${rgb.join(',')}`;
     let atlas = this.atlases.get(key);
     if (atlas === undefined) {
       atlas = this.maskOnly ? this.tintedAtlas(layer.image, base, rgb) : multipliedAtlas(base, rgb);
@@ -360,6 +390,34 @@ export class BitmapFont {
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(alphaMask, 0, 0);
     return out;
+  }
+}
+
+/**
+ * Number of rows of `rect` holding ink: red channel for a mask picture, alpha for a composed
+ * colour picture (threshold 32). 0 when the pixels cannot be read (no canvas, tainted image).
+ */
+function inkHeight(image: Bitmap, rect: FontRect, maskPicture: boolean): number {
+  if (!(rect.w > 0) || !(rect.h > 0)) return 0;
+  try {
+    const out = canvasOf(rect.w, rect.h);
+    const ctx = out.getContext('2d');
+    if (!ctx) return 0;
+    ctx.drawImage(image, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    const d = ctx.getImageData(0, 0, rect.w, rect.h).data;
+    const channel = maskPicture ? 0 : 3;
+    let first = -1;
+    let last = -1;
+    for (let y = 0; y < rect.h; y++) {
+      let ink = false;
+      for (let x = 0; x < rect.w && !ink; x++) ink = d[(y * rect.w + x) * 4 + channel] > 32;
+      if (!ink) continue;
+      if (first < 0) first = y;
+      last = y;
+    }
+    return first < 0 ? 0 : last - first + 1;
+  } catch {
+    return 0;
   }
 }
 
