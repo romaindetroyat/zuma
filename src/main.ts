@@ -53,7 +53,7 @@ class Game {
   private frame = 0;
   private accumulator = 0;
   private lastTime = 0;
-  private fx: Fx = { bursts: [], floats: [], tongueStart: -Infinity };
+  private fx: Fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
   private message: { text: string; sub: string | null; until: number } | null = null;
   private endAt: number | null = null;
   private seed = Date.now() >>> 0;
@@ -141,7 +141,7 @@ class Game {
   // ----------------------------------------------------------------- assets
 
   private async loadAssets(pack: OriginalPack): Promise<RenderAssets> {
-    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives] = await Promise.all([
+    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, pitcover, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives] = await Promise.all([
       pack.ballSheets(),
       pack.shadow('_ballshadow'),
       pack.powerIcons('bomb'),
@@ -149,6 +149,7 @@ class Game {
       pack.powerIcons('backwards'),
       pack.powerIcons('accuracy'),
       pack.masked('hole'),
+      pack.sheet('pitcover', 88, '_pitcover'),
       pack.sheet('grayplosion', 86),
       pack.masked('smallfrogonpad'),
       pack.masked('tongue'),
@@ -159,7 +160,7 @@ class Game {
       pack.masked('toadlives'),
     ]);
     const explosions = grey ? EXPLOSION_RGB.map(rgb => tintSheet(grey, rgb)) : EXPLOSION_RGB.map(() => null);
-    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives };
+    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives };
   }
 
   // ----------------------------------------------------------------- levels
@@ -234,7 +235,7 @@ class Game {
     }, this.seed);
     engine.score = this.carriedScore;
     this.engine = engine;
-    this.fx = { bursts: [], floats: [], tongueStart: -Infinity };
+    this.fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
     this.endAt = null;
     this.paused = false;
     const art = this.pack && this.level.graphics ? await this.pack.levelArt(this.level.graphics) : null;
@@ -324,7 +325,9 @@ class Game {
     const playing = engine.state === 'playing';
     const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.feedSpeed, playing });
     this.audio.setLoop('rolling', lv.rolling);
-    this.audio.pulse('warning', warningLevel(headDistance, playing));
+    // The lid follows the chain's proximity even while it drains into the pit; the beat only plays live (D-08).
+    this.fx.threat = warningLevel(headDistance, true);
+    this.audio.pulse('warning', playing ? this.fx.threat : 0);
   }
 
   private hud(engine: ZumaEngine): HudState {

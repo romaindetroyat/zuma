@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { insertionPose } from '../.compiled/feedback.js';
-import { FROG_FRONT, FROG_BACK } from '../.compiled/render.js';
+import { FROG_FRONT, FROG_BACK, pitCoverFrame } from '../.compiled/render.js';
 
 const from = { x: 100, y: 300 };
 const to = { x: 220, y: 180 };
@@ -89,6 +89,23 @@ test('warningInterval shrinks monotonically from 1.1 s to 0.22 s; warningGain ri
   assert.equal(warningGain(1), 1);
   assert.ok(warningGain(0.5) > 0.35 && warningGain(0.5) < 1, 'gain rises with the threat');
   assert.ok(warningGain(0.25) < warningGain(0.75), 'monotone');
+});
+
+test('pitCoverFrame: closed lid at threat 0, last frame at the skull, monotone in between', () => {
+  assert.equal(pitCoverFrame(0, 12), 0);
+  assert.equal(pitCoverFrame(1, 12), 11);
+  assert.equal(pitCoverFrame(0.5, 12), 5);
+  assert.equal(pitCoverFrame(0.75, 12), 8, 'near → frame ≥ 8');
+  assert.equal(pitCoverFrame(-1, 12), 0, 'clamped below');
+  assert.equal(pitCoverFrame(2, 12), 11, 'clamped above');
+  assert.equal(pitCoverFrame(NaN, 12), 0, 'NaN → closed');
+  assert.equal(pitCoverFrame(1, 1), 0, 'single-frame sheet');
+  let previous = -1;
+  for (let i = 0; i <= 20; i++) {
+    const f = pitCoverFrame(i / 20, 12);
+    assert.ok(f >= previous, 'non-decreasing');
+    previous = f;
+  }
 });
 
 test('gap keeps its original cue and recoil adds none (D-09)', () => {

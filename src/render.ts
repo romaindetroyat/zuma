@@ -12,6 +12,8 @@ export interface RenderAssets {
   ballShadow: Bitmap | null;
   powers: Record<PowerKind, Array<Bitmap | null>>;
   hole: Bitmap | null;
+  /** pitcover: 12 frames 88×88 (closed skull lid → fully open) masked by _pitcover, drawn over the hole by threat level. */
+  pitcover: Sheet | null;
   explosions: Array<Sheet | null>;
   frogPad: Bitmap | null;
   tongue: Bitmap | null;
@@ -33,8 +35,11 @@ export interface LevelView {
 
 export interface FloatingText { text: string; x: number; y: number; start: number; color: string }
 
-/** Presentation state: particle bursts, floating texts and the tick of the last shot (tongue flick). */
-export interface Fx { bursts: ColorBurst[]; floats: FloatingText[]; tongueStart: number }
+/**
+ * Presentation state: particle bursts, floating texts, the tick of the last shot (tongue flick)
+ * and the threat level 0..1 (head ball near the skull: warning beat + pit cover opening).
+ */
+export interface Fx { bursts: ColorBurst[]; floats: FloatingText[]; tongueStart: number; threat: number }
 
 export interface HudState {
   levelLabel: string;
@@ -130,7 +135,7 @@ export class Renderer {
     ctx.imageSmoothingEnabled = true;
     this.drawBackground(view);
     this.drawOverlays(view, frame);
-    this.drawHoles(view);
+    this.drawHoles(view, fx);
     for (const chain of engine.chains) this.drawChain(engine, chain, frame);
     this.drawProjectiles(engine, frame);
     this.drawCutouts(view);
@@ -215,7 +220,8 @@ export class Renderer {
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
   }
 
-  private drawHoles(view: LevelView): void {
+  /** Skull hole at each track end; with the pack, the pit cover frame opens with `fx.threat` (0 = closed lid, 1 = open). */
+  private drawHoles(view: LevelView, fx: Fx): void {
     const ctx = this.ctx;
     for (const track of view.tracks) {
       const end = track.pointAt(track.length);
@@ -226,6 +232,11 @@ export class Renderer {
         ctx.translate(end.x, end.y);
         ctx.rotate(angle + Math.PI / 2);
         ctx.drawImage(this.assets.hole, -44, -44);
+        const cover = this.assets.pitcover;
+        if (cover) {
+          const frame = pitCoverFrame(fx.threat, cover.frames);
+          ctx.drawImage(cover.image, 0, frame * cover.frameHeight, cover.frameWidth, cover.frameHeight, -cover.frameWidth / 2, -cover.frameHeight / 2, cover.frameWidth, cover.frameHeight);
+        }
         ctx.restore();
         continue;
       }
@@ -693,6 +704,12 @@ function shade(hex: string, factor: number): string {
   const g = Math.round(((n >> 8) & 255) * factor);
   const b = Math.round((n & 255) * factor);
   return `rgb(${r},${g},${b})`;
+}
+
+/** Pit cover frame for a threat level 0..1: 0 → closed lid (frame 0), 1 → last frame (open). */
+export function pitCoverFrame(threat: number, frames: number): number {
+  const t = Number.isFinite(threat) ? Math.max(0, Math.min(1, threat)) : 0;
+  return Math.min(frames - 1, Math.max(0, Math.floor(t * (frames - 1))));
 }
 
 export function ballPosition(ball: Ball, track: Track): Point {
