@@ -4,6 +4,7 @@ import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './fee
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
+import { loadBitmapFont } from './bitmapfont.js';
 import { STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
@@ -40,6 +41,8 @@ class Game {
   private readonly renderer: Renderer;
   private readonly audio = new AudioManager();
   private pack: OriginalPack | null = null;
+  /** Original strings (`strings.json`) for the in-game messages (GET_READY / GO); null without the pack. */
+  private strings: Record<string, string> | null = null;
   /** Native STATS (D-01): original pieces + fonts + strings; null → vector STATS panel. */
   private statsKit: StatsKit | null = null;
   private statsCanvas: HTMLCanvasElement | null = null;
@@ -135,6 +138,7 @@ class Game {
     this.pack = await OriginalPack.load();
     await this.audio.discover();
     if (this.pack) {
+      this.strings = await this.pack.strings();
       this.renderer.assets = await this.loadAssets(this.pack);
       // Loaded in the background: a STATS opened before the kit is ready uses the vector panel.
       void loadStatsKit(this.pack).then(kit => { this.statsKit = kit; });
@@ -147,10 +151,15 @@ class Game {
     requestAnimationFrame(t => this.loop(t));
   }
 
+  /** Read-only view for review (`?debug=1`, T-05-10): the running engine and the resolved level. */
+  debugState(): { engine: ZumaEngine | null; level: ResolvedLevel | null } {
+    return { engine: this.engine, level: this.level };
+  }
+
   // ----------------------------------------------------------------- assets
 
   private async loadAssets(pack: OriginalPack): Promise<RenderAssets> {
-    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, pitcover, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives] = await Promise.all([
+    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, pitcover, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, titleFont, textFont, floatFont] = await Promise.all([
       pack.ballSheets(),
       pack.shadow('_ballshadow'),
       pack.powerIcons('bomb'),
@@ -167,9 +176,15 @@ class Game {
       pack.masked('gauge'),
       pack.masked('gaugegreen', '_gauge'),
       pack.masked('toadlives'),
+      pack.sheet('coin', 36, '_coin'),
+      pack.image('sparkle'),
+      loadBitmapFont(pack, 'nativealienextended18'),
+      loadBitmapFont(pack, 'cancun12'),
+      loadBitmapFont(pack, 'cancunfloat14'),
     ]);
     const explosions = grey ? EXPLOSION_RGB.map(rgb => tintSheet(grey, rgb)) : EXPLOSION_RGB.map(() => null);
-    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives };
+    const fonts = titleFont || textFont || floatFont ? { title: titleFont, text: textFont, float: floatFont } : null;
+    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, fonts };
   }
 
   // ----------------------------------------------------------------- levels
@@ -245,6 +260,8 @@ class Game {
       muzzleOffset: this.renderer.assets?.frogPad ? FROG_FRONT : CANDIDATE.muzzleOffset,
     }, this.seed);
     engine.score = this.carriedScore;
+    // Coin spots of the pack level (D-07); an empty list keeps the engine free of extra RNG draws.
+    engine.setTreasure(this.level.graphics?.treasure ?? []);
     this.engine = engine;
     this.fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
     this.endAt = null;
@@ -252,7 +269,8 @@ class Game {
     const art = this.pack && this.level.graphics ? await this.pack.levelArt(this.level.graphics) : null;
     const view: LevelView = { name: this.level.name, tracks: this.level.tracks, frog: this.level.frog, art, skullRotation: this.level.graphics?.skullRotation ?? null };
     this.renderer.setLevel(view);
-    this.showMessage(this.level.name, `Niveau ${this.level.label}`, 150);
+    // « Attention » (D-11) stays up for the whole fast feed; the `go` event replaces it with « PARTEZ ».
+    this.showMessage(this.strings?.GET_READY ?? 'Attention', `${this.level.name} — Niveau ${this.level.label}`, 100000);
     this.audio.play({ key: 'gamestart', gain: 0.7, rate: 1 });
   }
 
@@ -393,15 +411,27 @@ class Game {
           this.float(names[String(e.power)] ?? String(e.power), Number(e.x), Number(e.y) - 24, '#c3f584', engine.tick);
           break;
         }
+        case 'go':
+          this.showMessage(this.strings?.GO ?? 'PARTEZ', null, 45);
+          break;
+        case 'coin':
+          this.float(`+${e.points}`, Number(e.x), Number(e.y) - 20, '#ffd45a', engine.tick);
+          break;
+        case 'cleanup':
+          // End-of-level tally (D-10): one « +10 » per step along the track; the rising bonuspop comes from soundCues.
+          this.float(`+${e.points}`, Number(e.x), Number(e.y) - 16, '#fff1a8', engine.tick);
+          break;
         case 'zuma':
           this.showMessage('ZUMA !', 'Videz la chaîne', 120);
           break;
         case 'lost':
           this.showMessage('Perdu…', engine.lives >= 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
           break;
-        case 'won':
-          this.showMessage('Niveau terminé !', `Bonus ${engine.config.levelBonus}`, 180);
+        case 'won': {
+          const timeBonus = Number(e.timeBonus) || 0;
+          this.showMessage('Niveau terminé !', timeBonus > 0 ? `Bonus de temps +${timeBonus}` : `Bonus ${Number(e.levelBonus) || engine.config.levelBonus}`, 180);
           break;
+        }
       }
     }
   }
@@ -413,7 +443,8 @@ class Game {
 
   private checkOutcome(engine: ZumaEngine): void {
     if (engine.state === 'playing' || engine.state === 'clearing' || engine.state === 'draining') return;
-    if (this.endAt === null) this.endAt = this.frame + 90;
+    // D-10: the STATS open 60 ticks after the tally reaches the skull, 90 after a loss.
+    if (this.endAt === null) this.endAt = this.frame + (engine.state === 'won' ? 60 : 90);
     if (this.frame < this.endAt) return;
     this.endAt = Infinity;
     this.openStats(engine.state === 'won' ? 'won' : engine.state === 'gameover' ? 'gameover' : 'lost');
@@ -688,11 +719,19 @@ export { formatSeconds } from './statsdialog.js';
  * Interpretation (documented in README « Réglages originaux »): `score` = points to fill the
  * gauge (ZUMA mode), `repeat` = % chance of repeating the previous colour, `single` = % chance
  * of an isolated ball. The level bonus stays a fixed 1000 points: `score` is an objective, not a bonus.
+ * `partime` = expert time (s) shown as OBJECTIF and used for the time bonus; `zumaslow` / `zumaback`
+ * (100 Hz steps) × 0.6 → ticks of slowdown / rollback when the ZUMA mode starts (hypotheses, README).
  */
 export function configFromSettings(settings: PackSettings | undefined, stage: number): Partial<EngineConfig> {
   const s = settings ?? { id: 'default' };
   const colors = s.colors ?? (stage < 3 ? 4 : stage < 6 ? 5 : 6);
   const powerfreq = s.powerfreq ?? 3000;
+  // T-05-11: pack numbers are untrusted — finite, non-negative, 100 Hz steps × 0.6 → 60 Hz ticks.
+  const ticks = (steps: unknown): number => {
+    const v = Number(steps);
+    return Number.isFinite(v) && v > 0 ? Math.round(v * 0.6) : 0;
+  };
+  const parTime = Number(s.partime);
   return {
     colors: Math.max(3, Math.min(6, colors)),
     start: s.start ?? 35,
@@ -706,6 +745,9 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
     powerGuardTicks: Math.round(powerfreq * 0.3),
     powerChance: 1 / Math.max(60, powerfreq * 0.3),
     levelBonus: 1000,
+    parTime: Number.isFinite(parTime) && parTime > 0 ? parTime : 0,
+    zumaBackTicks: ticks(s.zumaback),
+    zumaSlowTicks: ticks(s.zumaslow),
   };
 }
 
@@ -724,6 +766,10 @@ if (typeof document !== 'undefined' && document.getElementById('game')) {
   try {
     const game = new Game();
     game.start().catch(reportBootError);
+    // `?debug=1` (T-05-10): read-only handle for review scripts, same trust model as `?level=`.
+    try {
+      if (new URLSearchParams(location.search).get('debug') === '1') (window as unknown as { __zuma?: unknown }).__zuma = { game };
+    } catch { /* no location */ }
   } catch (error) {
     reportBootError(error);
   }

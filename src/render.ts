@@ -4,8 +4,9 @@
  * tests never depend on proprietary media.
  */
 import { type Ball, type Chain, type Point, type PowerKind, type Track, type ZumaEngine } from './core.js';
-import { EXPLOSION_FRAME_TICKS, EXPLOSION_RGB, PARTICLE_LIFE_TICKS, PARTICLE_RGB, explosionFrame, insertionPose, particleAlpha, particleColor, rollFrame, type ColorBurst } from './feedback.js';
+import { EXPLOSION_FRAME_TICKS, EXPLOSION_RGB, PARTICLE_LIFE_TICKS, PARTICLE_RGB, coinFrame, explosionFrame, insertionPose, particleAlpha, particleColor, rollFrame, sparkleFrame, type ColorBurst } from './feedback.js';
 import type { Bitmap, LevelArt, Sheet } from './original.js';
+import type { BitmapFont } from './bitmapfont.js';
 
 export interface RenderAssets {
   balls: Array<Sheet | null>;
@@ -23,6 +24,12 @@ export interface RenderAssets {
   gauge: Bitmap | null;
   gaugeGreen: Bitmap | null;
   lives: Bitmap | null;
+  /** COIN: 30 frames 36×36 (one every 3 ticks) masked by _COIN (D-08). */
+  coin: Sheet | null;
+  /** sparkle: 14 horizontal frames 20×20 on black, composited `lighter` over the coin (D-08). */
+  sparkle: Bitmap | null;
+  /** Original bitmap fonts: title (NativeAlienExtended18) and text (Cancun12) for the HUD messages, float (CancunFloat14) for the floating texts. */
+  fonts: { title: BitmapFont | null; text: BitmapFont | null; float: BitmapFont | null } | null;
 }
 
 export interface LevelView {
@@ -137,6 +144,7 @@ export class Renderer {
     this.drawOverlays(view);
     this.drawHoles(view, fx);
     for (const chain of engine.chains) this.drawChain(engine, chain, frame);
+    this.drawCoin(engine);
     this.drawProjectiles(engine, frame);
     this.drawCutouts(view);
     this.drawFrog(engine, view, fx, frame);
@@ -378,6 +386,46 @@ export class Renderer {
     ctx.fillText(POWER_GLYPH[power], 0, 1);
   }
 
+  // ------------------------------------------------------------------ coin
+
+  /**
+   * The coin on its treasure point (D-08): COIN frame by `coinFrame(tick)` centred on (x, y),
+   * then the periodic sparkle (`sparkleFrame`) added `lighter` on its upper-right edge.
+   * Without the sprite: gold disc with a dark ring and a highlight.
+   */
+  private drawCoin(engine: ZumaEngine): void {
+    const coin = engine.coin;
+    if (!coin) return;
+    const ctx = this.ctx;
+    const sheet = this.assets?.coin ?? null;
+    if (sheet) {
+      const f = coinFrame(engine.tick, sheet.frames);
+      ctx.drawImage(sheet.image, 0, f * sheet.frameHeight, sheet.frameWidth, sheet.frameHeight, coin.x - sheet.frameWidth / 2, coin.y - sheet.frameHeight / 2, sheet.frameWidth, sheet.frameHeight);
+    } else {
+      const g = ctx.createRadialGradient(coin.x - 4, coin.y - 5, 2, coin.x, coin.y, 12);
+      g.addColorStop(0, '#fff3b0');
+      g.addColorStop(0.5, '#f2c230');
+      g.addColorStop(1, '#c48a10');
+      ctx.save();
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(coin.x, coin.y, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#8a5a10';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+    const sparkle = this.assets?.sparkle ?? null;
+    const sf = sparkleFrame(engine.tick);
+    if (sparkle && sf >= 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(sparkle, sf * 20, 0, 20, 20, coin.x + 8, coin.y - 18, 20, 20);
+      ctx.restore();
+    }
+  }
+
   private drawProjectiles(engine: ZumaEngine, frame: number): void {
     for (const p of engine.projectiles) this.drawBall(p.color, p.x, p.y, (p.x + p.y) * 0.5, 1, 1, undefined, frame);
   }
@@ -523,10 +571,16 @@ export class Renderer {
       }
       ctx.restore();
     }
+    const floatFont = this.assets?.fonts?.float ?? null;
     for (const t of fx.floats) {
       const age = engine.tick - t.start;
       const alpha = Math.max(0, 1 - age / PARTICLE_LIFE_TICKS / 1.5);
       if (alpha <= 0) continue;
+      if (floatFont) {
+        // Original floating font (CancunFloat14, its own gold colouring); baseline half an ascent below the anchor.
+        floatFont.draw(ctx, t.text, t.x, t.y - age * 0.5 + floatFont.ascent / 2, { align: 'center', alpha, tint: t.color });
+        continue;
+      }
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.font = 'bold 16px "Trebuchet MS", Verdana, sans-serif';
@@ -660,7 +714,26 @@ export class Renderer {
     }
     ctx.restore();
 
-    if (hud.message) {
+    if (hud.message && this.assets?.fonts?.title) {
+      // Original fonts (D-11): NativeAlienExtended18 title, Cancun12 cream sub-line.
+      const { title, text } = this.assets.fonts;
+      ctx.save();
+      title.draw(ctx, hud.message, WIDTH / 2, 230, { align: 'center' });
+      if (hud.subMessage) {
+        if (text) text.draw(ctx, hud.subMessage, WIDTH / 2, 262, { align: 'center', tint: '#fcf4d0' });
+        else {
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.font = 'bold 20px "Trebuchet MS", Verdana, sans-serif';
+          ctx.lineWidth = 5;
+          ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+          ctx.strokeText(hud.subMessage, WIDTH / 2, HEIGHT / 2 + 30);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(hud.subMessage, WIDTH / 2, HEIGHT / 2 + 30);
+        }
+      }
+      ctx.restore();
+    } else if (hud.message) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';

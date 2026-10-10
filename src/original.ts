@@ -53,6 +53,9 @@ export interface PackSettings {
   firespeed?: number;
   powerfreq?: number;
   partime?: number;
+  /** ZUMA-mode slowdown / rollback lengths in 100 Hz steps (only `lvl35` sets them). */
+  zumaslow?: number;
+  zumaback?: number;
   [key: string]: unknown;
 }
 export interface PackData {
