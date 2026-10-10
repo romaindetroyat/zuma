@@ -129,3 +129,50 @@ test('main.js opens the native STATS through composeStatsDialog / bestTimeKey an
   assert.doesNotMatch(main, /statsArt|STATS_SLOT_IDS|'zuma\.best'/);
   assert.match(fs.readFileSync('index.html', 'utf8'), /id="result-expert">PAS DE BONUS</);
 });
+
+// ---------------------------------------------------------------- configFromSettings (GAME-01, plan 05-04)
+import { configFromSettings } from '../.compiled/main.js';
+
+test('configFromSettings: partime, zumaslow/zumaback (×0.6 → ticks), single and the temple colours (lvl35)', () => {
+  const c = configFromSettings({ id: 'lvl35', speed: 0.6, start: 45, score: 4500, single: 8, zumaslow: 500, zumaback: 200, partime: 130 }, 3);
+  assert.equal(c.parTime, 130, 'partime (s) → parTime');
+  assert.equal(c.zumaSlowTicks, 300, 'zumaslow 500 steps at 100 Hz → 300 ticks');
+  assert.equal(c.zumaBackTicks, 120, 'zumaback 200 steps at 100 Hz → 120 ticks');
+  assert.equal(c.singleChance, 0.08, 'single 8 % → 0.08');
+  assert.equal(c.target, 4500, 'score → target');
+  assert.equal(c.colors, 5, 'temple 4 (stage index 3) → 5 colours');
+  assert.equal(c.start, 45);
+  assert.ok(Math.abs(c.speed - 60) < 1e-9, 'speed 0.6 px/step → 60 px/s');
+});
+
+test('configFromSettings: defaults, bounds and temple colours (T-05-11)', () => {
+  const d = configFromSettings({ id: 'x' }, 0);
+  assert.equal(d.colors, 4, 'temple 1 → 4 colours');
+  assert.equal(d.parTime, 0);
+  assert.equal(d.zumaSlowTicks, 0);
+  assert.equal(d.zumaBackTicks, 0);
+  assert.equal(d.singleChance, 0);
+  assert.equal(configFromSettings({ id: 'x' }, 6).colors, 6, 'temple 7 → 6 colours');
+  assert.equal(configFromSettings({ id: 'x' }, 4).colors, 5, 'temple 5 → 5 colours');
+  assert.equal(configFromSettings({ id: 'x', colors: 9 }, 0).colors, 6, 'colors bounded to 6');
+  assert.equal(configFromSettings({ id: 'x', colors: 1 }, 0).colors, 3, 'colors bounded to 3');
+  assert.equal(configFromSettings({ id: 'x', single: 150 }, 0).singleChance, 1, 'single bounded to 100 %');
+  assert.equal(configFromSettings({ id: 'x', single: -5 }, 0).singleChance, 0);
+  assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaSlowTicks, 0, 'negative → 0');
+  assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaBackTicks, 0, 'NaN → 0');
+  assert.equal(configFromSettings({ id: 'x', zumaslow: Number.POSITIVE_INFINITY }, 0).zumaSlowTicks, 0, 'non-finite → 0');
+  assert.equal(configFromSettings({ id: 'x', partime: -3 }, 0).parTime, 0, 'negative partime → 0');
+  assert.equal(configFromSettings(undefined, 0).parTime, 0, 'no settings → defaults');
+});
+
+test('render.js draws the coin and its sparkle; main.js shows GET_READY then reacts to go (D-08, D-11)', () => {
+  const render = fs.readFileSync('.compiled/render.js', 'utf8');
+  assert.match(render, /drawCoin\(/);
+  assert.match(render, /sparkleFrame\(/);
+  assert.match(render, /coinFrame\(/);
+  const main = fs.readFileSync('.compiled/main.js', 'utf8');
+  assert.match(main, /GET_READY/);
+  assert.match(main, /'go'/);
+  assert.match(main, /'cleanup'/);
+  assert.match(main, /setTreasure\(/);
+});
