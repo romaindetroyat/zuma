@@ -136,7 +136,8 @@ test('streaming feeds balls from the spawn hole until the total and ends the fas
 });
 
 test('reaching the skull drains the board, costs a life and ends in lost (then gameover)', () => {
-  const g = fixture([{ color: 0, s: 600 }, { color: 1, s: 632 }], { speed: 600 });
+  // R2.0.16: endSlowFactor 1 — a 640 px track lies entirely in the original slow zone (600 + 500 px).
+  const g = fixture([{ color: 0, s: 600 }, { color: 1, s: 632 }], { speed: 600, endSlowFactor: 1 });
   const lives = g.lives;
   run(g, 1);
   assert.equal(g.state, 'draining');
@@ -145,7 +146,7 @@ test('reaching the skull drains the board, costs a life and ends in lost (then g
   run(g, 120);
   assert.equal(g.state, 'lost');
   assert.equal(g.balls.length, 0);
-  const last = fixture([{ color: 0, s: 630 }], { speed: 600, lives: 0 });
+  const last = fixture([{ color: 0, s: 630 }], { speed: 600, lives: 0, endSlowFactor: 1 });
   run(last, 200);
   assert.equal(last.state, 'gameover');
 });

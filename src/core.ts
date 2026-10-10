@@ -217,8 +217,24 @@ export interface EngineConfig {
   repeatChance: number;
   /** Probability that a streamed ball is isolated — different from both its neighbours (original `single` %, 0..1). */
   singleChance: number;
+  /** Pusher target speed, px/s (original `speed` in px per 100 Hz update × 100). */
   speed: number;
   feedSpeed: number;
+  /** Pusher acceleration towards a higher target, px/s² (0.005 px/maj² at 100 Hz × 10 000 = 50). */
+  chainAccel: number;
+  /** Pusher deceleration towards a lower target, px/s² (0.1 px/maj² × 10 000 = 1000). */
+  chainDecel: number;
+  /** Pusher stop after an insertion into the rear (pushed) segment, ticks (40 maj × 0.6 = 24). */
+  pusherStopTicks: number;
+  /** End-of-track slow zone: `slowDistance` px of interpolation before the danger line, itself `dangerDistance` px before the skull (original `slowdistance` 500, `danger` 600). */
+  slowDistance: number;
+  dangerDistance: number;
+  /** Target divisor at and beyond the danger line (original `slowfactor`, default 4). Not the SLOW power-up (`slowFactor`). */
+  endSlowFactor: number;
+  /** ZUMA: rollback / slowdown only when the head covers more than this share of the track (original: > 50 %). */
+  zumaCoverage: number;
+  /** Target multiplier while the ZUMA slowdown runs (original 0.25). */
+  zumaSlowFactor: number;
   drainSpeed: number;
   /** Projectile speed in px per tick. */
   projectileSpeed: number;
@@ -261,9 +277,9 @@ export interface EngineConfig {
   cleanupStepTicks: number;
   /** Expert time in seconds (original `partime`); 0 = no time bonus. */
   parTime: number;
-  /** Ticks the chain rolls back when ZUMA mode starts (original `zumaback` × 0.6; hypothesis GAME-01). */
+  /** Ticks the chain rolls back when ZUMA mode starts with the head past `zumaCoverage` (original `zumaback` 300 maj × 0.6 = 180). */
   zumaBackTicks: number;
-  /** Ticks the chain rolls slowed when ZUMA mode starts (original `zumaslow` × 0.6; hypothesis GAME-01). */
+  /** Ticks the target is multiplied by `zumaSlowFactor` after such a ZUMA (original `zumaslow` 1100 maj × 0.6 = 660). */
   zumaSlowTicks: number;
 }
 
@@ -281,6 +297,14 @@ export const CANDIDATE: EngineConfig = {
   singleChance: 0,
   speed: 24,
   feedSpeed: 360,
+  chainAccel: 50, // 0.005 px/maj² × 10 000
+  chainDecel: 1000, // 0.1 px/maj² × 10 000
+  pusherStopTicks: 24, // 40 maj × 0.6
+  slowDistance: 500,
+  dangerDistance: 600,
+  endSlowFactor: 4,
+  zumaCoverage: 0.5,
+  zumaSlowFactor: 0.25,
   drainSpeed: 520,
   projectileSpeed: 12,
   muzzleOffset: 16,
@@ -310,9 +334,23 @@ export const CANDIDATE: EngineConfig = {
   cleanupPoints: 10,
   cleanupStepTicks: 4,
   parTime: 0,
-  zumaBackTicks: 0,
-  zumaSlowTicks: 0,
+  zumaBackTicks: 180, // 300 maj × 0.6
+  zumaSlowTicks: 660, // 1100 maj × 0.6
 };
+
+/**
+ * End-of-track slow zone (0x4187ef–0x418832): target multiplier for a head at `headS` on a
+ * track of `length`. The danger line sits `dangerDistance` px before the skull; over the
+ * `slowDistance` px before it the multiplier goes linearly from 1 to 1 / `endSlowFactor` and
+ * stays there up to the skull. A factor ≤ 1 disables the zone; `slowDistance` ≤ 0 is a hard step.
+ */
+export function endZoneFactor(headS: number, length: number, slowDistance: number, dangerDistance: number, endSlowFactor: number): number {
+  if (!(endSlowFactor > 1)) return 1;
+  const dangerStart = Math.max(0, length - dangerDistance);
+  const zoneStart = dangerStart - slowDistance;
+  const f = slowDistance > 0 ? Math.max(0, Math.min(1, (headS - zoneStart) / slowDistance)) : headS >= dangerStart ? 1 : 0;
+  return (1 - f) + f / endSlowFactor;
+}
 
 /**
  * Expert time bonus (D-04, hypothesis): nothing without a `parTime` or once it is
@@ -355,6 +393,10 @@ export class Chain {
   lastSpawnColor = -1;
   /** Armed after a `single`: the next streamed ball must differ from the isolated one. */
   forceDifferent = false;
+  /** Current pusher speed, px/s (original `mSpeed`); null until the chain's first moveChain (lazy: v0 of the fast feed, or the target). */
+  speed: number | null = null;
+  /** Ticks left of the pusher stop armed by an insertion into the rear segment (original counter ≥ 40 maj). */
+  stopTicks = 0;
   constructor(readonly track: Track, readonly index: number) {}
 }
 
@@ -385,6 +427,8 @@ export class ZumaEngine {
   slowTicks = 0;
   backwardsTicks = 0;
   accuracyTicks = 0;
+  /** ZUMA slowdown countdown (target × zumaSlowFactor), distinct from the SLOW power-up `slowTicks`. */
+  zumaSlowLeft = 0;
   aim: Point;
   /** Coin spots of the level (empty = no coins, no extra RNG draws). */
   treasure: readonly TreasurePoint[] = [];
@@ -482,6 +526,8 @@ export class ZumaEngine {
     chain.spawned = chain.balls.length;
     chain.removals = [];
     chain.recoils = [];
+    chain.speed = null;
+    chain.stopTicks = 0;
     if (fixture.current !== undefined) this.current = fixture.current;
     if (fixture.next !== undefined) this.next = fixture.next;
     this.stream = fixture.stream ?? true;
@@ -626,6 +672,7 @@ export class ZumaEngine {
     if (this.slowTicks > 0) this.slowTicks--;
     if (this.backwardsTicks > 0) this.backwardsTicks--;
     if (this.accuracyTicks > 0) this.accuracyTicks--;
+    if (this.zumaSlowLeft > 0) this.zumaSlowLeft--;
     for (const b of this.allBalls()) {
       if (b.power && b.powerUntil !== undefined && b.powerUntil <= this.tick) {
         delete b.power;
@@ -721,6 +768,44 @@ export class ZumaEngine {
     return lowest;
   }
 
+  /**
+   * Pusher target (0x418780): `speed`, × zumaSlowFactor while the ZUMA slowdown runs, ÷ slowFactor
+   * under the SLOW power-up, × the end-of-track slow zone for the most advanced alive ball.
+   */
+  private pusherTarget(chain: Chain, alive: Ball[]): number {
+    const { speed, slowFactor, slowDistance, dangerDistance, endSlowFactor, zumaSlowFactor } = this.config;
+    let target = speed;
+    if (this.zumaSlowLeft > 0) target *= zumaSlowFactor;
+    if (this.slowTicks > 0) target /= slowFactor;
+    let head = -Infinity;
+    for (const b of alive) if (b.s > head) head = b.s;
+    return target * endZoneFactor(head, chain.track.length, slowDistance, dangerDistance, endSlowFactor);
+  }
+
+  /**
+   * Original pusher kinematics (0x4188b3–0x4188e6, 0x418905–0x41890e): the speed is created lazily
+   * on the chain's first move (fast-feed v0 — interim: the constant `feedSpeed` until the §2 formula
+   * lands — or the target), held at 0 while a pusher stop runs, otherwise moved towards the target
+   * by at most `chainDecel` × dt downwards or `chainAccel` × dt upwards. Always computed, even while
+   * a rollback or a recoil keeps the pusher from advancing, so the speed is coherent afterwards.
+   */
+  private updatePusher(chain: Chain, alive: Ball[]): void {
+    const dt = 1 / this.config.tickHz;
+    const target = this.pusherTarget(chain, alive);
+    if (chain.speed === null) {
+      chain.speed = this.feeding ? this.config.feedSpeed : target;
+      return;
+    }
+    if (chain.stopTicks > 0) {
+      chain.stopTicks--;
+      chain.speed = 0;
+    } else if (chain.speed > target) {
+      chain.speed = Math.max(target, chain.speed - this.config.chainDecel * dt);
+    } else if (chain.speed < target) {
+      chain.speed = Math.min(target, chain.speed + this.config.chainAccel * dt);
+    }
+  }
+
   private moveChain(chain: Chain): void {
     const dt = 1 / this.config.tickHz;
     if (this.state === 'draining') {
@@ -756,6 +841,8 @@ export class ZumaEngine {
       for (let i = first[c]; i <= last[c]; i++) alive[i].s += d;
     };
 
+    this.updatePusher(chain, alive);
+
     if (this.backwardsTicks > 0) {
       for (const b of alive) b.s -= this.config.backwardsSpeed * dt;
     } else {
@@ -772,11 +859,7 @@ export class ZumaEngine {
         shift(c, -this.config.recoilSpeed * dt);
         if (this.resolveBackward(alive, first[c]) === 0) pusherBlocked = true;
       }
-      if (!pusherBlocked) {
-        let v = this.feeding ? this.config.feedSpeed : this.config.speed;
-        if (this.slowTicks > 0) v /= this.config.slowFactor;
-        shift(0, v * dt);
-      }
+      if (!pusherBlocked) shift(0, (chain.speed ?? 0) * dt);
       // Attraction: a segment whose rear colour matches the front colour of the segment
       // behind it rolls back; it only reconnects once the balls physically touch.
       for (let c = 1; c < compCount; c++) {
@@ -883,21 +966,34 @@ export class ZumaEngine {
     this.stats.destroyed += count;
   }
 
+  /** Share of the track covered by the most advanced ball of `chain` (exploding balls included), 0 without balls. */
+  private coverage(chain: Chain): number {
+    let head = 0;
+    for (const b of chain.balls) if (b.s > head) head = b.s;
+    return chain.track.length > 0 ? head / chain.track.length : 0;
+  }
+
   /**
-   * Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points.
-   * Entering ZUMA mode arms the original `zumaback` / `zumaslow` phases (hypothesis GAME-01:
-   * the chain rolls back for `zumaBackTicks` and is slowed for `zumaSlowTicks`, both counted
-   * from this tick; `configFromSettings` converts the 100 Hz settings). A longer power already
-   * running is kept.
+   * Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points
+   * (0x428a69–0x428b09). The original then checks each curve (0x40a980): when the head covers more
+   * than `zumaCoverage` of the track it rolls back `zumaBackTicks` and the target is multiplied by
+   * `zumaSlowFactor` for `zumaSlowTicks`. The engine evaluates the maximum coverage over the chains
+   * and applies both to every chain (hypothesis, 05-07 notes); a longer rollback or slowdown already
+   * running is kept and the SLOW power-up (`slowTicks`) is never touched.
    */
   private addScore(points: number): void {
     this.score += points;
     this.levelScore += points;
     if (!this.zumaMode && this.levelScore >= this.config.target) {
       this.zumaMode = true;
-      this.backwardsTicks = Math.max(this.backwardsTicks, this.config.zumaBackTicks);
-      this.slowTicks = Math.max(this.slowTicks, this.config.zumaSlowTicks);
-      this.emit('zuma');
+      let coverage = 0;
+      for (const chain of this.chains) coverage = Math.max(coverage, this.coverage(chain));
+      const pushback = coverage > this.config.zumaCoverage;
+      if (pushback) {
+        this.backwardsTicks = Math.max(this.backwardsTicks, this.config.zumaBackTicks);
+        this.zumaSlowLeft = Math.max(this.zumaSlowLeft, this.config.zumaSlowTicks);
+      }
+      this.emit('zuma', { coverage, pushback });
     }
   }
 
@@ -1099,6 +1195,15 @@ export class ZumaEngine {
     const half = this.config.ballSpacing / 2;
     const s = ahead ? hit.s + half : hit.s - half;
     const ball = this.insertGrowing(index, { id: p.id, color: p.color }, { x: p.x, y: p.y }, s, chain);
+    // Pusher stop (0x423ac7–0x423ad6): an insertion into the rear segment — the component the
+    // pusher drives — zeroes the speed and holds it for at least pusherStopTicks (40 maj); the
+    // pusher then restarts from 0 at chainAccel (0.005 px/maj²). The test hook insert() arms nothing.
+    const alive = this.alive(chain);
+    const idx = alive.indexOf(ball);
+    if (idx >= 0 && this.componentIds(alive)[idx] === 0) {
+      chain.stopTicks = Math.max(chain.stopTicks, this.config.pusherStopTicks);
+      chain.speed = 0;
+    }
     this.emit('insert', { id: ball.id, color: ball.color, x: bp.x, y: bp.y, chain: chain.index });
     if (p.gaps > 0) {
       this.stats.gaps += p.gaps;

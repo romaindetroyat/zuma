@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { Track, ZumaEngine, CANDIDATE, ENGINE_VERSION, aceTimeBonus } from '../.compiled/core.js';
 import { soundCues, coinFrame, sparkleFrame } from '../.compiled/feedback.js';
 
-const straight = () => new Track([[0, 240], [640, 240]]);
+const straight = (length = 640) => new Track([[0, 240], [length, 240]]);
 const frog = { x: 320, y: 400 };
 const quiet = { ...CANDIDATE, speed: 0, feedSpeed: 0, powerChance: 0, target: 99999 };
 const fixture = (balls, extra = {}, current = 0) => {
@@ -38,7 +38,8 @@ test('coins: without treasure points nothing happens and the colour sequence is 
   assert.equal(g.coin, null);
   assert.equal(g.events.filter(e => String(e.kind).startsWith('coin')).length, 0);
   const streamed = (withTreasure) => {
-    const e = new ZumaEngine(straight(), frog, { ...CANDIDATE, start: 5, total: 30, speed: 60, feedSpeed: 600, powerChance: 0 }, 11);
+    // R2.0.16: 2000 px track — the fast feed now decelerates naturally and the last 1100 px of a track are slow.
+    const e = new ZumaEngine(straight(2000), frog, { ...CANDIDATE, total: 30, speed: 60, powerChance: 0 }, 11);
     if (withTreasure) e.setTreasure([]);
     run(e, 400);
     return e.balls.map(b => b.color);
@@ -133,7 +134,7 @@ test('coins: a projectile within 18 px grabs the coin (+100, stats.coins), keeps
 });
 
 test('coins: losing the chain removes the coin with a coin-vanish', () => {
-  const g = fixture([{ color: 0, s: 600 }, { color: 1, s: 632 }], { speed: 600 });
+  const g = fixture([{ color: 0, s: 600 }, { color: 1, s: 632 }], { speed: 600, endSlowFactor: 1 }); // R2.0.16: no slow zone on the short track
   g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
   g.spawnCoinForTest(0);
   const id = g.coin.id;
@@ -282,7 +283,10 @@ test('go: emitted exactly once, the tick the fast intro feed ends', () => {
   assert.equal(ofKind(silent, 'go').length, 0);
 });
 
-test('zumaBackTicks / zumaSlowTicks arm the rollback and the slow phase when ZUMA mode starts (max with running values)', () => {
+test('zumaBackTicks / zumaSlowTicks arm the rollback and the ZUMA slow phase when ZUMA mode starts (max with running values)', () => {
+  // R2.0.16: the slow phase is `zumaSlowLeft` (target × 0.25), no longer the SLOW power-up `slowTicks`; the
+  // 640 px fixture has its head past 50 % of the track so the pushback applies (r216 covers the other case),
+  // and CANDIDATE now carries the original defaults (300 / 1100 maj → 180 / 660 ticks).
   const make = (extra, prepare = () => {}) => {
     const g = new ZumaEngine(straight(), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
     g.feeding = false;
@@ -294,12 +298,13 @@ test('zumaBackTicks / zumaSlowTicks arm the rollback and the slow phase when ZUM
   };
   const g = make({ zumaBackTicks: 30, zumaSlowTicks: 60 });
   assert.equal(g.backwardsTicks, 30);
-  assert.equal(g.slowTicks, 60);
-  const longer = make({ zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.slowTicks = 1000; e.backwardsTicks = 500; });
-  assert.ok(longer.slowTicks > 60 && longer.backwardsTicks > 30, 'a longer running power is kept');
+  assert.equal(g.zumaSlowLeft, 60);
+  assert.equal(g.slowTicks, 0, 'the SLOW power-up is not armed by a ZUMA');
+  const longer = make({ zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.zumaSlowLeft = 1000; e.backwardsTicks = 500; });
+  assert.ok(longer.zumaSlowLeft > 60 && longer.backwardsTicks > 30, 'a longer running phase is kept');
   const plain = make({});
-  assert.equal(plain.backwardsTicks, 0);
-  assert.equal(plain.slowTicks, 0);
+  assert.equal(plain.backwardsTicks, CANDIDATE.zumaBackTicks);
+  assert.equal(plain.zumaSlowLeft, CANDIDATE.zumaSlowTicks);
 });
 
 // ------------------------------------------------------------- cues et trames (feedback.ts)

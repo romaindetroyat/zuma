@@ -105,9 +105,10 @@ test('pusher stop: an insertion into the rear segment halts the pusher 24 ticks,
   assert.equal(g.chains[0].stopTicks, 0);
   near(g.chains[0].speed, 50, 1, '60 ticks after the stop the pusher is back at +50 px/s² × 1.2 s');
   // An insertion into a segment that is not the pushed one does not arm the stop.
-  const front = fixture([{ color: 0, s: 300 }, { color: 1, s: 332 }, { color: 2, s: 900 }, { color: 0, s: 932 }], { speed: 50 }, 3, 2000);
-  const far = stepUntil((front.command({ kind: 'shoot', x: 932, y: 240 }), front), 'insert', 120);
-  assert.ok(far.x > 800, `landed on the front segment (x ${far.x})`);
+  // (The front segment stays inside the 640 px canvas: projectiles die past its margin.)
+  const front = fixture([{ color: 0, s: 300 }, { color: 1, s: 332 }, { color: 2, s: 600 }, { color: 0, s: 632 }], { speed: 50 }, 3, 2000);
+  const far = stepUntil((front.command({ kind: 'shoot', x: 632, y: 240 }), front), 'insert', 120);
+  assert.ok(far.x > 500, `landed on the front segment (x ${far.x})`);
   assert.equal(front.chains[0].stopTicks, 0);
   assert.equal(front.chains[0].speed, 50);
   // The test hook insert() arms nothing either.
@@ -164,8 +165,9 @@ test('ZUMA: pushback and ×0.25 slowdown only when the head covers more than hal
   assert.ok(far.zuma.coverage < 0.5 && far.zuma.coverage > 0.15, `coverage ${far.zuma.coverage}`);
   assert.ok(far.g.zumaMode, 'ZUMA mode itself does not depend on the coverage');
   const longer = zumaFixture(640, { zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.backwardsTicks = 500; e.zumaSlowLeft = 1000; });
-  assert.equal(longer.g.backwardsTicks, 500, 'a longer rollback already running is kept');
-  assert.equal(longer.g.zumaSlowLeft, 1000);
+  assert.equal(longer.g.backwardsTicks, 500 - longer.zuma.tick, 'a longer rollback already running is kept (it counted down meanwhile)');
+  assert.equal(longer.g.zumaSlowLeft, 1000 - longer.zuma.tick);
+  assert.ok(longer.g.backwardsTicks > 30 && longer.g.zumaSlowLeft > 60);
   const defaults = zumaFixture(640);
   assert.equal(defaults.g.backwardsTicks, CANDIDATE.zumaBackTicks);
   assert.equal(defaults.g.zumaSlowLeft, CANDIDATE.zumaSlowTicks);

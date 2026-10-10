@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';import fs f
 import {Track,ZumaEngine,CANDIDATE,ENGINE_VERSION} from '../.compiled/core.js';
 import {soundCues} from '../.compiled/feedback.js';
 const track=new Track([[0,240],[640,240]]),frog={x:320,y:400};
-const make=()=>{const g=new ZumaEngine(track,frog,{...CANDIDATE,start:5,speed:80,feedSpeed:80,target:99999},123);g.loadFixture({balls:[{color:0,s:120},{color:1,s:152},{color:2,s:184},{color:3,s:216},{color:0,s:248}],current:0,next:1,stream:false});return g};
+const make=()=>{const g=new ZumaEngine(track,frog,{...CANDIDATE,start:5,speed:80,feedSpeed:80,target:99999,endSlowFactor:1},123);g.loadFixture({balls:[{color:0,s:120},{color:1,s:152},{color:2,s:184},{color:3,s:216},{color:0,s:248}],current:0,next:1,stream:false});return g};
 const atLeast=(v,min)=>{const a=v.split('.').map(Number),b=min.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]??0)!==(b[i]??0))return (a[i]??0)>(b[i]??0);}return true;};
 test('R2.0.11 baseline is preserved by the current engine version',()=>assert.ok(atLeast(ENGINE_VERSION,'2.0.11'),ENGINE_VERSION));
 test('slow measurably reduces forward travel',()=>{const a=make(),b=make();a.feeding=false;b.feeding=false;const a0=a.balls[0].s,b0=b.balls[0].s;b.activatePowerForTest('slow',2);for(let i=0;i<100;i++){a.step();b.step();}assert.ok(a.balls[0].s-a0>3*(b.balls[0].s-b0));assert.ok(b.slowTicks>0);});
