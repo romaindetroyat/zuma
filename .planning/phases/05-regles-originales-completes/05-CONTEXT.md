@@ -35,6 +35,15 @@ L'utilisateur ne peut pas lancer le jeu original (macOS) : les décisions ci-des
 - **D-10:** Quand la dernière bille est détruite en mode ZUMA : état `clearing` (plus de tir). Un marqueur part de la position `s` de la dernière explosion et avance vers le crâne par pas d'une bille (`ballSpacing`) toutes les 4 ticks ; à chaque pas : +`cleanupPoints` (hypothèse : 10 par pas), texte flottant « +10 » au point de la piste, son `bonuspop` (`endoflevelpop1`) dont le `rate` monte de 1 à 1,5 sur la longueur. À l'arrivée au trou : bonus de temps d'expert (D-04) avec son `extralife`-like ? Non : son `levelwin` (`chant5`), puis STATS après 60 ticks. Les montants et le pas sont des hypothèses à documenter.
 - **D-11:** Séquence de début « Attention / PARTEZ » (`GET_READY` / `GO`) : affichée pendant l'arrivée rapide de la chaîne, « PARTEZ » quand `feeding` passe à faux, son `gamestart` (`chant1`) au début ; police `NativeAlienExtended18`. À planifier dans cette phase si le budget le permet, sinon noter en différé.
 
+### Ajustements UAT 4 (U14–U21)
+- **D-12:** Un spike d'analyse statique de `Zuma.exe` (`05-RESEARCH.md`) tranche si possible : cadence de mise à jour et unité de `speed`, sens de `repeat`/`single`, unité de `partime`, montants du décompte et du bonus de temps. À défaut, valeurs de repli : `speed × 60` px/s (au lieu de × 100), `feedSpeed` 300, alerte à 20 % de la longueur de piste (min 320 px), décompte par pas de 2 billes toutes les 6 ticks.
+- **D-13:** Le chronomètre du niveau (TEMPS, bonus) démarre à l'événement `go` (« PARTEZ »), pas au chargement.
+- **D-14:** Rafraîchissement des munitions immédiat : dès qu'une destruction est marquée, les couleurs des billes en explosion ne comptent plus ; `current` et `next` sont remplacés si absents, à chaque tick ; le projectile en vol garde sa couleur (verrou r206).
+- **D-15:** Fin de niveau : après le décompte, annonce à l'écran « BONUS TEMPS +N » (ou rien) en police titre avec son `extralife`-like → non : son `bonuspop` final puis `levelwin` ; le bonus apparaît dans STATS (BONUS) et dans le score.
+- **D-16:** Atteinte du ZUMA : bannière « ZUMA ! » (chaîne `STRING_ID_ZUMA` si présente, sinon « ZUMA ! ») en `NativeAlienExtended18` pendant 120 ticks, jauge en pulsation, son `chant4` conservé.
+- **D-17:** Roulement : `rolling` à gain constant (0,6) dès que la chaîne avance (> 2 px/s), fondu 150 ms à l'arrêt, hauteur 1 ; pas de modulation par la vitesse.
+- **D-18:** STATS : revue de mise en page contre la référence et les polices (interligne 1,65 × hauteur de capitale, valeurs alignées à droite sur la même colonne, titre teinté doré `#f0c040` par multiplication, OK centré) ; vérification des valeurs affichées par un test de bout en bout (fixture connue → chiffres attendus).
+
 ### Claude's Discretion
 - Échelle exacte du dialogue, courbes d'animation, volumes.
 
