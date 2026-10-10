@@ -17,7 +17,7 @@ if (offenders.length > 0) {
   process.exit(1);
 }
 const large = tracked.filter(f => {
-  try { return execFileSync('git', ['cat-file', '-s', `HEAD:${f}`], { encoding: 'utf8' }).trim() > 512 * 1024; } catch { return false; }
+  try { return Number(execFileSync('git', ['cat-file', '-s', `:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) > 512 * 1024; } catch { return false; }
 });
 if (large.length > 0) {
   console.error('publication guard: unexpectedly large tracked files:');
