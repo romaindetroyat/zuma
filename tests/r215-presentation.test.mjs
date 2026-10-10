@@ -35,6 +35,13 @@ test('STATS_LAYOUT: frame, columns, rules, button and head follow the R2.0.12 re
   assert.ok(STATS_LAYOUT.inset > 0 && STATS_LAYOUT.inset * 2 < Math.min(f.w, f.h), '9-slice inset');
   assert.equal(STATS_LAYOUT.title.x, 320);
   assert.ok(STATS_LAYOUT.tip.maxWidth <= f.w - 2 * STATS_LAYOUT.inset, 'tip fits inside the frame');
+  // R2.0.17 (D-20, research 02 Q4): the right labels sit 200 px right of the left ones (x0 + 200), the values are
+  // right-aligned inside their column (hypothesis B3), the tip is left-aligned after its label on two lines at most.
+  assert.equal(STATS_LAYOUT.right.labelX - STATS_LAYOUT.left.labelX, 200);
+  assert.ok(STATS_LAYOUT.left.valueRight <= STATS_LAYOUT.left.labelX + 180);
+  assert.ok(STATS_LAYOUT.right.valueRight <= STATS_LAYOUT.right.labelX + 160);
+  assert.equal(STATS_LAYOUT.tip.maxLines, 2);
+  assert.equal(STATS_LAYOUT.tip.align, 'left');
 });
 
 test('STATS_COLORS and STATS_ORDER (D-02, D-05)', () => {

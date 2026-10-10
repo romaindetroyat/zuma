@@ -143,17 +143,21 @@ test('STATS_COLORS: the original colours (0x4525f0) and the gold title multiplie
   assert.equal(STATS_LINE_RATIO, 1.65);
 });
 
-test('statsRows: baselines from the line height (1.65 × cap height), right column rule / bonus / record offsets', () => {
+test('statsRows: baselines from the line height (1.65 × cap height), right column on the left grid', () => {
+  // R2.0.17 (D-20): the right column follows the left grid — TEMPS = POINTS, OBJECTIF = COMBOS, rule in the PIÈCES row,
+  // BONUS = SAUTS, RECORD = ENCH. MAX. — instead of the R2.0.12 proportions (0.63 / 1.63 / 1.26 lines).
   const rows = statsRows(19);
   assert.deepEqual(rows.left, [219, 238, 257, 276, 295, 314]);
-  assert.deepEqual(rows.right, { time: 219, objective: 238, rule: 250, bonus: 269, record: 293 });
+  assert.deepEqual(rows.right, { time: 219, objective: 238, rule: 250, bonus: 276, record: 295 });
   assert.equal(statsRows(20).left[5], 319);
   assert.equal(statsRows(19, 200).left[0], 200);
   for (const lh of [16, 18, 19, 20]) {
     const r = statsRows(lh);
-    assert.equal(r.right.rule, r.right.objective + Math.round(0.63 * lh), `rule for ${lh}`);
-    assert.equal(r.right.bonus, r.right.objective + Math.round(1.63 * lh), `bonus for ${lh}`);
-    assert.equal(r.right.record, r.right.bonus + Math.round(1.26 * lh), `record for ${lh}`);
+    assert.equal(r.right.time, r.left[0], `time for ${lh}`);
+    assert.equal(r.right.objective, r.left[1], `objective for ${lh}`);
+    assert.equal(r.right.rule, r.left[2] - Math.round(0.35 * lh), `rule for ${lh}`);
+    assert.equal(r.right.bonus, r.left[3], `bonus for ${lh}`);
+    assert.equal(r.right.record, r.left[4], `record for ${lh}`);
     for (const y of r.left) assert.ok(y < STATS_LAYOUT.tip.box.y, `left rows above the tip box (lh ${lh}: ${y})`);
     assert.ok(r.right.record < STATS_LAYOUT.tip.box.y, 'RECORD above the tip box');
   }
