@@ -139,7 +139,7 @@ test('configFromSettings: partime, zumaslow/zumaback (×0.6 → ticks), single a
   assert.equal(c.parTime, 130, 'partime (s) → parTime');
   assert.equal(c.zumaSlowTicks, 300, 'zumaslow 500 steps at 100 Hz → 300 ticks');
   assert.equal(c.zumaBackTicks, 120, 'zumaback 200 steps at 100 Hz → 120 ticks');
-  assert.equal(c.singleChance, 0.08, 'single 8 % → 0.08');
+  assert.equal(c.singleLimit, 8, 'R2.0.16: single is the isolated-group repair threshold');
   assert.equal(c.target, 4500, 'score → target');
   assert.equal(c.colors, 5, 'temple 4 (stage index 3) → 5 colours');
   assert.equal(c.startFraction, 0.45, 'R2.0.16: start is a share of the track length');
@@ -152,13 +152,13 @@ test('configFromSettings: defaults, bounds and temple colours (T-05-11)', () => 
   assert.equal(d.parTime, 0);
   assert.equal(d.zumaSlowTicks, 0);
   assert.equal(d.zumaBackTicks, 0);
-  assert.equal(d.singleChance, 0);
+  assert.equal(d.singleLimit, 10, 'R2.0.16: repair disabled by default');
   assert.equal(configFromSettings({ id: 'x' }, 6).colors, 6, 'temple 7 → 6 colours');
   assert.equal(configFromSettings({ id: 'x' }, 4).colors, 5, 'temple 5 → 5 colours');
   assert.equal(configFromSettings({ id: 'x', colors: 9 }, 0).colors, 6, 'colors bounded to 6');
   assert.equal(configFromSettings({ id: 'x', colors: 1 }, 0).colors, 3, 'colors bounded to 3');
-  assert.equal(configFromSettings({ id: 'x', single: 150 }, 0).singleChance, 1, 'single bounded to 100 %');
-  assert.equal(configFromSettings({ id: 'x', single: -5 }, 0).singleChance, 0);
+  assert.equal(configFromSettings({ id: 'x', single: 150 }, 0).singleLimit, 10, 'single bounded to 10');
+  assert.equal(configFromSettings({ id: 'x', single: -5 }, 0).singleLimit, 0);
   assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaSlowTicks, 0, 'negative → 0');
   assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaBackTicks, 0, 'NaN → 0');
   assert.equal(configFromSettings({ id: 'x', zumaslow: Number.POSITIVE_INFINITY }, 0).zumaSlowTicks, 0, 'non-finite → 0');

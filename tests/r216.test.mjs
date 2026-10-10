@@ -387,10 +387,10 @@ test('ammo (D-14): current and next are replaced on the tick a destruction is ma
   assert.equal(g.current, 1, 'the next ball (colour 1) is loaded');
   run(g, CANDIDATE.fireCooldownTicks);
   g.current = 1;
-  g.command({ kind: 'shoot', x: 320, y: 0 });
+  g.command({ kind: 'shoot', x: 0, y: 400 });
   g.step();
-  const flying = g.projectiles.find(p => p.vy < 0 && Math.abs(p.vx) < 1e-9);
-  assert.ok(flying && flying.color === 1, 'a second colour-1 projectile flies straight up');
+  const flying = g.projectiles.find(p => p.vx < 0 && Math.abs(p.vy) < 1e-9);
+  assert.ok(flying && flying.color === 1, 'a second colour-1 projectile flies away from the track');
   const destroy = stepUntil(g, 'destroy', 60);
   assert.equal(destroy.count, 4);
   assert.ok(g.balls.filter(b => b.destroyingUntil !== undefined).length === 4, 'marked, not yet removed');

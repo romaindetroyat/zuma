@@ -219,8 +219,8 @@ export interface EngineConfig {
   target: number;
   /** Probability that a streamed ball repeats the previous colour (original `repeat` %, 0..1). */
   repeatChance: number;
-  /** Probability that a streamed ball is isolated — different from both its neighbours (original `single` %, 0..1). */
-  singleChance: number;
+  /** Isolated-group repair threshold (original `single`, 0..10): 10 = disabled; see spawnColor. */
+  singleLimit: number;
   /** Pusher target speed, px/s (original `speed` in px per 100 Hz update × 100). */
   speed: number;
   /** Pusher acceleration towards a higher target, px/s² (0.005 px/maj² at 100 Hz × 10 000 = 50). */
@@ -299,7 +299,7 @@ export const CANDIDATE: EngineConfig = {
   total: 60,
   target: 400,
   repeatChance: 0.5,
-  singleChance: 0,
+  singleLimit: 10,
   speed: 24,
   chainAccel: 50, // 0.005 px/maj² × 10 000
   chainDecel: 1000, // 0.1 px/maj² × 10 000
@@ -409,8 +409,6 @@ export class Chain {
   recoils: Array<{ id: number; ticks: number }> = [];
   spawned = 0;
   lastSpawnColor = -1;
-  /** Armed after a `single`: the next streamed ball must differ from the isolated one. */
-  forceDifferent = false;
   /** Current pusher speed, px/s (original `mSpeed`); null until the chain's first moveChain (lazy: v0 of the fast feed, or the target). */
   speed: number | null = null;
   /** Ticks left of the pusher stop armed by an insertion into the rear segment (original counter ≥ 40 maj). */
@@ -638,6 +636,7 @@ export class ZumaEngine {
     this.tickCoin();
     this.tickCleanup();
     this.processRemovals();
+    if (this.state === 'playing') this.refreshAmmo(); // D-14: every tick, from the tick a destruction is marked
     this.maybeSpawnPower();
     this.checkEnd();
   }
@@ -738,10 +737,12 @@ export class ZumaEngine {
   }
 
   /**
-   * Streamed colour, driven by the original `repeat` / `single` settings: a ball repeats the
-   * previous colour with `repeatChance` (runs of any length can appear), or is isolated with
-   * `singleChance` (differs from the previous ball and forces the next one to differ too).
-   * The first ball of a chain is uniformly random.
+   * Streamed colour, transcription of 0x414b20: the first ball of a chain is uniformly random;
+   * then with `repeatChance` (original `Rand() % 100 <= repeat`, hence (repeat + 1) / 100) the
+   * ball repeats the last generated colour; otherwise, when `singleLimit` < 10 and the rear group
+   * is a single ball, that ball is repaired (same colour) if `singleLimit` is 0 or if at most
+   * `singleLimit` of the ten rear groups are singles; otherwise the colour differs from the last
+   * one. No other RNG draw (the former `singleChance` draw is gone).
    */
   private spawnColor(chain: Chain): number {
     const n = this.config.colors;
@@ -751,22 +752,43 @@ export class ZumaEngine {
       if (n > 1 && c === prev) c = (c + 1 + this.rng.int(n - 1)) % n;
       return c;
     };
+    const { singleLimit } = this.config;
     let c: number;
     if (prev < 0) {
       c = this.rng.int(n);
-    } else if (chain.forceDifferent) {
-      chain.forceDifferent = false;
-      c = differentFromPrev();
-    } else if (this.rng.next() < this.config.singleChance) {
-      chain.forceDifferent = true;
-      c = differentFromPrev();
     } else if (this.rng.next() < this.config.repeatChance) {
       c = prev;
+    } else if (singleLimit < 10 && this.rearGroupSize(chain) === 1) {
+      c = singleLimit <= 0 || this.isolatedGroups(chain, 10) <= singleLimit ? prev : differentFromPrev();
     } else {
       c = differentFromPrev();
     }
     chain.lastSpawnColor = c;
     return c;
+  }
+
+  /**
+   * Lengths of the contiguous colour runs of the alive balls, rear to front. Physical gaps are
+   * ignored: the original walks its linked list (0x40aa50 / 0x402040).
+   */
+  private colourRuns(chain: Chain): number[] {
+    const runs: number[] = [];
+    let color = -1;
+    for (const b of this.alive(chain)) {
+      if (b.color === color) runs[runs.length - 1]++;
+      else { runs.push(1); color = b.color; }
+    }
+    return runs;
+  }
+
+  /** Size of the rear colour group (0 without alive balls). */
+  private rearGroupSize(chain: Chain): number {
+    return this.colourRuns(chain)[0] ?? 0;
+  }
+
+  /** Number of single-ball groups among the `k` rear groups. */
+  private isolatedGroups(chain: Chain, k: number): number {
+    return this.colourRuns(chain).slice(0, k).filter(l => l === 1).length;
   }
 
   // ------------------------------------------------------------------ chain
@@ -1256,7 +1278,6 @@ export class ZumaEngine {
   // --------------------------------------------------------------- removals
 
   private processRemovals(): void {
-    let changed = false;
     for (const chain of this.chains) {
       if (chain.removals.length === 0) continue;
       const due = chain.removals.filter(r => r.due <= this.tick);
@@ -1265,12 +1286,14 @@ export class ZumaEngine {
       const gone = new Set<number>();
       for (const r of due) for (const id of r.ids) gone.add(id);
       chain.balls = chain.balls.filter(b => !(gone.has(b.id) && b.destroyingUntil !== undefined));
-      changed = true;
     }
-    if (changed) this.refreshAmmo();
   }
 
-  /** Ammo whose colour vanished from the chains is replaced by one that is still present. */
+  /**
+   * Ammo whose colour is no longer present in the chains is replaced by one that is (D-14):
+   * exploding balls do not count from the tick they are marked, `current` and `next` are checked
+   * every tick, the projectile in flight keeps its colour (r206). Draws only on a replacement.
+   */
   private refreshAmmo(): void {
     const present = this.presentColors();
     if (present.length === 0) return;

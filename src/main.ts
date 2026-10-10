@@ -738,7 +738,7 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
     total: Number.POSITIVE_INFINITY,
     target: s.score ?? 1000,
     repeatChance: Math.max(0, Math.min(1, (s.repeat ?? 50) / 100)),
-    singleChance: Math.max(0, Math.min(1, (s.single ?? 0) / 100)),
+    singleLimit: Math.trunc(Math.max(0, Math.min(10, s.single ?? 10))), // interim: Task 5 rewrites configFromSettings
     speed: (s.speed ?? 0.5) * 100,
     slowFactor: Math.max(1, s.slowfactor ?? 4),
     projectileSpeed: ((s.firespeed ?? 6) * 100) / 60,

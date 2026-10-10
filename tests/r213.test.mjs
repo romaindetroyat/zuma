@@ -196,7 +196,8 @@ test('dual boards run two independent chains that both feed and both count towar
 });
 
 test('swap exchanges current and next ammo and emits its cue', () => {
-  const g = fixture([{ color: 0, s: 100 }]);
+  // R2.0.16 (D-14): ammo is checked every tick against the colours present — both colours sit on the chain.
+  const g = fixture([{ color: 0, s: 100 }, { color: 1, s: 132 }]);
   g.command({ kind: 'swap' });
   g.step();
   assert.equal(g.current, 1);
