@@ -78,3 +78,166 @@ test('main.js: bursts and tally sparkles get the layer of their chain (ballPrior
   assert.match(cleanup, /ballPriority\(/);
   assert.match(cleanup, /makeSparks\([^;]*\* 4 \+ chain/, 'seed = step × 4 + chain');
 });
+
+// ---------------------------------------------------------------- menu de jeu = dialogue OPTIONS « en jeu » (0x445310, D-24)
+import { MENU_LAYOUT, menuWidgets, hitMenu, sliderValue, composeMenuDialog, CONTROLS_HELP } from '../.compiled/menudialog.js';
+import { AudioManager } from '../.compiled/audio.js';
+
+const PACK_STRINGS = {
+  MENU: 'MENU', MUSIC_VOLUME: 'Musique', SOUND_EFFECTS: 'Sons', FULLSCREEN: 'Plein écran', HELP: 'Aide', BACK_TO_MAIN_MENU: 'Retour au menu principal',
+  BACK_TO_GAME: 'Retour à la partie', DONE: 'Terminé', LEAVE: 'Quitter', CANCEL: 'ANNULER', 'LEAVE_GAME_?': 'Quitter la partie ?', 'QUIT_THE_GAME_?': 'Voulez-vous vraiment&cr;quitter la partie ?',
+};
+const inside = (r, f) => r.x >= f.x && r.y >= f.y && r.x + r.w <= f.x + f.w && r.y + r.h <= f.y + f.h;
+const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+test('menuWidgets(menu): Musique (inert), Sons, Plein écran + Pixels nets on one row, Aide, Retour au menu principal, Retour à la partie — inside the frame, disjoint, top to bottom', () => {
+  for (const strings of [PACK_STRINGS, null]) {
+    const w = menuWidgets('menu', strings);
+    assert.deepEqual(w.map(x => x.id), ['music', 'sfx', 'fullscreen', 'pixels', 'help', 'main-menu', 'back']);
+    assert.deepEqual(w.map(x => x.kind), ['slider', 'slider', 'check', 'check', 'button', 'button', 'button']);
+    assert.deepEqual(w.map(x => x.label), ['Musique', 'Sons', 'Plein écran', 'Pixels nets', 'Aide', 'Retour au menu principal', 'Retour à la partie'], strings ? 'pack strings' : 'French fallbacks');
+    assert.deepEqual(w.map(x => x.enabled), [false, true, true, true, true, true, true], 'music greyed (no music before phases 6–7)');
+    for (const x of w) {
+      assert.ok(inside(x.rect, MENU_LAYOUT.frame), `${x.id} inside the frame`);
+      assert.ok(inside(x.rect, { x: 0, y: 0, w: 640, h: 480 }), `${x.id} on the stage`);
+    }
+    for (let i = 0; i < w.length; i++) for (let j = i + 1; j < w.length; j++) assert.ok(!overlap(w[i].rect, w[j].rect), `${w[i].id} / ${w[j].id} disjoint`);
+    const y = Object.fromEntries(w.map(x => [x.id, x.rect.y]));
+    assert.equal(y.fullscreen, y.pixels, 'the two check boxes share a row');
+    assert.ok(y.music < y.sfx && y.sfx < y.fullscreen && y.pixels < y.help && y.help < y['main-menu'] && y['main-menu'] < y.back, 'original vertical order');
+    assert.ok(w[2].rect.x < w[3].rect.x);
+  }
+  const f = MENU_LAYOUT.frame;
+  assert.ok(inside(f, { x: 0, y: 0, w: 640, h: 480 }));
+  assert.equal(MENU_LAYOUT.head.y, f.y - 83, 'GodHead above the frame like the STATS (hypothesis)');
+  assert.ok(MENU_LAYOUT.title.baseline > MENU_LAYOUT.head.y + 140, 'title under the head');
+  const slider = menuWidgets('menu', null)[0].rect;
+  assert.equal(slider.w, 205, 'slidertrack drawn at its logical width');
+  assert.equal(slider.x, f.x + 30 + 130, 'slider 130 px right of the content edge (0x4402f7)');
+});
+
+test('menuWidgets(help) = Terminé; menuWidgets(confirm) = Quitter / ANNULER', () => {
+  assert.deepEqual(menuWidgets('help', PACK_STRINGS).map(w => [w.id, w.kind, w.label]), [['help-done', 'button', 'Terminé']]);
+  assert.deepEqual(menuWidgets('confirm', PACK_STRINGS).map(w => [w.id, w.label]), [['leave', 'Quitter'], ['cancel', 'ANNULER']]);
+  assert.deepEqual(menuWidgets('confirm', null).map(w => w.label), ['Quitter', 'ANNULER']);
+  for (const view of ['help', 'confirm']) for (const w of menuWidgets(view, null)) assert.ok(inside(w.rect, MENU_LAYOUT.frame));
+});
+
+test('hitMenu returns the enabled widget under the point; sliderValue maps x into 0..1', () => {
+  const w = menuWidgets('menu', null);
+  const at = id => { const r = w.find(x => x.id === id).rect; return [r.x + r.w / 2, r.y + r.h / 2]; };
+  assert.equal(hitMenu(w, ...at('back')).id, 'back');
+  assert.equal(hitMenu(w, ...at('sfx')).id, 'sfx');
+  assert.equal(hitMenu(w, ...at('pixels')).id, 'pixels');
+  assert.equal(hitMenu(w, ...at('music')), null, 'a disabled widget is not hit');
+  assert.equal(hitMenu(w, 5, 5), null);
+  assert.equal(hitMenu(w, NaN, 200), null);
+  const r = { x: 100, y: 0, w: 200, h: 30 };
+  assert.equal(sliderValue(r, 100), 0);
+  assert.equal(sliderValue(r, 200), 0.5);
+  assert.equal(sliderValue(r, 300), 1);
+  assert.equal(sliderValue(r, 50), 0);
+  assert.equal(sliderValue(r, 999), 1);
+  assert.equal(sliderValue(r, NaN), 0);
+  assert.equal(sliderValue({ x: 0, y: 0, w: 0, h: 0 }, 5), 0, 'empty rect');
+});
+
+test('CONTROLS_HELP lists the R2.0.18 bindings (right click swaps, Space / Enter / Escape = menu, Tab, P)', () => {
+  assert.match(CONTROLS_HELP, /Clic droit : échanger/);
+  assert.match(CONTROLS_HELP, /Espace \/ Entrée \/ Échap : menu/);
+  assert.match(CONTROLS_HELP, /Tab/);
+  assert.match(CONTROLS_HELP, /P : pause/);
+  assert.doesNotMatch(CONTROLS_HELP, /Espace : échanger/);
+});
+
+/** A canvas whose 2D context records every call (any method, any property), like the drawNineSlice test. */
+const fakeCanvas = () => {
+  const calls = [];
+  const target = {};
+  const ctx = new Proxy(target, {
+    get(t, prop) {
+      if (prop in t) return t[prop];
+      return (...args) => {
+        calls.push([prop, args]);
+        if (prop === 'measureText') return { width: 7 * String(args[0]).length };
+        if (prop === 'createLinearGradient' || prop === 'createRadialGradient') return { addColorStop() {} };
+        return undefined;
+      };
+    },
+    set(t, prop, value) { t[prop] = value; return true; },
+  });
+  return { width: 0, height: 0, getContext: () => ctx, calls };
+};
+const fakeFont = { ascent: 14, height: 18, capHeight: 12, draw() {}, measure: s => 7 * String(s).length };
+const fakeKit = pixelScale => ({
+  stats: { frame: { width: 486, height: 484 }, head: { width: 312, height: 280 }, button: { width: 720, height: 96 }, fonts: { title: fakeFont, text: fakeFont, tip: fakeFont, tipSmall: null }, strings: PACK_STRINGS, pixelScale },
+  sliderTrack: { width: 205 * pixelScale, height: 33 * pixelScale }, sliderThumb: { width: 41 * pixelScale, height: 33 * pixelScale }, check: { width: 100 * pixelScale, height: 46 * pixelScale }, pixelScale,
+});
+const state = (view = 'menu', extra = {}) => ({ view, music: 0, sfx: 0.7, fullscreen: false, pixelated: true, hover: null, pressed: null, focus: 'back', tips: ['Astuce une.', 'Astuce&cr;deux.'], badge: 'R2.0.18 · test · ressources originales', ...extra });
+
+test('composeMenuDialog: kit or vector fallback, every view and state, on the canvas at the given scale', () => {
+  for (const view of ['menu', 'help', 'confirm']) {
+    for (const extra of [{}, { hover: 'help' }, { pressed: 'back' }, { focus: 'sfx' }, { hover: 'leave', focus: 'cancel' }]) {
+      const vector = fakeCanvas();
+      assert.equal(composeMenuDialog(null, state(view, extra), vector, 2), vector);
+      assert.equal(vector.width, 1280);
+      assert.equal(vector.height, 960);
+      assert.ok(vector.calls.length > 10, 'vector dialog drawn');
+      assert.ok(!vector.calls.some(([m]) => m === 'drawImage'), 'no picture without the kit');
+      const native = fakeCanvas();
+      composeMenuDialog(fakeKit(2), state(view, extra), native, 3.125);
+      assert.equal(native.width, 2000);
+      assert.equal(native.height, 1500);
+      const images = native.calls.filter(([m]) => m === 'drawImage');
+      const f = MENU_LAYOUT.frame;
+      assert.deepEqual(images[0][1].slice(1), [22, 0, 72, 72, f.x, f.y, 36, 36], 'frame 9-slice cut at kit.pixelScale');
+    }
+  }
+  const one = fakeCanvas();
+  composeMenuDialog(fakeKit(1), state(), one, 1);
+  assert.deepEqual(one.calls.find(([m]) => m === 'drawImage')[1].slice(1), [11, 0, 36, 36, MENU_LAYOUT.frame.x, MENU_LAYOUT.frame.y, 36, 36]);
+  const big = fakeCanvas();
+  composeMenuDialog(null, state(), big, 9);
+  assert.equal(big.width, 2560, 'scale bounded to 4');
+  const src = read('.compiled/menudialog.js');
+  assert.doesNotMatch(src, /^\S[^\n]*\bdocument\b/m, 'no DOM access at module level');
+  assert.match(src, /ctx\.setTransform\(s, 0, 0, s, 0, 0\)/);
+  assert.match(src, /0\.45/, 'disabled widget at 45 % opacity');
+});
+
+test('AudioManager: setVolume bounded 0..1 (NaN → 1), master gain = 0.8 × volume', () => {
+  const audio = new AudioManager();
+  assert.equal(audio.volume, 1);
+  audio.setVolume(0.5);
+  assert.equal(audio.volume, 0.5);
+  audio.setVolume(2);
+  assert.equal(audio.volume, 1);
+  audio.setVolume(-1);
+  assert.equal(audio.volume, 0);
+  audio.setVolume(NaN);
+  assert.equal(audio.volume, 1);
+  assert.match(read('.compiled/audio.js'), /0\.8 \* this\.volume/);
+});
+
+test('shell and bundle: no DOM menu panel, .menu-picture without url(, menudialog after render in MODULES and precached; main.js composes the menu and pauses under it', () => {
+  const html = read('index.html');
+  for (const id of ['menu-panel', 'menu-resume', 'menu-new', 'menu-sound', 'menu-pixels', 'menu-fullscreen']) assert.doesNotMatch(html, new RegExp(id), `${id} gone`);
+  assert.match(html, /<section id="menu" class="overlay" aria-label="Menu"><\/section>/);
+  const css = read('public/style.css');
+  assert.doesNotMatch(css, /\.menu-panel/);
+  const rule = css.match(/\.menu-picture\s*\{[^}]*\}/);
+  assert.ok(rule, '.menu-picture rule');
+  assert.doesNotMatch(rule[0], /url\(/);
+  assert.match(rule[0], /position:\s*absolute/);
+  const build = read('tools/build.mjs');
+  assert.match(build, /const MODULES = \['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'\]/);
+  assert.match(read('public/sw.js'), /\.\/js\/menudialog\.js/);
+  const main = read('.compiled/main.js');
+  assert.match(main, /composeMenuDialog\(/);
+  assert.match(main, /loadMenuKit\(/);
+  assert.match(main, /upscaleMenuKit\(/);
+  assert.match(main, /!this\.paused && !this\.statsOpen && !this\.menuOpen/, 'the engine does not step under the menu');
+  const open = body(main, '    openMenu() {');
+  assert.match(open, /stopLoops\(\)/, 'loops cut at the opening');
+  assert.doesNotMatch(main, /syncPixelsLabel|menu-sound|menu-resume/);
+});
