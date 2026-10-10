@@ -32,6 +32,7 @@ const SYNTH: Record<string, Synth> = {
   powerslow: { type: 'sine', from: 800, to: 200, duration: 0.7, gain: 0.3 },
   powerback: { type: 'square', from: 300, to: 700, duration: 0.5, gain: 0.25 },
   poweraccuracy: { type: 'triangle', from: 1000, to: 2000, duration: 0.4, gain: 0.25 },
+  warning: { type: 'sine', from: 180, to: 110, duration: 0.14, gain: 0.3 },
 };
 
 /** MIME types probed with `canPlayType` for each container shipped by the importer (D-06). */
@@ -49,24 +50,52 @@ export function pickFormat(formats: string[], canPlay: (mime: string) => string)
   return null;
 }
 
-/** Distance (track px) between the head ball and the skull under which the warning loop plays (D-08). */
-export const WARNING_DISTANCE = 160;
+/** Distance (track px) between the head ball and the skull under which the warning beat starts (D-08, plan 04-05). */
+export const WARNING_DISTANCE = 220;
+/** Seconds between two warning beats when the threat is nil (just inside WARNING_DISTANCE) and when it is at the skull. */
+export const WARNING_INTERVAL_FAR = 1.1;
+export const WARNING_INTERVAL_NEAR = 0.22;
+/** Beat gain at the edge of the zone and at the skull. */
+export const WARNING_GAIN_FAR = 0.35;
+export const WARNING_GAIN_NEAR = 1;
 
-export type LoopKey = 'rolling' | 'warning';
+const clamp01 = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
 
-/** Loop gains derived from the simulation: rolling follows the chain speed, warning the head distance (D-08). */
-export function loopLevels(input: { speed: number; feedSpeed: number; headDistance: number | null; playing: boolean }): { rolling: number; warning: number } {
-  const rolling = input.playing && input.feedSpeed > 0 ? Math.max(0, Math.min(1, input.speed / input.feedSpeed)) : 0;
-  const warning = input.playing && input.headDistance !== null && input.headDistance < WARNING_DISTANCE ? 1 : 0;
-  return { rolling, warning };
+/** Threat level 0..1 from the head ball's distance to the skull: 0 outside WARNING_DISTANCE, 1 at the skull. */
+export function warningLevel(headDistance: number | null, playing: boolean): number {
+  if (!playing || headDistance === null) return 0;
+  return clamp01(1 - headDistance / WARNING_DISTANCE);
+}
+
+/** Seconds until the next warning beat: linear from WARNING_INTERVAL_FAR (level 0) to WARNING_INTERVAL_NEAR (level 1). */
+export function warningInterval(level: number): number {
+  const l = clamp01(level);
+  return WARNING_INTERVAL_FAR * (1 - l) + WARNING_INTERVAL_NEAR * l;
+}
+
+/** Gain of a warning beat: linear from WARNING_GAIN_FAR (level 0) to WARNING_GAIN_NEAR (level 1). */
+export function warningGain(level: number): number {
+  const l = clamp01(level);
+  return WARNING_GAIN_FAR * (1 - l) + WARNING_GAIN_NEAR * l;
+}
+
+export type LoopKey = 'rolling';
+export type PulseKey = 'warning';
+
+/** Loop gain derived from the simulation: rolling follows the chain speed (D-08). */
+export function loopLevels(input: { speed: number; feedSpeed: number; playing: boolean }): { rolling: number } {
+  const rolling = input.playing && input.feedSpeed > 0 ? clamp01(input.speed / input.feedSpeed) : 0;
+  return { rolling };
 }
 
 /** Base volume of each loop at level 1. */
-const LOOP_BASE: Record<LoopKey, number> = { rolling: 0.5, warning: 0.8 };
+const LOOP_BASE: Record<LoopKey, number> = { rolling: 0.5 };
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
 
 interface Loop { src: AudioBufferSourceNode; gain: GainNode; idleSince: number | null }
+/** A repeated one-shot: the latest level sets the gain and the delay of the next beat. */
+interface Pulse { level: number; timer: number }
 
 /** Sound manifest produced by tools/import-original.mjs: format 2 lists the containers per key; legacy is a key array. */
 function parseManifest(raw: unknown): Record<string, string[]> {
@@ -97,6 +126,7 @@ export class AudioManager {
   private formats = new Map<string, string>();
   private loading = new Set<string>();
   private loops = new Map<LoopKey, Loop>();
+  private pulses = new Map<PulseKey, Pulse>();
 
   constructor(private readonly assetBase = 'assets/') {}
 
@@ -170,7 +200,7 @@ export class AudioManager {
   }
 
   /**
-   * Drives a looping pack sound (rolling / warning). `level` 0..1 scales the loop's
+   * Drives a looping pack sound (rolling). `level` 0..1 scales the loop's
    * base volume with a short ramp; a loop left at 0 for LOOP_IDLE_SECONDS is stopped.
    */
   setLoop(key: LoopKey, level: number): void {
@@ -202,9 +232,44 @@ export class AudioManager {
     else if (ctx.currentTime - loop.idleSince > LOOP_IDLE_SECONDS) this.stopLoop(key, loop);
   }
 
-  /** Stops and releases every loop (level change, panels, pause). */
+  /**
+   * Repeated beat (the original `warning1`, 0.37 s, is a single hit — not a loop).
+   * `level` 0..1: 0 stops the scheduling (the current beat finishes on its own);
+   * above 0 the beat plays now if it was silent, then again every
+   * `warningInterval(level)` seconds at `warningGain(level)`, both re-read at each beat
+   * so the rhythm tightens progressively as the chain approaches the skull.
+   */
+  pulse(key: PulseKey, level: number): void {
+    const target = this.enabled && this.ctx && this.master ? clamp01(level) : 0;
+    const pulse = this.pulses.get(key);
+    if (target <= 0) {
+      if (pulse) this.stopPulse(key, pulse);
+      return;
+    }
+    if (pulse) {
+      pulse.level = target;
+      return;
+    }
+    this.pulses.set(key, { level: target, timer: 0 });
+    this.beat(key);
+  }
+
+  private beat(key: PulseKey): void {
+    const pulse = this.pulses.get(key);
+    if (!pulse) return;
+    this.play({ key, gain: warningGain(pulse.level), rate: 1 });
+    pulse.timer = window.setTimeout(() => this.beat(key), warningInterval(pulse.level) * 1000);
+  }
+
+  private stopPulse(key: PulseKey, pulse: Pulse): void {
+    window.clearTimeout(pulse.timer);
+    this.pulses.delete(key);
+  }
+
+  /** Stops and releases every loop and pulse (level change, panels, pause). */
   stopLoops(): void {
     for (const [key, loop] of this.loops) this.stopLoop(key, loop);
+    for (const [key, pulse] of this.pulses) this.stopPulse(key, pulse);
   }
 
   private stopLoop(key: LoopKey, loop: Loop): void {

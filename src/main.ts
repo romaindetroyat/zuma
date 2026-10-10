@@ -2,7 +2,7 @@
 import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, type EngineConfig, type GameEvent, type Point } from './core.js';
 import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
-import { AudioManager, loopLevels } from './audio.js';
+import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, type PackGraphics, type PackSettings, type StatsArt } from './original.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
@@ -289,7 +289,7 @@ class Game {
     } else {
       this.accumulator = 0;
       this.audio.setLoop('rolling', 0);
-      this.audio.setLoop('warning', 0);
+      this.audio.pulse('warning', 0);
     }
     this.frame++;
     this.fx.bursts = this.fx.bursts.filter(b => engine.tick - b.start < 40);
@@ -299,7 +299,8 @@ class Game {
 
   /**
    * Rolling loop from the fastest ball displacement since the previous frame,
-   * warning loop from the head ball's distance to the skull (D-08). Recoil adds no sound (D-09).
+   * warning beat from the head ball's distance to the skull (D-08, progressive since
+   * plan 04-05: the beat tightens as the threat grows). Recoil adds no sound (D-09).
    */
   private updateLoops(engine: ZumaEngine, steps: number): void {
     const seconds = steps / engine.config.tickHz;
@@ -320,9 +321,10 @@ class Game {
       }
     }
     this.lastPositions = positions;
-    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.feedSpeed, headDistance, playing: engine.state === 'playing' });
+    const playing = engine.state === 'playing';
+    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.feedSpeed, playing });
     this.audio.setLoop('rolling', lv.rolling);
-    this.audio.setLoop('warning', lv.warning);
+    this.audio.pulse('warning', warningLevel(headDistance, playing));
   }
 
   private hud(engine: ZumaEngine): HudState {
