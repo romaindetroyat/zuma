@@ -493,6 +493,8 @@ class Game {
           this.showMessage('Perdu…', engine.lives >= 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
           break;
         // `won`: no message — the time bonus is counted up inside the STATS dialog (D-15 → count-up, §8).
+        // `extra-life`: no text either (spike 03 Q3: the original only plays `extralife` three times); the HUD
+        // reads engine.lives at the next frame.
       }
     }
   }
@@ -940,6 +942,8 @@ class Game {
     const step = Math.max(0, Math.min(target, bonus.total) - bonus.shown);
     if (step <= 0) return;
     engine.creditBonus(step);
+    // A multiple of 50 000 crossed by the count-up gives a life (AddScore, 0x440b00): its triple `extralife` plays now.
+    this.handleEvents(engine.drainEvents(), engine);
     bonus.shown += step;
     this.audio.play({ key: 'bonuspop', gain: 0.5, rate: bonusPopRate(bonus.shown, bonus.total) });
     this.refreshStatsValues(engine.levelScore, bonus.shown);
@@ -1001,6 +1005,7 @@ class Game {
     const bonus = this.statsBonus;
     if (bonus && this.engine && bonus.shown < bonus.total) {
       this.engine.creditBonus(bonus.total - bonus.shown);
+      this.handleEvents(this.engine.drainEvents(), this.engine); // a life won by the remainder sounds too
       bonus.shown = bonus.total;
     }
     this.statsBonus = null;

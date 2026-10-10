@@ -35,11 +35,21 @@ const SYNTH: Record<string, Synth> = {
   powerback: { type: 'square', from: 300, to: 700, duration: 0.5, gain: 0.25 },
   poweraccuracy: { type: 'triangle', from: 1000, to: 2000, duration: 0.4, gain: 0.25 },
   warning: { type: 'sine', from: 180, to: 110, duration: 0.14, gain: 0.3 },
+  extralife: { type: 'triangle', from: 660, to: 1320, duration: 0.22, gain: 0.25 },
+  coinappear: { type: 'sine', from: 1400, to: 2100, duration: 0.15, gain: 0.2 },
+  coinvanish: { type: 'sine', from: 900, to: 450, duration: 0.2, gain: 0.2 },
 };
 
 /** Start offset of a cue, seconds: `SoundCue.delay` bounded to 0..1, absent or non-finite → 0 (T-05-24). */
 export function clampDelay(delay: number | undefined): number {
   return clamp01(Number(delay));
+}
+
+/** Stereo position of a cue, −1..1; absent or non-finite → 0 (centre, T-05-34). */
+export function clampPan(pan: number | undefined): number {
+  const p = Number(pan);
+  if (!Number.isFinite(p)) return 0;
+  return Math.max(-1, Math.min(1, p));
 }
 
 /** MIME types probed with `canPlayType` for each container shipped by the importer (D-06). */
@@ -95,12 +105,18 @@ export function warningGain(_level?: number): number {
 export type LoopKey = 'rolling';
 export type PulseKey = 'warning';
 
-/** Gain of the rolling loop while the chain moves (D-17: constant, no modulation by the speed). */
-export const ROLLING_GAIN = 0.6;
+/**
+ * Gain of the rolling loop while the chain moves (D-17: constant, no modulation by the speed). 0.35 is the user's
+ * choice (D-29, U32); the original plays the sample at 1.0 × the « Sons » slider, one channel per curve (0x419610) —
+ * a single loop here.
+ */
+export const ROLLING_GAIN = 0.35;
 /** Displacement (px/s of the fastest ball) above which the chain is heard rolling. */
 export const ROLLING_MIN_SPEED = 2;
-/** Fade-out length when the chain stops; the attack stays at 50 ms. */
-export const ROLLING_FADE_SECONDS = 0.15;
+/** Attack when the chain starts rolling (the original restarts at 1.0 at once; 50 ms avoid the click). */
+export const ROLLING_ATTACK_SECONDS = 0.05;
+/** Linear fade when the chain stops: the original fades from 0.98 by 0.02 per update, ≈ 0.5 s (0x402880). */
+export const ROLLING_FADE_SECONDS = 0.5;
 
 /** Loop level derived from the simulation: rolling is on (1) above ROLLING_MIN_SPEED while playing, else off (0) (D-17). */
 export function loopLevels(input: { speed: number; playing: boolean }): { rolling: 0 | 1 } {
@@ -116,7 +132,7 @@ export function loopLevels(input: { speed: number; playing: boolean }): { rollin
  */
 export function rampPlan(previous: number | null, target: number): { to: number; seconds: number } | null {
   if ((previous ?? 0) === target) return null;
-  return target > 0 ? { to: target * ROLLING_GAIN, seconds: 0.05 } : { to: 0, seconds: ROLLING_FADE_SECONDS };
+  return target > 0 ? { to: target * ROLLING_GAIN, seconds: ROLLING_ATTACK_SECONDS } : { to: 0, seconds: ROLLING_FADE_SECONDS };
 }
 
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
@@ -220,19 +236,41 @@ export class AudioManager {
     await Promise.all([...this.available].map(key => this.load(key)));
   }
 
-  /** Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` of a double / triple gap). */
+  /**
+   * Node a one-shot connects to: the master, or a StereoPannerNode at `pan` feeding it when the cue is panned and
+   * the browser has one (otherwise the cue plays centred).
+   */
+  private output(pan: number): AudioNode | null {
+    const ctx = this.ctx;
+    const master = this.master;
+    if (!ctx || !master) return null;
+    if (pan === 0 || typeof ctx.createStereoPanner !== 'function') return master;
+    try {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+      panner.connect(master);
+      return panner;
+    } catch {
+      return master;
+    }
+  }
+
+  /** Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` / `extralife`), panned by `cue.pan`. */
   play(cue: SoundCue): void {
     if (!this.enabled || !this.ctx || !this.master) return;
     const delay = clampDelay(cue.delay);
+    const pan = clampPan(cue.pan);
     if (this.available.has(cue.key)) {
       const buffer = this.buffers.get(cue.key);
       if (buffer) {
+        const out = this.output(pan);
+        if (!out) return;
         const src = this.ctx.createBufferSource();
         src.buffer = buffer;
         src.playbackRate.value = cue.rate;
         const gain = this.ctx.createGain();
         gain.gain.value = cue.gain;
-        src.connect(gain).connect(this.master);
+        src.connect(gain).connect(out);
         const now = this.ctx.currentTime;
         src.start(now + delay);
         return;
@@ -241,7 +279,7 @@ export class AudioManager {
       void this.load(cue.key);
       return;
     }
-    this.synth(cue, delay);
+    this.synth(cue, delay, pan);
   }
 
   /**
@@ -349,18 +387,18 @@ export class AudioManager {
     }
   }
 
-  /** Synthesised fallback; `delay` shifts the whole envelope (the simplest equivalent of a delayed start). */
-  private synth(cue: SoundCue, delay = 0): void {
+  /** Synthesised fallback; `delay` shifts the whole envelope (the simplest equivalent of a delayed start), `pan` places it. */
+  private synth(cue: SoundCue, delay = 0, pan = 0): void {
     const ctx = this.ctx;
-    const master = this.master;
-    if (!ctx || !master) return;
+    const out = this.output(pan);
+    if (!ctx || !out) return;
     const spec = SYNTH[cue.key] ?? SYNTH.insert;
     const now = ctx.currentTime + delay;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(spec.gain * cue.gain, now + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + spec.duration);
-    gain.connect(master);
+    gain.connect(out);
     const osc = ctx.createOscillator();
     osc.type = spec.type;
     osc.frequency.setValueAtTime(spec.from * cue.rate, now);

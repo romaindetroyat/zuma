@@ -674,12 +674,14 @@ export class Renderer {
       ctx.font = font(15);
       ctx.textAlign = 'center';
       ctx.fillText('MENU', 74, 18);
-      for (let i = 0; i < Math.min(hud.lives, 3); i++) {
+      // The menubar slot holds three frogs at x 172 (20 px each); beyond, « +N » (display cap only — no cap on lives, D-27).
+      const frogs = lifeIcons(hud.lives, 3);
+      for (let i = 0; i < frogs.icons; i++) {
         if (this.assets.lives) ctx.drawImage(this.assets.lives, 172 + i * 20, 6, 20, 19);
       }
-      if (hud.lives > 3) {
+      if (frogs.extra > 0) {
         ctx.font = font(11);
-        ctx.fillText(`+${hud.lives - 3}`, 236, 18);
+        ctx.fillText(`+${frogs.extra}`, 236, 18);
       }
       ctx.font = font(17);
       ctx.textAlign = 'right';
@@ -736,7 +738,8 @@ export class Renderer {
         ctx.textAlign = 'center';
         ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
       }
-      for (let i = 0; i < Math.min(hud.lives, 6); i++) {
+      const frogs = lifeIcons(hud.lives, 6);
+      for (let i = 0; i < frogs.icons; i++) {
         const x = 98 + i * 24;
         ctx.fillStyle = '#6fd34a';
         ctx.beginPath();
@@ -745,6 +748,12 @@ export class Renderer {
         ctx.fillStyle = '#111';
         ctx.fillRect(x + 6, 17, 2, 2);
         ctx.fillRect(x + 12, 17, 2, 2);
+      }
+      if (frogs.extra > 0) {
+        ctx.fillStyle = '#f7ecc8';
+        ctx.font = font(11);
+        ctx.textAlign = 'left';
+        ctx.fillText(`+${frogs.extra}`, 98 + frogs.icons * 24, 22);
       }
       ctx.fillStyle = '#f7ecc8';
       ctx.font = font(15);
@@ -862,6 +871,17 @@ export function fitScale(innerWidth: number, innerHeight: number, dpr: number, p
   if (!pixelated) return fit;
   const d = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   return Math.max(1, Math.floor(fit * d)) / d;
+}
+
+/**
+ * Frogs drawn in the HUD lives slot (D-27): `icons` = min(lives, cap), `extra` = lives − icons shown as « +N ».
+ * Negative or non-finite → nothing. The cap is a display limit; the engine has none.
+ */
+export function lifeIcons(lives: number, cap = 3): { icons: number; extra: number } {
+  if (!Number.isFinite(lives) || lives <= 0) return { icons: 0, extra: 0 };
+  const n = Math.floor(lives);
+  const icons = Math.min(n, Math.max(0, Math.floor(cap)));
+  return { icons, extra: n - icons };
 }
 
 /** Pit cover frame for a threat level 0..1: 0 → closed lid (frame 0), 1 → last frame (open). */

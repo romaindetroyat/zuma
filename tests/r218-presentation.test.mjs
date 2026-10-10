@@ -346,7 +346,7 @@ test('cues: coinappear at 0.40 and coinvanish at 1 panned (x − 320) / 320 × 0
   assert.equal(clampPan(undefined), 0);
   assert.equal(clampPan(0.24), 0.24);
   const audio = read('.compiled/audio.js');
-  assert.match(audio, /typeof [^;]*createStereoPanner === 'function'/, 'StereoPannerNode only when it exists');
+  assert.match(audio, /typeof [^;]*createStereoPanner [!=]== 'function'/, 'StereoPannerNode only when it exists');
   assert.match(body(audio, '    play(cue) {'), /clampPan\(cue\.pan\)/);
   assert.match(body(audio, '    synth(cue, delay = 0, pan = 0) {'), /output\(pan\)/, 'the synth is panned too');
   assert.match(body(audio, '    play(cue) {'), /output\(pan\)/, 'samples are panned');

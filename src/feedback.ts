@@ -8,6 +8,8 @@ export interface SoundCue {
   rate: number;
   /** Seconds before the cue starts (0 by default; clamped to 0..1 by audio.play). */
   delay?: number;
+  /** Stereo position −1..1 (0 by default; clamped by audio.play, StereoPannerNode when available). */
+  pan?: number;
 }
 
 const SIMPLE_CUES: Record<string, string> = {
@@ -20,9 +22,7 @@ const SIMPLE_CUES: Record<string, string> = {
   lost: 'lose',
   gameover: 'gameover',
   'power-spawn': 'powerup',
-  'coin-appear': 'coinappear',
   coin: 'coin',
-  'coin-vanish': 'coinvanish',
 };
 
 /** 0..1 clamp, non-finite → 0 (shared with audio.ts: one definition in the standalone bundle). */
@@ -47,6 +47,17 @@ export function soundCues(event: GameEvent): SoundCue[] {
     const n = Math.max(5, Math.trunc(Number(event.streak) || 5));
     return [{ key: 'streak', gain: 1, rate: Math.pow(2, (n - 5) / 12) }];
   }
+  if (event.kind === 'extra-life') {
+    // 0x417380: PlaySample(SOUND_EXTRA_LIFE) then the same sample 30 and 60 maj later (0x415350): three
+    // `extralife` at 0 / 0.3 / 0.6 s, one series per AddScore whatever the number of lives; no text in game.
+    return EXTRA_LIFE_DELAYS.map(delay => ({ key: 'extralife', gain: 1, rate: 1, delay }));
+  }
+  if (event.kind === 'coin-appear' || event.kind === 'coin-vanish') {
+    // JEWEL_APPEAR `jewelappear` at volume 0.40 (resources.xml), JEWEL_DISAPPEAR `gemvanishes` at 1, both panned by
+    // the coin x (0x401d40: (x − 320) × 3000 / 320 in DirectSound units ±10 000 → ±0.3, hypothesis C3).
+    const appear = event.kind === 'coin-appear';
+    return [{ key: appear ? 'coinappear' : 'coinvanish', gain: appear ? 0.4 : 1, rate: 1, pan: coinPan(Number(event.x)) }];
+  }
   if (event.kind === 'cleanup-pop') {
     // End-of-level tally (0x421550, §7): `endoflevelpop1` every 10 updates at volume 0.5, pitch not
     // modulated; the `cleanup` step itself is silent (the rising pitch belongs to the STATS count-up).
@@ -67,6 +78,16 @@ export function soundCues(event: GameEvent): SoundCue[] {
     { key: 'destroy' + Math.min(5, index + 1), gain: 1, rate: 1 },
     { key: 'combo', gain: Math.min(1, 0.4 + 0.2 * index), rate: Math.pow(2, Math.min(index, 24) / 6) },
   ];
+}
+
+/** Start of the three `extralife`, seconds (0, 30 and 60 maj at 100 Hz). */
+const EXTRA_LIFE_DELAYS = [0, 0.3, 0.6] as const;
+
+/** Pan of a coin sound from its x: (x − 320) / 320 × 0.3, bounded to ±0.3; non-finite → 0. */
+function coinPan(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  const pan = Math.max(-0.3, Math.min(0.3, ((x - 320) / 320) * 0.3));
+  return pan === 0 ? 0 : pan;
 }
 
 /** Start of the 1st / 2nd / 3rd `gapbonus1`, seconds (0, 15 and 30 maj at 100 Hz). */
