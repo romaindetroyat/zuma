@@ -108,10 +108,22 @@ export function loopLevels(input: { speed: number; playing: boolean }): { rollin
   return { rolling };
 }
 
+/**
+ * Ramp to schedule when a loop's target level goes from `previous` (null = never set, i.e. 0) to
+ * `target`: null when unchanged, else 50 ms up to `target × ROLLING_GAIN` or ROLLING_FADE_SECONDS
+ * down to 0. Re-arming the ramp every frame restarted the 150 ms fade from the current value
+ * (exponential-like decay, deferred-items 05-07): the ramp is now armed once per target change.
+ */
+export function rampPlan(previous: number | null, target: number): { to: number; seconds: number } | null {
+  if ((previous ?? 0) === target) return null;
+  return target > 0 ? { to: target * ROLLING_GAIN, seconds: 0.05 } : { to: 0, seconds: ROLLING_FADE_SECONDS };
+}
+
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
 
-interface Loop { src: AudioBufferSourceNode; gain: GainNode; idleSince: number | null }
+/** `target` = the last level the gain was ramped towards (0 at creation: the attack is armed by the first call). */
+interface Loop { src: AudioBufferSourceNode; gain: GainNode; idleSince: number | null; target: number }
 /** A repeated one-shot: the latest level sets the gain and the delay of the next beat. */
 interface Pulse { level: number; timer: number }
 
@@ -223,7 +235,8 @@ export class AudioManager {
   /**
    * Drives a looping pack sound (rolling) at pitch 1. `level` 0..1 scales ROLLING_GAIN:
    * a rising target ramps in over 50 ms, a nil target fades out over ROLLING_FADE_SECONDS
-   * (D-17); a loop left at 0 for LOOP_IDLE_SECONDS is stopped.
+   * (D-17), each ramp armed once per target change (rampPlan); a loop left at 0 for
+   * LOOP_IDLE_SECONDS is stopped (the idle clock runs on every call).
    */
   setLoop(key: LoopKey, level: number): void {
     const ctx = this.ctx;
@@ -241,16 +254,19 @@ export class AudioManager {
       gain.gain.value = 0;
       src.connect(gain).connect(master);
       src.start();
-      loop = { src, gain, idleSince: null };
+      loop = { src, gain, idleSince: null, target: 0 };
       this.loops.set(key, loop);
     }
     if (!ctx) return;
     const now = ctx.currentTime;
     const g = loop.gain.gain;
-    g.cancelScheduledValues(now);
-    g.setValueAtTime(g.value, now);
-    if (target > 0) g.linearRampToValueAtTime(target * ROLLING_GAIN, now + 0.05);
-    else g.linearRampToValueAtTime(0, now + ROLLING_FADE_SECONDS);
+    const plan = rampPlan(loop.target, target);
+    if (plan) {
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(plan.to, now + plan.seconds);
+      loop.target = target;
+    }
     if (target > 0) {
       loop.idleSince = null;
       return;

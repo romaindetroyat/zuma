@@ -88,12 +88,28 @@ export function statsRows(lineHeight: number, first = 219): StatsRows {
 }
 
 /**
- * Time bonus shown `elapsedMs` after the dialog opened (0x440b00, §8): nothing during the first
- * second, then +100 every 100 ms (100 updates, then every 10) up to `total`; the last step is partial.
+ * Points per count-up step (D-21): 100 while the total is at most 2 000, else the smallest multiple of
+ * 100 that is ≥ total / 20, so the count-up never exceeds 20 steps (≈ 2 s). A non-finite total → 100.
+ * The original counts +100 every 10 updates with no acceleration (research 02 Q3); the bounded step
+ * and the click-to-fast mode are a deliberate deviation requested in UAT 5 (U24).
  */
-export function bonusCountUp(total: number, elapsedMs: number): number {
+export function bonusCountStep(total: number): number {
+  if (!Number.isFinite(total) || total <= 2000) return 100;
+  return Math.ceil(total / 20 / 100) * 100;
+}
+
+/** Points per step once the player clicks the dialog (0x440b82–0x440b9b: 2 500 per step in the `board+0x186` mode, never raised in adventure). */
+export const BONUS_FAST_STEP = 2500;
+
+/**
+ * Time bonus shown `elapsedMs` after the dialog opened (0x440b00, §8): nothing during the first
+ * second (100 updates), then one `step` every 100 ms (10 updates) up to `total`; the last step is
+ * partial. `step` defaults to `bonusCountStep(total)`; a non-positive or non-finite step does too.
+ */
+export function bonusCountUp(total: number, elapsedMs: number, step = bonusCountStep(total)): number {
   if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(elapsedMs) || elapsedMs < 1000) return 0;
-  return Math.min(total, 100 * (Math.floor((elapsedMs - 1000) / 100) + 1));
+  const s = Number.isFinite(step) && step > 0 ? step : bonusCountStep(total);
+  return Math.min(total, s * (Math.floor((elapsedMs - 1000) / 100) + 1));
 }
 
 /** Pitch of the `endoflevelpop1` of each count-up step: 1 → 1.5 with the shown share (hypothesis A5: the original passes shown / 1000). */

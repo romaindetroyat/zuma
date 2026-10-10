@@ -5,7 +5,7 @@ import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont } from './bitmapfont.js';
-import { STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountUp, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
+import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
@@ -55,6 +55,8 @@ class Game {
   private statsRender = 0;
   private statsShown = 0;
   private statsTimers: number[] = [];
+  /** Count-up timers (one armed at a time), purged with `statsTimers`. */
+  private countTimers: number[] = [];
   private engine: ZumaEngine | null = null;
   private level: ResolvedLevel | null = null;
   private progress: Progress = { stage: 0, level: 0 };
@@ -547,6 +549,13 @@ class Game {
       ok.addEventListener('touchstart', set('pressed'), { passive: true });
       ok.addEventListener('touchend', set('normal'), { passive: true });
     }
+    // Fast count-up (D-21, deliberate deviation — the original has no acceleration, research 02 Q3): a press on
+    // the dialog outside OK switches the running count-up to BONUS_FAST_STEP per step; OK settles the remainder.
+    document.querySelector<HTMLElement>('#stats .zuma-stats')?.addEventListener('pointerdown', ev => {
+      const onOk = ev.target instanceof Element && ev.target.closest('#result-continue') !== null;
+      if (onOk || !this.statsOpen || !this.statsBonus || this.statsBonus.shown >= this.statsBonus.total) return;
+      this.statsBonus.fast = true;
+    }, { passive: true });
     on('menu-resume', () => this.toggleMenu());
     on('menu-new', () => { this.toggleMenu(); void this.newGame(); });
     on('menu-sound', () => this.toggleSound());
@@ -570,9 +579,10 @@ class Game {
   private statsInput: StatsInput | null = null;
   /**
    * ACE TIME count-up in the dialog (0x440b00, §8): `total` = the uncredited bonus when the dialog
-   * opened, `shown` = the share already credited through engine.creditBonus() (T-05-15).
+   * opened, `shown` = the share already credited through engine.creditBonus() (T-05-15), `startedAt`
+   * = opening time (performance.now), `steps` = steps applied, `fast` = BONUS_FAST_STEP per step (D-21).
    */
-  private statsBonus: { total: number; shown: number } | null = null;
+  private statsBonus: { total: number; shown: number; startedAt: number; steps: number; fast: boolean } | null = null;
 
   /**
    * Opens the STATS dialog. The ten values go to the `strong#result-*` of the structure
@@ -599,7 +609,7 @@ class Game {
     }
     // The time bonus is not in the score at `won`: it is counted up here, bounded by what is still uncredited.
     const total = won ? Math.max(0, engine.timeBonus - engine.timeBonusCredited) : 0;
-    this.statsBonus = total > 0 ? { total, shown: 0 } : null;
+    this.statsBonus = total > 0 ? { total, shown: 0, startedAt: performance.now(), steps: 0, fast: false } : null;
     this.statsInput = {
       levelScore: engine.levelScore, combos: s.combos, coins: s.coins, gaps: s.gaps, maxStreak: s.maxStreak, maxCombo: s.maxCombo,
       seconds, parTime: this.level?.parTime ?? 0, timeBonus: total, timeBonusShown: 0, won, bestSeconds: best,
@@ -634,18 +644,28 @@ class Game {
   }
 
   /**
-   * Arms the ACE TIME count-up (U17, §8): from 1 s after the opening, +100 every 100 ms with
-   * `endoflevelpop1` at a rising pitch, each step credited to the engine so POINTS and the HUD
-   * score climb live; the schedule is `bonusCountUp`. Timers share `statsTimers` (purged on close).
+   * Arms the ACE TIME count-up (U17, §8, D-21): from 1 s after the opening, one step every 100 ms —
+   * `bonusCountStep(total)` points, or BONUS_FAST_STEP once the dialog was clicked — with
+   * `endoflevelpop1` at a rising pitch, each step credited to the engine so POINTS and the HUD score
+   * climb live (the schedule is `bonusCountUp`). One timer is armed at a time (`countTimers`, purged on
+   * close): the k-th step is due 1000 + 100 × k ms after the opening.
    */
   private scheduleBonusCountUp(): void {
+    this.armBonusTimer();
+  }
+
+  private armBonusTimer(): void {
     const bonus = this.statsBonus;
-    if (!bonus) return;
-    const steps = Math.ceil(bonus.total / 100);
-    for (let k = 1; k <= steps; k++) {
-      const at = 1000 + 100 * (k - 1);
-      this.statsTimers.push(window.setTimeout(() => this.bonusStep(bonusCountUp(bonus.total, at)), at));
-    }
+    if (!bonus || !this.statsOpen || bonus.shown >= bonus.total) return;
+    const due = 1000 + 100 * bonus.steps;
+    const delay = Math.max(0, due - (performance.now() - bonus.startedAt));
+    this.countTimers.push(window.setTimeout(() => {
+      const b = this.statsBonus;
+      if (!b || !this.statsOpen) return;
+      b.steps++;
+      this.bonusStep(Math.min(b.total, b.shown + (b.fast ? BONUS_FAST_STEP : bonusCountStep(b.total))));
+      this.armBonusTimer();
+    }, delay));
   }
 
   /** One count-up step: credits `target − shown` (never more than the remainder), pops, refreshes POINTS / BONUS. */
@@ -706,7 +726,9 @@ class Game {
 
   private clearStatsTimers(): void {
     for (const t of this.statsTimers) clearTimeout(t);
+    for (const t of this.countTimers) clearTimeout(t);
     this.statsTimers = [];
+    this.countTimers = [];
   }
 
   private async closeStats(): Promise<void> {

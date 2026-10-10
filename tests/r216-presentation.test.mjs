@@ -275,7 +275,8 @@ test('end to end: the STATS values of the r215 cleared level are the expected li
 test('main.js counts the time bonus up inside the STATS dialog through creditBonus and credits the rest on close (U17, T-05-15)', () => {
   const main = fs.readFileSync('.compiled/main.js', 'utf8');
   assert.match(main, /engine\.creditBonus\(/, 'the engine credits the bonus');
-  assert.match(main, /bonusCountUp\(/, 'schedule from the pure function');
+  // R2.0.17 (D-21): the timer chain applies bonusCountStep(total) (or BONUS_FAST_STEP) per 100 ms; bonusCountUp stays the pure model of the schedule.
+  assert.match(main, /bonusCountStep\(/, 'step from the pure function');
   assert.match(main, /bonusPopRate\(/, 'rising pop pitch');
   assert.match(main, /key: 'bonuspop'/, 'endoflevelpop1 on each step');
   assert.match(main, /timeBonusShown/, 'the shown share goes to statsValues');
