@@ -38,6 +38,9 @@ Corriger les écarts constatés lors de la première session de jeu de l'utilisa
 ### Grenouille (GAME-05)
 - **D-13:** Mesurer dans `SMALLFROGonPAD` la position du cercle sombre (écoutille) et de la bouche pour fixer les offsets `front`/`back` ; capture de contrôle.
 
+### Écran STATS (U4, référence R2.0.12 fournie)
+- **D-14:** Reproduire le dialogue STATS d'origine à partir de l'image du standalone R2.0.12 : chiffres figés effacés par clonage de texture, valeurs vivantes écrites aux mêmes emplacements, même typographie et couleurs ; **aucun panneau superposé visible** (exigence utilisateur du 2026-10-10) ; bandeau HUD figé de l'image rendu transparent pour laisser le HUD vivant.
+
 ### Claude's Discretion
 - Détails de l'oscillation des overlays, courbe d'ease de l'insertion, volume des boucles.
 
