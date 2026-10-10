@@ -175,6 +175,195 @@ test('extra lives: a match taking the score from 49 990 to 50 020 emits extra-li
   assert.equal(g.lives, CANDIDATE.lives + 1);
 });
 
+// ------------------------------------------------------------ pièces (0x417580, spike 03 Q4, D-28)
+
+test('CANDIDATE: coins visible 600 ticks, first attempt at 180, then 780 ticks after the previous appearance at 1/180 per tick', () => {
+  assert.equal(CANDIDATE.coinVisibleTicks, 600, '1 000 maj × 0.6');
+  assert.equal(CANDIDATE.coinFirstTicks, 180, '300 maj × 0.6');
+  assert.equal(CANDIDATE.coinRetryTicks, 780, '1 300 maj × 0.6');
+  assert.ok(Math.abs(CANDIDATE.coinChance - 1 / 180) < 1e-12, '1/300 per maj ≈ 1/180 per tick');
+  assert.equal('coinMinGapTicks' in CANDIDATE, false);
+  assert.equal('coinMaxGapTicks' in CANDIDATE, false);
+});
+
+test('coins: first appearance ≥ 180, appearances ≥ 780 apart, natural vanish exactly 600 ticks later, one at a time, ≈ 960 ticks apart on average', () => {
+  const g = fixture([{ color: 0, s: 100 }]);
+  g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
+  run(g, 20_000);
+  const appear = ofKind(g, 'coin-appear');
+  const vanish = ofKind(g, 'coin-vanish');
+  assert.ok(appear[0].tick >= 180, `first at ${appear[0].tick}`);
+  for (let i = 1; i < appear.length; i++) assert.ok(appear[i].tick - appear[i - 1].tick >= 780, `gap ${i}: ${appear[i].tick - appear[i - 1].tick}`);
+  for (const v of vanish) {
+    const a = appear.find(e => e.id === v.id);
+    assert.equal(v.tick - a.tick, 600, 'visible 10 s');
+  }
+  let visible = 0;
+  for (const e of g.events) {
+    if (e.kind === 'coin-appear') visible++;
+    if (e.kind === 'coin-vanish' || e.kind === 'coin') visible--;
+    assert.ok(visible >= 0 && visible <= 1, 'never two coins at once');
+  }
+  assert.ok(appear.length >= 14 && appear.length <= 30, `${appear.length} appearances in 20 000 ticks`);
+});
+
+test('coins: with coinChance 1 the cadence is exact — 180, then appearance + 780 whether the coin vanished or was grabbed', () => {
+  const g = fixture([{ color: 0, s: 100 }], { coinChance: 1 });
+  g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
+  run(g, 1800);
+  assert.deepEqual(ofKind(g, 'coin-appear').map(e => e.tick), [180, 960, 1740]);
+  assert.deepEqual(ofKind(g, 'coin-vanish').map(e => e.tick), [780, 1560]);
+  // Grabbed 20-odd ticks after a spawn at t0: the next coin still comes at t0 + 780, not grab + 780.
+  const h = fixture([{ color: 0, s: 100 }], { coinChance: 1 });
+  h.setTreasure([{ x: 320, y: 200, curve: 0, dist: 0 }]);
+  run(h, 10);
+  h.spawnCoinForTest(0);
+  const t0 = h.tick;
+  h.command({ kind: 'shoot', x: 320, y: 0 });
+  const grab = stepUntil(h, 'coin', 60);
+  assert.ok(grab.tick > t0);
+  const next = stepUntil(h, 'coin-appear', 1000);
+  assert.equal(next.tick, t0 + 780, 'the grab does not move the retry deadline');
+});
+
+test('coins: no attempt once the ZUMA gauge is full; a coin already visible stays until its deadline', () => {
+  const g = fixture([{ color: 0, s: 100 }], { coinChance: 1 });
+  g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
+  g.zumaMode = true;
+  run(g, 5000);
+  assert.equal(ofKind(g, 'coin-appear').length, 0);
+  const h = fixture([{ color: 0, s: 100 }], { coinChance: 1 });
+  h.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
+  h.spawnCoinForTest(0);
+  const t0 = h.tick;
+  h.zumaMode = true;
+  const v = stepUntil(h, 'coin-vanish', 700);
+  assert.equal(v.tick, t0 + 600);
+  run(h, 3000);
+  assert.equal(ofKind(h, 'coin-appear').length, 1, 'only the spawned one');
+});
+
+test('coins: dist = percentage of its curve the chain head must have passed (0x40a900); dist 0 always free, no ball → only dist 0', () => {
+  const at = (dist, balls = [{ color: 0, s: 256 }]) => {
+    const g = fixture(balls);
+    g.setTreasure([{ x: 100, y: 100, curve: 0, dist }]);
+    run(g, 5000);
+    return ofKind(g, 'coin-appear').length;
+  };
+  assert.ok(at(40) >= 1, 'head at 256 / 640 = 40 % frees dist 40');
+  assert.equal(at(41), 0, 'dist 41 is never chosen');
+  assert.ok(at(0) >= 1);
+  assert.equal(at(10, []), 0, 'no ball on the curve → not free');
+  assert.ok(at(0, []) >= 1, 'dist 0 → free without balls');
+  const g = fixture([]);
+  g.setTreasure([{ x: 1, y: 2, curve: 0, dist: 150 }, { x: 3, y: 4, curve: 0, dist: -5 }, { x: 5, y: 6, curve: 0, dist: 32 }]);
+  assert.deepEqual(g.treasure.map(p => p.dist), [100, 0, 32], 'dist bounded to 0..100');
+});
+
+// ------------------------------------------------------------ décompte multi-chaînes (D-30, U33)
+
+const lower = () => new Track([[0, 240], [2000, 240]]);
+const upper = () => new Track([[0, 100], [2000, 100]]);
+/** Two chains: chain 0 (y 240) gets a run at 320–352, chain 1 (y 100) a run at 560–592; both destroyed by shots, then the tally. */
+const dualCleared = (upperBalls = [{ color: 1, s: 560 }, { color: 1, s: 592 }]) => {
+  const g = new ZumaEngine([lower(), upper()], frog, { ...quiet, target: 30, levelBonus: 500 }, 5);
+  g.feeding = false;
+  g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: upperBalls.length ? 1 : 0, next: 0, stream: false }, g.chains[0]);
+  g.loadFixture({ balls: upperBalls, stream: false }, g.chains[1]);
+  g.current = upperBalls.length ? 1 : 0;
+  g.next = 0;
+  const destroys = [];
+  if (upperBalls.length) {
+    g.command({ kind: 'shoot', x: 576, y: 100 });
+    destroys[1] = stepUntil(g, 'destroy', 120);
+    assert.equal(destroys[1].chain, 1);
+    run(g, 10);
+  }
+  g.current = 0;
+  g.command({ kind: 'shoot', x: 336, y: 240 });
+  destroys[0] = stepUntil(g, 'destroy', 120);
+  assert.equal(destroys[0].chain, 0);
+  const clearing = stepUntil(g, 'clearing', 120);
+  return { g, destroys, clearing };
+};
+
+test('tally, two chains: one marker per chain from its own last destruction, stepping together, +100 each, shared pops, won 30 ticks after the longest', () => {
+  const { g, destroys, clearing } = dualCleared();
+  const C = clearing.tick;
+  const steps = destroys.map(d => Math.ceil((2000 - d.x) / 60));
+  assert.ok(steps[1] < steps[0], `chain 1 (${steps[1]}) shorter than chain 0 (${steps[0]})`);
+  assert.equal(g.cleanup.markers.length, 2);
+  g.cleanup.markers.forEach((m, i) => {
+    assert.equal(m.chain, i);
+    assert.equal(m.steps, steps[i]);
+    assert.equal(m.step, 0);
+    assert.equal(m.s, 2000 - steps[i] * 60, `marker ${i} aligned on its skull`);
+  });
+  assert.equal(g.cleanup.steps, Math.max(...steps));
+  assert.deepEqual(clearing.markers.map(m => [m.chain, m.steps]), [[0, steps[0]], [1, steps[1]]]);
+  assert.deepEqual(clearing.markers.map(m => m.y), [240, 100]);
+  assert.equal(clearing.chain, 0, 'the clearing point is the marker of the last destruction');
+  const scoreAtClearing = g.score;
+  const won = stepUntil(g, 'won', 600);
+  const cleanups = ofKind(g, 'cleanup');
+  assert.equal(cleanups.length, steps[0] + steps[1]);
+  for (const chain of [0, 1]) {
+    const mine = cleanups.filter(c => c.chain === chain);
+    assert.equal(mine.length, steps[chain]);
+    mine.forEach((c, i) => {
+      const k = i + 1;
+      assert.equal(c.tick, C + Math.ceil(12 + 2.4 * (k - 1) - 1e-9), `chain ${chain} step ${k} tick`);
+      assert.equal(c.step, k);
+      assert.equal(c.steps, steps[chain]);
+      assert.equal(c.points, 100);
+      assert.equal(c.x, 2000 - 60 * (steps[chain] - k));
+      assert.equal(c.y, chain === 0 ? 240 : 100);
+      assert.ok(Math.abs(c.progress - k / steps[chain]) < 1e-9);
+    });
+  }
+  const sameTick = cleanups.filter(c => c.chain === 1).every(c => cleanups.some(d => d.chain === 0 && d.step === c.step && d.tick === c.tick));
+  assert.ok(sameTick, 'step k of both chains at the same tick');
+  assert.equal(g.cleanupScore, (steps[0] + steps[1]) * 100);
+  assert.equal(won.score, scoreAtClearing + (steps[0] + steps[1]) * 100);
+  const lastStep = cleanups.filter(c => c.chain === 0).at(-1).tick;
+  assert.equal(won.tick, lastStep + 30);
+  const pops = ofKind(g, 'cleanup-pop');
+  const expected = [];
+  for (let t = C + 12.6; t <= C + 12 + 2.4 * (steps[0] - 1) + 1e-9; t += 6) expected.push(Math.ceil(t - 1e-9));
+  assert.deepEqual(pops.map(p => p.tick), expected, 'one shared pop clock up to the last step of the longest marker');
+  assert.deepEqual(pops.map(p => p.index), expected.map((_, i) => i));
+});
+
+test('tally, two chains: a chain without destruction walks its whole track from the start', () => {
+  const { g, clearing } = dualCleared([]);
+  const m1 = g.cleanup.markers[1];
+  assert.equal(m1.steps, Math.ceil(2000 / 60));
+  assert.equal(m1.s, 2000 - m1.steps * 60);
+  assert.equal(clearing.chain, 0);
+  stepUntil(g, 'won', 600);
+  assert.equal(ofKind(g, 'cleanup').filter(c => c.chain === 1).length, Math.ceil(2000 / 60));
+});
+
+test('tally, one chain: unchanged cadence through cleanup.markers[0]; a board emptied without an explosion walks the whole track', () => {
+  const g = fixture([{ color: 0, s: 100 }], {}, 0, 2000);
+  g.zumaMode = true;
+  g.balls = [];
+  g.step();
+  const clearing = ofKind(g, 'clearing')[0];
+  const steps = Math.ceil(2000 / 60);
+  assert.equal(g.cleanup.markers.length, 1);
+  assert.equal(g.cleanup.markers[0].steps, steps);
+  assert.equal(g.cleanup.markers[0].s, 2000 - steps * 60);
+  const won = stepUntil(g, 'won', 400);
+  const cleanups = ofKind(g, 'cleanup');
+  assert.equal(cleanups.length, steps);
+  assert.equal(won.tick, cleanups.at(-1).tick + 30);
+  assert.equal(won.tick, clearing.tick + Math.ceil(12 + 2.4 * (steps - 1) - 1e-9) + 30);
+  const core = fs.readFileSync('.compiled/core.js', 'utf8');
+  assert.match(core, /coinRetryTicks/);
+  assert.doesNotMatch(core, /coinMaxGapTicks|scheduleCoin/);
+});
+
 // ------------------------------------------------------------ baseline
 
 test('baseline 2.0.18: ENGINE_VERSION and package.json agree', () => {

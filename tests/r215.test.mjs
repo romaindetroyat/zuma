@@ -50,22 +50,25 @@ test('coins: without treasure points nothing happens and the colour sequence is 
   assert.deepEqual(a, b, 'an empty treasure list must not consume the RNG');
 });
 
-test('coins: a coin appears 540–900 ticks after the previous one, stays 360 ticks, one at a time', () => {
+test('coins: a coin appears from 180 ticks, then ≥ 780 ticks after the previous appearance, stays 600 ticks, one at a time', () => {
+  // R2.0.18 (D-28, spike 03 Q4): 0x417580 — visible 1 000 maj (600 ticks), an attempt at 1/180 per tick once 1 300 maj
+  // (780 ticks) have passed since the previous appearance; replaces the 540–900-tick gap after the vanish (D-07).
   const g = fixture([{ color: 0, s: 100 }]);
   g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
   assert.equal(g.coin, null);
-  const first = stepUntil(g, 'coin-appear', 1000);
-  assert.ok(first.tick >= 540 && first.tick <= 900, `first coin at tick ${first.tick}`);
+  const first = stepUntil(g, 'coin-appear', 3000);
+  assert.ok(first.tick >= 180, `first coin at tick ${first.tick}`);
   assert.deepEqual([first.x, first.y], [100, 100]);
   assert.ok(g.coin && g.coin.x === 100 && g.coin.y === 100 && g.coin.id === first.id);
-  const vanish = stepUntil(g, 'coin-vanish', 400);
+  const vanish = stepUntil(g, 'coin-vanish', 700);
   assert.equal(vanish.tick, first.tick + CANDIDATE.coinVisibleTicks);
+  assert.equal(CANDIDATE.coinVisibleTicks, 600);
   assert.equal(vanish.id, first.id);
   assert.equal(g.coin, null);
-  const second = stepUntil(g, 'coin-appear', 1000);
-  assert.ok(second.tick - vanish.tick >= 540 && second.tick - vanish.tick <= 900, `second coin ${second.tick - vanish.tick} ticks after the vanish`);
+  const second = stepUntil(g, 'coin-appear', 3000);
+  assert.ok(second.tick - first.tick >= 780, `second coin ${second.tick - first.tick} ticks after the first appearance`);
   assert.notEqual(second.id, first.id);
-  run(g, 3000);
+  run(g, 6000);
   let visible = 0;
   for (const e of g.events) {
     if (e.kind === 'coin-appear') visible++;
@@ -75,20 +78,21 @@ test('coins: a coin appears 540–900 ticks after the previous one, stays 360 ti
   assert.ok(ofKind(g, 'coin-appear').length >= 4);
 });
 
-test('coins: a treasure point is only chosen when no alive ball of its curve is closer than dist', () => {
+test('coins: a treasure point is only chosen once the head of its curve has passed dist % of the track', () => {
+  // R2.0.18 (spike 03 Q4, 0x40a900): `dist` is a percentage of progression, not a clearance in px.
   const blocked = fixture([{ color: 0, s: 320 }]);
-  blocked.setTreasure([{ x: 320, y: 240, curve: 0, dist: 40 }]);
-  run(blocked, 2000);
-  assert.equal(ofKind(blocked, 'coin-appear').length, 0, 'the ball sits on the point');
+  blocked.setTreasure([{ x: 320, y: 240, curve: 0, dist: 60 }]);
+  run(blocked, 4000);
+  assert.equal(ofKind(blocked, 'coin-appear').length, 0, 'head at 50 % < 60 %');
   assert.equal(blocked.coin, null);
   const free = fixture([{ color: 0, s: 320 }]);
   free.setTreasure([{ x: 320, y: 240, curve: 0, dist: 0 }]);
-  run(free, 2000);
+  run(free, 4000);
   assert.ok(ofKind(free, 'coin-appear').length >= 1, 'dist 0 is always free');
   const farEnough = fixture([{ color: 0, s: 320 }]);
   farEnough.setTreasure([{ x: 320, y: 190, curve: 0, dist: 40 }]);
-  run(farEnough, 2000);
-  assert.ok(ofKind(farEnough, 'coin-appear').length >= 1, 'a ball 50 px away does not block dist 40');
+  run(farEnough, 4000);
+  assert.ok(ofKind(farEnough, 'coin-appear').length >= 1, 'head at 50 % frees dist 40');
 });
 
 test('coins: setTreasure sanitises the pack data (curve clamped, dist defaulted, junk ignored)', () => {
@@ -244,8 +248,9 @@ test('clearing: without partime the time bonus is 0', () => {
   assert.equal(g.score, 30 + 500 + g.cleanupScore);
 });
 
-test('clearing: a board emptied without an explosion wins 42 ticks later without any cleanup step', () => {
-  // R2.0.16: cleanupStartTicks (12) + cleanupEndTicks (30) after clearing (r216).
+test('clearing: a board emptied without an explosion walks the whole track from its start', () => {
+  // R2.0.18 (D-30): a chain without a destruction in the level has its marker start at the beginning of its
+  // track (aligned so that the last step lands on the skull) instead of making no step.
   const g = fixture([{ color: 0, s: 100 }]);
   g.zumaMode = true;
   g.balls = [];
@@ -253,16 +258,16 @@ test('clearing: a board emptied without an explosion wins 42 ticks later without
   assert.equal(g.state, 'clearing');
   const clearing = ofKind(g, 'clearing');
   assert.equal(clearing.length, 1);
-  assert.deepEqual([clearing[0].x, clearing[0].y], [g.track.pointAt(g.track.length).x, g.track.pointAt(g.track.length).y]);
-  assert.equal(g.cleanup.steps, 0);
-  run(g, 41);
-  assert.equal(g.state, 'clearing');
-  g.step();
-  assert.equal(g.state, 'won');
-  assert.equal(ofKind(g, 'won')[0].tick, clearing[0].tick + 42);
-  assert.equal(ofKind(g, 'cleanup').length, 0);
+  const steps = Math.ceil(g.track.length / CANDIDATE.cleanupStepPx);
+  assert.equal(g.cleanup.steps, steps);
+  assert.equal(g.cleanup.markers[0].s, g.track.length - steps * CANDIDATE.cleanupStepPx);
+  assert.deepEqual([clearing[0].x, clearing[0].y], [g.track.pointAt(g.cleanup.markers[0].s).x, g.track.pointAt(g.cleanup.markers[0].s).y]);
+  const won = stepUntil(g, 'won', 400);
+  const cleanups = ofKind(g, 'cleanup');
+  assert.equal(cleanups.length, steps);
+  assert.equal(won.tick, cleanups[cleanups.length - 1].tick + CANDIDATE.cleanupEndTicks);
   assert.equal(ofKind(g, 'won').length, 1);
-  assert.equal(g.cleanupScore, 0);
+  assert.equal(g.cleanupScore, steps * 100);
 });
 
 test('clearing: the coin on the board vanishes when the level is cleared', () => {

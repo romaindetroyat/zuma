@@ -477,7 +477,8 @@ test('tally: +levelBonus per curve at clearing, then 60 px steps every 2.4 ticks
   assert.equal(g.levelScore, 530);
   const steps = Math.ceil((2000 - destroy.x) / 60);
   assert.ok(g.cleanup && g.cleanup.steps === steps && g.cleanup.step === 0);
-  assert.equal(g.cleanup.s, 2000 - 60 * steps, 'the marker is aligned so that the last step lands on the skull');
+  // R2.0.18 (D-30): one marker per chain, the single chain's marker is cleanup.markers[0].
+  assert.equal(g.cleanup.markers[0].s, 2000 - 60 * steps, 'the marker is aligned so that the last step lands on the skull');
   assert.deepEqual([clearing.x, clearing.y], [2000 - 60 * steps, 240]);
   const won = stepUntil(g, 'won', 400);
   const cleanups = ofKind(g, 'cleanup');
@@ -547,7 +548,8 @@ test('tally: without parTime the time bonus is 0; the level bonus counts every c
   assert.equal(dual.score, 1000);
 });
 
-test('tally: a board emptied without an explosion has no step and wins 12 + 30 ticks after clearing', () => {
+test('tally: a board emptied without an explosion walks the whole track from its start and wins 30 ticks after the last step', () => {
+  // R2.0.18 (D-30): the marker of a chain without a destruction starts at the beginning of its track (no longer « no step »).
   const g = fixture([{ color: 0, s: 100 }], {}, 0, 2000);
   g.zumaMode = true;
   g.balls = [];
@@ -555,14 +557,16 @@ test('tally: a board emptied without an explosion has no step and wins 12 + 30 t
   assert.equal(g.state, 'clearing');
   const clearing = ofKind(g, 'clearing');
   assert.equal(clearing.length, 1);
-  assert.equal(g.cleanup.steps, 0);
-  assert.deepEqual([clearing[0].x, clearing[0].y], [2000, 240]);
-  const won = stepUntil(g, 'won', 100);
-  assert.equal(won.tick, clearing[0].tick + 12 + 30);
-  assert.equal(ofKind(g, 'cleanup').length, 0);
-  assert.equal(ofKind(g, 'cleanup-pop').length, 0);
-  assert.equal(g.cleanupScore, 0);
-  assert.equal(g.score, CANDIDATE.levelBonus);
+  const steps = Math.ceil(2000 / 60);
+  assert.equal(g.cleanup.steps, steps);
+  assert.deepEqual([clearing[0].x, clearing[0].y], [2000 - 60 * steps, 240]);
+  const won = stepUntil(g, 'won', 400);
+  const C = clearing[0].tick;
+  assert.equal(won.tick, C + Math.ceil(12 + 2.4 * (steps - 1) - 1e-9) + 30);
+  assert.equal(ofKind(g, 'cleanup').length, steps);
+  assert.ok(ofKind(g, 'cleanup-pop').length >= 2);
+  assert.equal(g.cleanupScore, steps * 100);
+  assert.equal(g.score, CANDIDATE.levelBonus + steps * 100);
 });
 
 // ------------------------------------------------------------ configFromSettings (GAME-01, T-05-13), baseline
