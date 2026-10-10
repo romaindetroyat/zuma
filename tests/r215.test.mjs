@@ -1,7 +1,8 @@
 // R2.0.15 — pièces aux TreasurePoints, décompte de fin de niveau, bonus de temps d'expert, « PARTEZ », zumaslow/zumaback
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Track, ZumaEngine, CANDIDATE } from '../.compiled/core.js';
+import { Track, ZumaEngine, CANDIDATE, aceTimeBonus } from '../.compiled/core.js';
+import { soundCues, coinFrame, sparkleFrame } from '../.compiled/feedback.js';
 
 const straight = () => new Track([[0, 240], [640, 240]]);
 const frog = { x: 320, y: 400 };
@@ -148,4 +149,180 @@ test('coins: coin points fill the ZUMA gauge', () => {
   stepUntil(g, 'coin', 40);
   assert.ok(g.zumaMode);
   assert.equal(ofKind(g, 'zuma').length, 1);
+});
+
+// -------------------------------------------- fin de niveau : clearing, décompte, bonus de temps (D-04, D-10)
+
+test('aceTimeBonus: 0 without partime or past it, otherwise 10 points per remaining second, floor 100', () => {
+  assert.equal(aceTimeBonus(20, 25), 100);
+  assert.equal(aceTimeBonus(5, 25), 200);
+  assert.equal(aceTimeBonus(25, 25), 100);
+  assert.equal(aceTimeBonus(26, 25), 0);
+  assert.equal(aceTimeBonus(10, 0), 0);
+  assert.equal(aceTimeBonus(NaN, 25), 0);
+  assert.equal(aceTimeBonus(0.5, 25), 240);
+});
+
+/** r213 « ZUMA mode stops the feed… » fixture, run through the tally until `won`. */
+const clearedLevel = (extra = {}) => {
+  const g = new ZumaEngine(straight(), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
+  g.feeding = false;
+  g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
+  g.command({ kind: 'shoot', x: 336, y: 240 });
+  const destroy = stepUntil(g, 'destroy', 60);
+  g.config.total = 99;
+  const clearing = stepUntil(g, 'clearing', 60);
+  return { g, destroy, clearing };
+};
+
+test('clearing: the tally starts at the last explosion, scores 10 per ball slot every 4 ticks and wins with the bonuses', () => {
+  const { g, destroy, clearing } = clearedLevel({ parTime: 25 });
+  assert.equal(g.state, 'clearing');
+  assert.equal(clearing.tick, destroy.tick + CANDIDATE.destroyTicks, 'clearing starts the tick the run is removed');
+  assert.deepEqual([clearing.x, clearing.y, clearing.chain], [destroy.x, destroy.y, 0]);
+  assert.equal(g.balls.length, 0);
+  assert.equal(g.projectiles.length, 0);
+  const steps = Math.ceil((g.track.length - destroy.x) / CANDIDATE.ballSpacing);
+  assert.ok(g.cleanup && g.cleanup.steps === steps && g.cleanup.step === 0);
+  // Input is ignored while clearing and no ball appears.
+  const before = g.events.length;
+  g.command({ kind: 'shoot', x: 320, y: 0 });
+  g.command({ kind: 'swap' });
+  g.step();
+  assert.equal(g.events.slice(before).filter(e => e.kind === 'fire' || e.kind === 'swap').length, 0);
+  assert.equal(g.projectiles.length, 0);
+  assert.equal(g.spawned, 2);
+  const scoreBefore = 30; // one run of three
+  assert.equal(g.score, scoreBefore);
+  const won = stepUntil(g, 'won', 200);
+  const cleanups = ofKind(g, 'cleanup');
+  assert.equal(cleanups.length, steps);
+  let s = destroy.x;
+  cleanups.forEach((c, i) => {
+    s = Math.min(g.track.length, s + CANDIDATE.ballSpacing);
+    assert.equal(c.tick, clearing.tick + 4 * (i + 1), `cleanup ${i} tick`);
+    assert.equal(c.points, 10);
+    assert.equal(c.step, i + 1);
+    assert.equal(c.steps, steps);
+    assert.equal(c.chain, 0);
+    assert.ok(Math.abs(c.progress - (i + 1) / steps) < 1e-9);
+    if (i > 0) assert.ok(c.progress > cleanups[i - 1].progress, 'progress strictly increasing');
+    assert.deepEqual([c.x, c.y], [g.track.pointAt(s).x, g.track.pointAt(s).y]);
+  });
+  assert.equal(cleanups[cleanups.length - 1].progress, 1);
+  assert.equal(g.state, 'won');
+  assert.equal(g.balls.length, 0);
+  assert.equal(g.cleanup, null);
+  const timeBonus = aceTimeBonus(won.tick / CANDIDATE.tickHz, 25);
+  assert.ok(timeBonus >= 100, 'won well under the 25 s partime');
+  assert.equal(won.levelBonus, 500);
+  assert.equal(won.timeBonus, timeBonus);
+  assert.equal(won.seconds, won.tick / CANDIDATE.tickHz);
+  assert.equal(g.timeBonus, timeBonus);
+  assert.equal(g.cleanupScore, steps * 10);
+  assert.equal(g.score, scoreBefore + steps * 10 + 500 + timeBonus);
+  assert.equal(won.score, g.score);
+  assert.ok(won.tick >= cleanups[cleanups.length - 1].tick);
+});
+
+test('clearing: without partime the time bonus is 0', () => {
+  const { g } = clearedLevel({ parTime: 0 });
+  const won = stepUntil(g, 'won', 200);
+  assert.equal(won.timeBonus, 0);
+  assert.equal(g.timeBonus, 0);
+  assert.equal(g.score, 30 + g.cleanupScore + 500);
+});
+
+test('clearing: a board emptied without an explosion wins on the next tick without any cleanup step', () => {
+  const g = fixture([{ color: 0, s: 100 }]);
+  g.zumaMode = true;
+  g.balls = [];
+  g.step();
+  assert.equal(g.state, 'clearing');
+  const clearing = ofKind(g, 'clearing');
+  assert.equal(clearing.length, 1);
+  assert.deepEqual([clearing[0].x, clearing[0].y], [g.track.pointAt(g.track.length).x, g.track.pointAt(g.track.length).y]);
+  assert.equal(g.cleanup.steps, 0);
+  g.step();
+  assert.equal(g.state, 'won');
+  assert.equal(ofKind(g, 'cleanup').length, 0);
+  assert.equal(ofKind(g, 'won').length, 1);
+  assert.equal(g.cleanupScore, 0);
+});
+
+test('clearing: the coin on the board vanishes when the level is cleared', () => {
+  const g = fixture([{ color: 0, s: 100 }]);
+  g.setTreasure([{ x: 100, y: 100, curve: 0, dist: 0 }]);
+  g.spawnCoinForTest(0);
+  g.zumaMode = true;
+  g.balls = [];
+  g.step();
+  assert.equal(g.coin, null);
+  assert.equal(ofKind(g, 'coin-vanish').length, 1);
+});
+
+// ------------------------------------------------------------- « PARTEZ » (D-11), zumaslow / zumaback (GAME-01)
+
+test('go: emitted exactly once, the tick the fast intro feed ends', () => {
+  const g = new ZumaEngine(straight(), frog, { ...CANDIDATE, start: 5, total: 9, speed: 60, feedSpeed: 600, powerChance: 0 }, 11);
+  let endTick = 0;
+  for (let i = 0; i < 200 && g.feeding; i++) { g.step(); if (!g.feeding) endTick = g.tick; }
+  assert.ok(endTick > 0, 'feeding ended');
+  run(g, 300);
+  const go = ofKind(g, 'go');
+  assert.equal(go.length, 1);
+  assert.equal(go[0].tick, endTick);
+  const silent = new ZumaEngine(straight(), frog, { ...CANDIDATE, start: 5, total: 9, speed: 60, feedSpeed: 600, powerChance: 0 }, 11);
+  silent.feeding = false;
+  run(silent, 300);
+  assert.equal(ofKind(silent, 'go').length, 0);
+});
+
+test('zumaBackTicks / zumaSlowTicks arm the rollback and the slow phase when ZUMA mode starts (max with running values)', () => {
+  const make = (extra, prepare = () => {}) => {
+    const g = new ZumaEngine(straight(), frog, { ...quiet, target: 30, total: 2, levelBonus: 500, ...extra }, 5);
+    g.feeding = false;
+    g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
+    prepare(g);
+    g.command({ kind: 'shoot', x: 336, y: 240 });
+    stepUntil(g, 'zuma', 60);
+    return g;
+  };
+  const g = make({ zumaBackTicks: 30, zumaSlowTicks: 60 });
+  assert.equal(g.backwardsTicks, 30);
+  assert.equal(g.slowTicks, 60);
+  const longer = make({ zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.slowTicks = 1000; e.backwardsTicks = 500; });
+  assert.ok(longer.slowTicks > 60 && longer.backwardsTicks > 30, 'a longer running power is kept');
+  const plain = make({});
+  assert.equal(plain.backwardsTicks, 0);
+  assert.equal(plain.slowTicks, 0);
+});
+
+// ------------------------------------------------------------- cues et trames (feedback.ts)
+
+test('feedback: coin and cleanup cues, coinFrame and sparkleFrame', () => {
+  assert.equal(soundCues({ tick: 1, kind: 'coin-appear' })[0].key, 'coinappear');
+  assert.equal(soundCues({ tick: 1, kind: 'coin' })[0].key, 'coin');
+  assert.equal(soundCues({ tick: 1, kind: 'coin-vanish' })[0].key, 'coinvanish');
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 0 }), [{ key: 'bonuspop', gain: 1, rate: 1 }]);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 1 }), [{ key: 'bonuspop', gain: 1, rate: 1.5 }]);
+  assert.equal(soundCues({ tick: 1, kind: 'cleanup', progress: 0.5 })[0].rate, 1.25);
+  assert.equal(soundCues({ tick: 1, kind: 'cleanup', progress: 7 })[0].rate, 1.5);
+  assert.equal(soundCues({ tick: 1, kind: 'won' })[0].key, 'levelwin');
+  assert.equal(coinFrame(0), 0);
+  assert.equal(coinFrame(3), 1);
+  assert.equal(coinFrame(89), 29);
+  assert.equal(coinFrame(90), 0);
+  assert.equal(coinFrame(7, 10, 2), 3);
+  assert.equal(sparkleFrame(0), 0);
+  assert.equal(sparkleFrame(1), 0);
+  assert.equal(sparkleFrame(2), 1);
+  assert.equal(sparkleFrame(27), 13);
+  assert.equal(sparkleFrame(28), -1);
+  assert.equal(sparkleFrame(89), -1);
+  assert.equal(sparkleFrame(90), 0);
+  const seen = new Map();
+  for (let t = 0; t < 90; t++) { const f = sparkleFrame(t); if (f >= 0) seen.set(f, (seen.get(f) ?? 0) + 1); }
+  assert.deepEqual([...seen.keys()].sort((a, b) => a - b), Array.from({ length: 14 }, (_, i) => i));
+  assert.ok([...seen.values()].every(n => n === 2));
 });

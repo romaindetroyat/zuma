@@ -162,7 +162,9 @@ test('ZUMA mode stops the feed and clearing the board wins the level with its bo
   g.config.total = 99;
   run(g, 5);
   assert.equal(g.spawned, 2, 'ZUMA mode stops the feed');
-  run(g, 60);
+  run(g, 30); // R2.0.15: the board is emptied at removal (tick 62) and the end-of-level tally starts
+  assert.equal(g.state, 'clearing');
+  run(g, 120); // R2.0.15: the tally walks one ball slot every 4 ticks before the level is won
   assert.equal(g.state, 'won');
   assert.ok(g.events.some(e => e.kind === 'won'));
   assert.ok(g.score >= 500);
