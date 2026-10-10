@@ -2,17 +2,18 @@
 
 Reconstruction web/PWA d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
-Baseline : **R2.0.14**.
+Baseline : **R2.0.15**.
 
 ## Contenu du dépôt
 
 | Dossier | Rôle |
 | --- | --- |
 | `src/core.ts` | Moteur de simulation déterministe (chaînes, insertion à identifiants stables, destruction en 40 ticks, recul local, attraction, power-ups, multi-chaînes). |
-| `src/feedback.ts` | Règles de présentation : sons déclenchés par événement, explosions, particules. |
+| `src/feedback.ts` | Règles de présentation : sons déclenchés par événement, explosions, particules, trames de la pièce. |
 | `src/levels.ts` | Niveaux procéduraux utilisés quand aucune ressource originale n'est fournie. |
 | `src/original.ts` | Chargeur du pack de ressources privé (courbes, fonds, sprites, sons). |
-| `src/render.ts` | Rendu canvas 640×480, HUD natif, panneau STATS. |
+| `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
+| `src/bitmapfont.ts`, `src/statsdialog.ts` | Polices bitmap PopCap et composition de l'écran STATS natif. |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
 | `src/main.ts` | Boucle de jeu, progression, menus, enregistrement du service worker. |
 | `tools/` | Build, serveur local, garde-fou de publication, extraction et import des ressources originales. |
@@ -28,7 +29,7 @@ npm run dev     # build local (avec ressources privées si présentes) puis http
 
 Commandes : clic pour tirer, clic droit ou Espace pour échanger la bille, `P` pause, `Échap` menu, `M` son. L'option de menu « Pixels nets » force une échelle entière (×1, ×2, ×3) sans lissage ; le choix est persisté.
 
-Relecture : le paramètre d'URL `?level=1-3` ouvre directement un niveau (temple-niveau, ici le troisième niveau du premier temple) ; il est ignoré sans pack ou si le couple est hors limites.
+Relecture : le paramètre d'URL `?level=1-3` ouvre directement un niveau (temple-niveau, ici le troisième niveau du premier temple) ; il est ignoré sans pack ou si le couple est hors limites. `?debug=1` expose `window.__zuma.game.debugState()` (moteur et niveau en lecture, pour les scripts de capture).
 
 ## Ressources originales (optionnelles, jamais publiées)
 
@@ -53,15 +54,24 @@ Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`confi
 | --- | --- | --- | --- |
 | `score` | 1000 → 5000 (10000 en Gauntlet) | Points à marquer dans le niveau pour remplir la jauge orange et passer en mode ZUMA (`target`). Chaîne originale : « Marquez des points pour remplir la barre orange ». Le bonus de fin de niveau reste fixe (1000). | hypothèse (cohérente avec le texte d'aide) |
 | `repeat` | 40–50 (42 → 50 sur les plateaux doubles) | Probabilité (%) qu'une nouvelle bille répète la couleur de la précédente (`repeatChance`) ; des séries de 3 ou 4 apparaissent donc naturellement. | hypothèse (confirmée par l'impression de jeu : groupes constitués dès 1-1) |
-| `single` | 7–9, niveaux avancés seulement | Probabilité (%) d'une bille isolée : différente de la précédente et de la suivante (`singleChance`). | hypothèse |
+| `single` | 7–9, niveaux avancés seulement | Probabilité (%) d'une bille isolée : différente de la précédente et de la suivante (`singleChance`, bornée 0..1). | hypothèse, verrouillée par test (`r215-presentation`) |
 | `start` | 35 → 45 | Nombre de billes envoyées à vitesse rapide avant que la chaîne ralentisse à `speed`. | vérifié |
 | `speed` | 0,5 → 0,6 (px par pas à 100 Hz) | Vitesse de croisière de la chaîne, ×100 → px/s. | vérifié |
 | `slowfactor` | 4 | Diviseur de vitesse de la balle RALENTIR. | vérifié |
 | `firespeed` | 6 (px par pas à 100 Hz) | Vitesse du projectile, ×100/60 → px par tick. | vérifié |
 | `powerfreq` | 3000 (pas à 100 Hz) | Intervalle moyen entre deux power-ups ; garde = 30 % de la valeur, puis tirage par tick. | hypothèse |
-| `partime` | 90 → 130 (s) | Temps de référence affiché sur l'écran STATS (« OBJECTIF »). | vérifié |
-| `colors` | 4 (1-1 à 1-3 seulement) | Nombre de couleurs ; sinon déduit du temple (4, 5, 6). | hypothèse pour la déduction |
-| `zumaslow`, `zumaback`, `mergespeed`, `reloaddelay` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks`. | à confirmer |
+| `partime` | 90 → 130 (s) | Temps d'expert : affiché sur l'écran STATS (« OBJECTIF », `parTime`) et bonus de temps `max(100, 10 × secondes restantes)` ajouté au score quand TEMPS ≤ OBJECTIF (ligne BONUS). | affichage vérifié ; hypothèse pour la formule du bonus |
+| `zumaslow`, `zumaback` | 500 / 200 (`lvl35` seulement) | Au passage en mode ZUMA, la chaîne recule pendant `zumaback` pas puis roule ralentie pendant `zumaslow` pas (pas à 100 Hz × 0,6 → ticks : `zumaBackTicks`, `zumaSlowTicks`) ; un power-up plus long déjà actif est conservé. Un seul niveau les utilise. | hypothèse, verrouillée par test |
+| `colors` | 4 (1-1 à 1-3 seulement) | Nombre de couleurs, borné 3..6 ; sinon déduit du temple (4 pour les temples 1–3, 5 pour 4–6, 6 ensuite). | hypothèse pour la déduction, verrouillée par test |
+| `mergespeed`, `reloaddelay` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks`. | à confirmer |
+
+### Pièces et fin de niveau
+
+Depuis R2.0.15, le moteur applique deux règles du jeu original dont les montants ne sont pas lisibles dans les données ; chaque nombre marqué *hypothèse* est à confirmer sur l'original (voir `.planning/codebase/CONCERNS.md`).
+
+- **Pièces** (`TreasurePoint` de `levels.xml` : `x`, `y`, courbe, `dist1`|`dist2`) : une seule pièce à la fois, qui apparaît 9–15 s après le début du niveau puis après chaque disparition ou ramassage, sur un point tiré au hasard parmi ceux qui sont dégagés — aucune bille de la courbe concernée à moins de `dist` px du point (`dist = 0` = toujours libre ; règle de dégagement : *hypothèse*). Elle reste visible 6 s. Rendu : `COIN.gif` (30 trames, 20 trames/s) avec le scintillement `sparkle.gif` périodique. Un projectile passant à moins de 18 px la ramasse : **+100 points** (*hypothèse*), texte flottant « +100 », compteur PIÈCES des STATS, **la série (ENCH.) est conservée** et le projectile continue sa course. Sons : `jewelappear` à l'apparition, `gemvanishes` à la disparition, `coingrab` au ramassage.
+- **Décompte de fin de niveau** : quand la dernière bille explose en mode ZUMA, le tir est bloqué et un marqueur part du point de l'explosion vers le crâne, d'une bille (`ballSpacing`) toutes les 4 ticks ; chaque pas rapporte **10 points** (*hypothèse*) avec un texte flottant « +10 » sur la piste et le son `endoflevelpop1` dont la hauteur monte de 1 à 1,5 sur la longueur. À l'arrivée : bonus de temps d'expert (voir `partime`), bonus de niveau (1000), `chant5`, puis l'écran STATS s'ouvre 60 ticks plus tard.
+- **Début de niveau** : « Attention » (`GET_READY`, police `NativeAlienExtended18` avec le pack) pendant l'arrivée rapide de la chaîne, puis « PARTEZ » (`GO`) quand la vitesse de croisière est atteinte ; `chant1` au début.
 
 ### Écran STATS d'origine
 
@@ -106,4 +116,4 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.14 est une baseline jouable, pas une revendication de reproduction bit-à-bit. La loi RNG exacte des power-ups et plusieurs réglages originaux (`zumaslow`, `zumaback`, pièces bonus) restent à documenter ; `repeat`, `single` et `score` sont interprétés comme décrit dans « Réglages originaux » (hypothèses à confirmer sur l'original).
+R2.0.15 est une baseline jouable, pas une revendication de reproduction bit-à-bit. La loi RNG exacte des power-ups, `mergespeed` et `reloaddelay` restent à documenter. Hypothèses interprétées comme décrit ci-dessus, à confirmer sur l'original : `repeat`, `single`, `score`, la déduction des couleurs par temple, `zumaslow` / `zumaback` (recul puis ralenti en mode ZUMA, × 0,6), la formule du bonus de temps (`max(100, 10 × s restantes)`), la pièce à 100 points avec sa règle de dégagement `dist`, et le décompte de 10 points par bille toutes les 4 ticks.
