@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { STATS_LAYOUT, STATS_COLORS, STATS_ORDER, statsValues, bestTime, bestTimeKey, formatSeconds, wrapText } from '../.compiled/statsdialog.js';
 import { importOriginal } from '../tools/import-original.mjs';
 
@@ -175,4 +176,32 @@ test('render.js draws the coin and its sparkle; main.js shows GET_READY then rea
   assert.match(main, /'go'/);
   assert.match(main, /'cleanup'/);
   assert.match(main, /setTreasure\(/);
+});
+
+test('standalone bundle: no top-level identifier is declared by two modules (concatenated module scope)', () => {
+  // R2.0.15 regression: `clamp01` (audio/feedback) and `canvasOf` (original/bitmapfont) made the single-file build a SyntaxError.
+  const modules = ['core', 'feedback', 'levels', 'audio', 'original', 'bitmapfont', 'statsdialog', 'render', 'main'];
+  assert.match(fs.readFileSync('tools/build.mjs', 'utf8'), new RegExp(`const MODULES = \\[${modules.map(m => `'${m}'`).join(', ')}\\]`), 'MODULES list mirrored');
+  const owners = new Map();
+  for (const m of modules) {
+    const src = fs.readFileSync(`.compiled/${m}.js`, 'utf8');
+    for (const match of src.matchAll(/^(?:export )?(?:const|let|class|function|async function) +([A-Za-z_$][\w$]*)/gm)) {
+      const name = match[1];
+      assert.ok(!owners.has(name), `${name} declared in both ${owners.get(name)} and ${m}`);
+      owners.set(name, m);
+    }
+  }
+});
+
+test('standalone bundle: the stripped concatenation keeps no import / export / re-export and parses as one script', () => {
+  // R2.0.15 regression: `export { formatSeconds } from './statsdialog.js';` survived the strip and made the single file fetch a module (CORS on file://).
+  const bundler = fs.readFileSync('tools/build.mjs', 'utf8');
+  const m = bundler.match(/const strip = (s => [^\n]*);\n/);
+  assert.ok(m, 'strip arrow found in build.mjs');
+  const strip = new Function(`return ${m[1]}`)();
+  const modules = ['core', 'feedback', 'levels', 'audio', 'original', 'bitmapfont', 'statsdialog', 'render', 'main'];
+  const js = modules.map(name => strip(fs.readFileSync(`.compiled/${name}.js`, 'utf8'))).join('\n');
+  assert.doesNotMatch(js, /^(import|export) /m, 'no module statement left');
+  assert.doesNotMatch(js, /from '\.\/[a-z]+\.js'/, 'no module specifier left');
+  assert.doesNotThrow(() => new vm.Script(js, { filename: 'zuma-standalone.js' }), 'the concatenation parses as a single script');
 });

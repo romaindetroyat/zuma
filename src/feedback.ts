@@ -19,7 +19,8 @@ const SIMPLE_CUES: Record<string, string> = {
   'coin-vanish': 'coinvanish',
 };
 
-const clamp01 = (v: number): number => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+/** 0..1 clamp, non-finite → 0 (shared with audio.ts: one definition in the standalone bundle). */
+export const clamp01 = (v: number): number => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
 
 const POWER_CUES: Record<string, string> = {
   bomb: 'powerbomb',

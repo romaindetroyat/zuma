@@ -14,7 +14,7 @@
  * Unknown directives are ignored. `parseFontScript`, `layoutText` and `measureText`
  * are pure (no DOM) so the Node tests can lock them; `BitmapFont` draws on a canvas.
  */
-import { applyMask, assetUrl, type Bitmap } from './original.js';
+import { applyMask, assetUrl, canvasOf, type Bitmap } from './original.js';
 
 export interface FontRect { x: number; y: number; w: number; h: number }
 export interface FontLayer {
@@ -361,13 +361,6 @@ export class BitmapFont {
     ctx.drawImage(alphaMask, 0, 0);
     return out;
   }
-}
-
-function canvasOf(width: number, height: number): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, width);
-  c.height = Math.max(1, height);
-  return c;
 }
 
 /** White picture whose alpha is the red channel of `mask` (PopCap `_name.gif` convention). */

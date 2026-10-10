@@ -266,7 +266,8 @@ export function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-function canvasOf(width: number, height: number): HTMLCanvasElement {
+/** Blank canvas of at least 1×1 (shared with the font module: one definition in the standalone bundle). */
+export function canvasOf(width: number, height: number): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = Math.max(1, width);
   c.height = Math.max(1, height);

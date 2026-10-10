@@ -55,7 +55,8 @@ if (local) {
 if (standalone) {
   // Single-file build: modules are concatenated in dependency order with their
   // import/export statements stripped, styles inlined, assets referenced as data URLs.
-  const strip = s => s.replace(/^import[^\n]*\n/gm, '').replace(/^export (?=(const|let|function|class|async function))/gm, '').replace(/^export \{[^}]*\};?\n/gm, '');
+  // `export { a } from './x.js';` re-exports must go too: a surviving `from` clause makes the single file fetch a module at runtime (R2.0.15).
+  const strip = s => s.replace(/^import[^\n]*\n/gm, '').replace(/^export (?=(const|let|function|class|async function))/gm, '').replace(/^export \{[^}]*\}[^\n]*\n/gm, '');
   const js = MODULES.map(m => strip(fs.readFileSync(path.join(dist, 'js', `${m}.js`), 'utf8'))).join('\n');
   const css = fs.readFileSync(path.join(dist, 'public', 'style.css'), 'utf8');
   let html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')

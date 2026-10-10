@@ -5,7 +5,7 @@
  * proprietary file. Every pack sound is decoded in parallel on the first user
  * gesture (D-07) so the first occurrence of a cue is already the original.
  */
-import type { SoundCue } from './feedback.js';
+import { clamp01, type SoundCue } from './feedback.js';
 import { assetUrl } from './original.js';
 
 interface Synth { type: OscillatorType; from: number; to: number; duration: number; gain: number; noise?: boolean }
@@ -59,7 +59,6 @@ export const WARNING_INTERVAL_NEAR = 0.22;
 export const WARNING_GAIN_FAR = 0.35;
 export const WARNING_GAIN_NEAR = 1;
 
-const clamp01 = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
 
 /** Threat level 0..1 from the head ball's distance to the skull: 0 outside WARNING_DISTANCE, 1 at the skull. */
 export function warningLevel(headDistance: number | null, playing: boolean): number {
