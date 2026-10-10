@@ -1628,7 +1628,7 @@ export class ZumaEngine {
         this.cleanupScore += points;
         this.addScore(points);
         const pos = track.pointAt(marker.s);
-        this.emit('cleanup', { x: pos.x, y: pos.y, points, step: marker.step, steps: marker.steps, progress: marker.step / marker.steps, chain: marker.chain });
+        this.emit('cleanup', { x: pos.x, y: pos.y, s: marker.s, points, step: marker.step, steps: marker.steps, progress: marker.step / marker.steps, chain: marker.chain });
       }
       if (cleanup.step === cleanup.steps) cleanup.endTick = this.tick + this.config.cleanupEndTicks;
     }

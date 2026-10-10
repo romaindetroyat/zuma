@@ -3,9 +3,9 @@
  * local asset pack or a vector fallback with the same geometry, so gameplay and
  * tests never depend on proprietary media.
  */
-import { type Ball, type Chain, type Point, type PowerKind, type Track, type ZumaEngine } from './core.js';
+import { type Ball, type Point, type PowerKind, type Track, type ZumaEngine } from './core.js';
 import { EXPLOSION_FRAME_TICKS, EXPLOSION_RGB, PARTICLE_LIFE_TICKS, PARTICLE_RGB, coinFrame, explosionFrame, insertionPose, particleAlpha, particleColor, rollFrame, sparkleFrame, type ColorBurst } from './feedback.js';
-import type { Bitmap, LevelArt, Sheet } from './original.js';
+import type { Bitmap, DrawableLayer, LevelArt, Sheet } from './original.js';
 import type { BitmapFont } from './bitmapfont.js';
 
 export interface RenderAssets {
@@ -92,6 +92,31 @@ export type HudButton = 'menu' | 'stats';
 
 const POWER_GLYPH: Record<PowerKind, string> = { bomb: '✸', slow: '◐', backwards: '◀', accuracy: '✛' };
 
+/** Number of draw passes of the board (0x40c470: priorities 0..3 of the CURV, plus 4). */
+export const DRAW_PASS_COUNT = 5;
+/** One pass of the board: the cutouts, then the balls, of priority `layer`. */
+export interface DrawPass<B, C> { layer: number; cutouts: C[]; balls: B[] }
+/** A ball of the board with its draw priority (Track.ballPriority) and its track. */
+interface BoardBall { priority: number; ball: Ball; track: Track }
+
+/** Pass of a priority: integer 0..4, non-finite → 0 (T-05-28). */
+function drawPassOf(priority: number | undefined): number {
+  const p = Number(priority);
+  return Number.isFinite(p) ? Math.max(0, Math.min(DRAW_PASS_COUNT - 1, Math.trunc(p))) : 0;
+}
+
+/**
+ * Board draw order (0x40c470, spike 03 Q1, D-23): five passes L = 0..4, each made of the cutouts of priority
+ * L (0x409210) then the balls of priority L, in their input order. With the pack's cutouts (all `pri` 1):
+ * balls of priority 0, the cutouts, then balls of priority ≥ 1. Pure and generic; nothing is dropped.
+ */
+export function drawPasses<B extends { priority: number }, C extends { priority: number }>(balls: B[], cutouts: C[]): DrawPass<B, C>[] {
+  const passes: DrawPass<B, C>[] = Array.from({ length: DRAW_PASS_COUNT }, (_, layer) => ({ layer, cutouts: [], balls: [] }));
+  for (const c of cutouts) passes[drawPassOf(c.priority)].cutouts.push(c);
+  for (const b of balls) passes[drawPassOf(b.priority)].balls.push(b);
+  return passes;
+}
+
 export class Renderer {
   private readonly ctx: CanvasRenderingContext2D;
   private view: LevelView | null = null;
@@ -153,12 +178,18 @@ export class Renderer {
     this.drawBackground(view);
     this.drawOverlays(view);
     this.drawHoles(view, fx);
-    for (const chain of engine.chains) this.drawChain(engine, chain, frame);
+    // D-23 (0x40c470): five passes L = 0..4 — cutouts of priority L (0x409210), bursts of layer L (0x40b4d0),
+    // balls of priority L of every chain (settled, then those still opening their slot), then their explosions.
+    for (const pass of drawPasses(this.boardBalls(engine), view.art?.cutouts ?? [])) {
+      this.drawCutouts(pass.cutouts);
+      this.drawBursts(engine, fx, pass.layer);
+      for (const item of pass.balls) this.drawBoardBall(engine, item, frame);
+      this.drawExplosions(engine, pass.balls);
+    }
     this.drawCoin(engine);
     this.drawProjectiles(engine, frame);
-    this.drawCutouts(view);
     this.drawFrog(engine, view, fx, frame);
-    this.drawEffects(engine, fx);
+    this.drawFloats(engine, fx);
     this.drawHud(hud, frame);
     ctx.restore();
   }
@@ -211,14 +242,14 @@ export class Renderer {
       ctx.lineWidth = 28;
       ctx.strokeStyle = '#5c4a30';
       ctx.stroke();
-      // Tunnel sections (layer flags) get a darker lid.
+      // Tunnel sections (CURV byte A, bit 0 of the flags) get a darker lid.
       ctx.lineWidth = 46;
       ctx.strokeStyle = 'rgba(20,12,6,0.55)';
       let open = false;
       ctx.beginPath();
       for (let i = 0; i < track.points.length; i++) {
         const p = track.points[i];
-        if (track.layers[i]) {
+        if (track.layers[i] & 1) {
           if (!open) { ctx.moveTo(p.x, p.y); open = true; } else ctx.lineTo(p.x, p.y);
         } else if (open) {
           ctx.stroke();
@@ -291,44 +322,55 @@ export class Renderer {
     for (const o of view.art.overlays) ctx.drawImage(o.image, o.x, o.y);
   }
 
-  private drawCutouts(view: LevelView): void {
-    if (!view.art) return;
+  /** Cutouts of one pass, drawn 1:1 at their position (stencils of the background, hypothesis C2). */
+  private drawCutouts(cutouts: DrawableLayer[]): void {
     const ctx = this.ctx;
-    for (const c of view.art.cutouts) ctx.drawImage(c.image, c.x, c.y);
+    for (const c of cutouts) ctx.drawImage(c.image, c.x, c.y);
   }
 
   // ----------------------------------------------------------------- balls
 
-  private drawChain(engine: ZumaEngine, chain: Chain, frame: number): void {
-    const track = chain.track;
+  /**
+   * Every ball of every chain within [−r, length + r], with its draw priority (Track.ballPriority, 0x405c10):
+   * the settled balls first, then those still opening their slot, so a landing ball stays above its
+   * neighbours of the same pass. No ball is left out for a layer flag (D-23).
+   */
+  private boardBalls(engine: ZumaEngine): BoardBall[] {
     const r = engine.config.ballRadius;
-    const ordered = [...chain.balls].sort((a, b) => (track.layerAt(b.s) & 1) - (track.layerAt(a.s) & 1));
-    // A ball still opening its slot is drawn last so it stays visible above its neighbours.
-    const entering = (b: Ball): boolean => b.width < 1 && b.enterFrom !== undefined;
-    const settled = ordered.filter(b => !entering(b));
-    const growing = ordered.filter(entering);
-    for (const ball of settled.concat(growing)) {
-      if (ball.s < -r || ball.s > track.length + r) continue;
-      if (track.layerAt(ball.s) & 2) continue;
-      const p = track.pointAt(ball.s);
-      let x = p.x;
-      let y = p.y;
-      let alpha = 1;
-      let scale = 1;
-      if (ball.destroyingUntil !== undefined) {
-        const remaining = Math.max(0, ball.destroyingUntil - engine.tick) / engine.config.destroyTicks;
-        alpha = remaining;
-        scale = 0.6 + 0.4 * remaining;
+    const settled: BoardBall[] = [];
+    const growing: BoardBall[] = [];
+    for (const chain of engine.chains) {
+      const track = chain.track;
+      for (const ball of chain.balls) {
+        if (ball.s < -r || ball.s > track.length + r) continue;
+        const item = { priority: track.ballPriority(ball.s), ball, track };
+        if (ball.width < 1 && ball.enterFrom !== undefined) growing.push(item);
+        else settled.push(item);
       }
-      if (ball.width < 1 && ball.enterFrom) {
-        // D-11: slide from the landing point into the slot that is opening.
-        const pose = insertionPose(ball.width, ball.enterFrom, p);
-        x = pose.x;
-        y = pose.y;
-        scale *= pose.scale;
-      }
-      this.drawBall(ball.color, x, y, ball.s, alpha, scale, ball.power, frame);
     }
+    return settled.concat(growing);
+  }
+
+  private drawBoardBall(engine: ZumaEngine, item: BoardBall, frame: number): void {
+    const { ball, track } = item;
+    const p = track.pointAt(ball.s);
+    let x = p.x;
+    let y = p.y;
+    let alpha = 1;
+    let scale = 1;
+    if (ball.destroyingUntil !== undefined) {
+      const remaining = Math.max(0, ball.destroyingUntil - engine.tick) / engine.config.destroyTicks;
+      alpha = remaining;
+      scale = 0.6 + 0.4 * remaining;
+    }
+    if (ball.width < 1 && ball.enterFrom) {
+      // D-11: slide from the landing point into the slot that is opening.
+      const pose = insertionPose(ball.width, ball.enterFrom, p);
+      x = pose.x;
+      y = pose.y;
+      scale *= pose.scale;
+    }
+    this.drawBall(ball.color, x, y, ball.s, alpha, scale, ball.power, frame);
   }
 
   private drawBall(color: number, x: number, y: number, roll: number, alpha: number, scale: number, power: PowerKind | undefined, frame: number): void {
@@ -540,37 +582,42 @@ export class Renderer {
 
   // --------------------------------------------------------------- effects
 
-  private drawEffects(engine: ZumaEngine, fx: Fx): void {
+  /** Explosion sprites of the exploding balls of one pass (above the balls of that pass). */
+  private drawExplosions(engine: ZumaEngine, items: BoardBall[]): void {
     const ctx = this.ctx;
-    for (const chain of engine.chains) {
-      for (const ball of chain.balls) {
-        if (ball.destroyingUntil === undefined) continue;
-        const counter = engine.config.destroyTicks - (ball.destroyingUntil - engine.tick);
-        const frame = explosionFrame(counter);
-        if (frame < 0) continue;
-        const p = chain.track.pointAt(ball.s);
-        const sheet = this.assets?.explosions[ball.color] ?? null;
-        if (sheet) {
-          const f = Math.min(sheet.frames - 1, Math.floor(frame * sheet.frames / 13));
-          ctx.save();
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.drawImage(sheet.image, 0, f * sheet.frameHeight, sheet.frameWidth, sheet.frameHeight, p.x - sheet.frameWidth / 2, p.y - sheet.frameHeight / 2, sheet.frameWidth, sheet.frameHeight);
-          ctx.restore();
-        } else {
-          const rgb = EXPLOSION_RGB[ball.color] ?? 0xffffff;
-          const radius = 10 + frame * 3;
-          ctx.save();
-          ctx.globalAlpha = Math.max(0, 1 - counter / (13 * EXPLOSION_FRAME_TICKS));
-          ctx.strokeStyle = `#${rgb.toString(16).padStart(6, '0')}`;
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
-        }
+    for (const { ball, track } of items) {
+      if (ball.destroyingUntil === undefined) continue;
+      const counter = engine.config.destroyTicks - (ball.destroyingUntil - engine.tick);
+      const frame = explosionFrame(counter);
+      if (frame < 0) continue;
+      const p = track.pointAt(ball.s);
+      const sheet = this.assets?.explosions[ball.color] ?? null;
+      if (sheet) {
+        const f = Math.min(sheet.frames - 1, Math.floor(frame * sheet.frames / 13));
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.drawImage(sheet.image, 0, f * sheet.frameHeight, sheet.frameWidth, sheet.frameHeight, p.x - sheet.frameWidth / 2, p.y - sheet.frameHeight / 2, sheet.frameWidth, sheet.frameHeight);
+        ctx.restore();
+      } else {
+        const rgb = EXPLOSION_RGB[ball.color] ?? 0xffffff;
+        const radius = 10 + frame * 3;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, 1 - counter / (13 * EXPLOSION_FRAME_TICKS));
+        ctx.strokeStyle = `#${rgb.toString(16).padStart(6, '0')}`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
     }
+  }
+
+  /** Particle bursts of one layer (0x40b4d0); a burst without a layer belongs to the last pass. */
+  private drawBursts(engine: ZumaEngine, fx: Fx, layer: number): void {
+    const ctx = this.ctx;
     for (const burst of fx.bursts) {
+      if (drawPassOf(burst.layer ?? DRAW_PASS_COUNT - 1) !== layer) continue;
       const counter = engine.tick - burst.start;
       const alpha = particleAlpha(counter);
       if (alpha <= 0) continue;
@@ -583,6 +630,11 @@ export class Renderer {
       }
       ctx.restore();
     }
+  }
+
+  /** Floating texts, after the frog (unchanged order). */
+  private drawFloats(engine: ZumaEngine, fx: Fx): void {
+    const ctx = this.ctx;
     const floatFont = this.assets?.fonts?.float ?? null;
     for (const t of fx.floats) {
       const age = engine.tick - t.start;

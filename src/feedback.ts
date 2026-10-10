@@ -148,7 +148,8 @@ export function particleColor(color: number): string {
 }
 
 export interface BurstParticle { x: number; y: number; vx: number; vy: number; size: number }
-export interface ColorBurst { id: number; x: number; y: number; color: number; start: number; particles: BurstParticle[] }
+/** `layer` = draw pass of the burst (the priority of its ball, D-23), set by the presentation; absent → the last pass. */
+export interface ColorBurst { id: number; x: number; y: number; color: number; start: number; particles: BurstParticle[]; layer?: number }
 
 /** Deterministic particle burst for a destroyed ball; seeded from the ball id and tick only. */
 export function makeColorBurst(ball: { id: number; x: number; y: number; color: number }, tick: number): ColorBurst {

@@ -414,7 +414,10 @@ class Game {
             const ball = chain.balls.find(b => b.id === id);
             if (!ball) continue;
             const p = chain.track.pointAt(ball.s);
-            this.fx.bursts.push(makeColorBurst({ id: ball.id, x: p.x, y: p.y, color: ball.color }, engine.tick) as ColorBurst);
+            // D-23: the burst is drawn in the pass of its ball (0x40b4d0), under a cutout when the ball is.
+            const burst: ColorBurst = makeColorBurst({ id: ball.id, x: p.x, y: p.y, color: ball.color }, engine.tick);
+            burst.layer = chain.track.ballPriority(ball.s);
+            this.fx.bursts.push(burst);
           }
           // 0x420b80 (spike 02): « +total » in the colour of the ball (ballCss, hypothesis: table 0x587408
           // not extracted), then « COMBO x{combo + 1} » for a chain reaction; the texts stack upwards
@@ -449,12 +452,18 @@ class Game {
         case 'coin':
           this.float(`+${e.points}`, Number(e.x), Number(e.y) - 20, '#ffd45a', engine.tick);
           break;
-        case 'cleanup':
-          // End-of-level tally (§7): a yellow « +100 » (0xffff00; CancunFloat14 gold with the pack) and
-          // 5 sparkles per step; the pops come from the `cleanup-pop` events through soundCues.
+        case 'cleanup': {
+          // End-of-level tally (§7, D-30): one event per marker and per step — a yellow « +100 » (0xffff00;
+          // CancunFloat14 gold with the pack) and 5 sparkles on the marker of chain `e.chain`, in the pass of its
+          // point; the seed mixes the chain so two markers at the same step differ. Pops: `cleanup-pop` cues.
+          const chain = Math.max(0, Math.min(engine.chains.length - 1, Number(e.chain) || 0));
+          const track = engine.chains[chain].track;
           this.float(`+${e.points}`, Number(e.x), Number(e.y) - 16, '#ffff00', engine.tick);
-          this.fx.bursts.push(makeSparks(Number(e.x), Number(e.y), Number(e.step) || 0, engine.tick));
+          const sparks = makeSparks(Number(e.x), Number(e.y), (Number(e.step) || 0) * 4 + chain, engine.tick);
+          sparks.layer = track.ballPriority(Number(e.s) || 0);
+          this.fx.bursts.push(sparks);
           break;
+        }
         case 'zuma':
           // D-16: « ZUMA ! » banner (strings.json has no ZUMA key) for 120 ticks; the gauge pulses, chant4 plays.
           this.showMessage(this.strings?.ZUMA ?? 'ZUMA !', null, 120);

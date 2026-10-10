@@ -231,31 +231,41 @@ export class OriginalPack {
     const background = g.background ? await this.image(g.background) : null;
     const cutouts: DrawableLayer[] = [];
     const overlays: DrawableLayer[] = [];
-    const resolve = async (layerName: string, x: number, y: number): Promise<DrawableLayer | null> => {
+    const resolve = async (layerName: string, x: number, y: number, priority: number): Promise<DrawableLayer | null> => {
       const layer = g.layers[layerName];
       if (!layer) return null;
       const alpha = layer.alpha ? await this.image(layer.alpha) : null;
       const color = layer.color ? await this.image(layer.color) : null;
       if (!alpha && !color) return null;
-      if (color && alpha) return { image: applyMask(color, alpha, false), x, y };
-      if (color) return { image: color, x, y };
-      // Alpha-only layers are stencils cut from the background at the same position.
-      if (background && alpha) return { image: cutFromBackground(background, alpha, x, y), x, y };
+      if (color && alpha) return { image: applyMask(color, alpha, false), x, y, priority };
+      if (color) return { image: color, x, y, priority };
+      // Alpha-only layers are stencils cut from the background at the same position (hypothesis C2).
+      if (background && alpha) return { image: cutFromBackground(background, alpha, x, y), x, y, priority };
       return null;
     };
+    // Cutouts are drawn in the pass of their `pri` (0x4105e0 / 0x409210: all 22 of the pack are 1, D-23).
     for (const c of g.cutouts) {
-      const d = await resolve(c.image, c.x, c.y);
+      const d = await resolve(c.image, c.x, c.y, layerPriority(c.priority));
       if (d) cutouts.push(d);
     }
+    // BackgroundAlpha overlays stay under every ball: their priority is irrelevant (0).
     for (const o of g.overlays) {
-      const d = await resolve(o.image, o.x, o.y);
+      const d = await resolve(o.image, o.x, o.y, 0);
       if (d) overlays.push({ ...d, vx: o.vx, vy: o.vy });
     }
     return { background, cutouts, overlays };
   }
 }
 
-export interface DrawableLayer { image: Bitmap; x: number; y: number; vx?: number; vy?: number }
+/** A resolved cutout / overlay; `priority` = draw pass of a cutout (0..4, D-23). */
+export interface DrawableLayer { image: Bitmap; x: number; y: number; vx?: number; vy?: number; priority: number }
+
+/** Pack `priority` of a cutout as a draw pass: integer 0..4, absent or non-finite → 1 (the value of every pack cutout). */
+export function layerPriority(value: unknown): number {
+  const n = Number(value);
+  if (value === undefined || value === null || !Number.isFinite(n)) return 1;
+  return Math.max(0, Math.min(4, Math.trunc(n)));
+}
 export interface LevelArt { background: Bitmap | null; cutouts: DrawableLayer[]; overlays: DrawableLayer[] }
 
 export function loadImage(url: string): Promise<HTMLImageElement> {
