@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 5 of 7 (Règles originales complètes)
-Plan: 9 of 9 executed (01-09)
-Status: Awaiting UAT 6 verdict (R2.0.17 standalone sent)
-Last activity: 2026-10-10 - Plans 05-08/05-09 exécutés (R2.0.17, 176 tests) : barème original (brèches, combos, enchaînements), STATS sur grille, décompte borné, netteté EPX 2× ; standalone envoyé. Avant : plans 05-05..05-07 exécutés (R2.0.16, 142 tests) : règles lues dans Zuma.exe (vitesse, pousseur, zone lente, arrivée, repeat/single, munitions, décompte, ACE TIME, pièces), alerte 600 px, roulement, bannière ZUMA, STATS couleurs/décompte ; standalone envoyé ; UAT 5 : flou, alignement STATS, décompte trop long, bonus de brèche
+Plan: 11 of 11 executed (01-11)
+Status: Awaiting UAT 7 verdict (R2.0.18 standalone sent)
+Last activity: 2026-10-10 - Plans 05-10/05-11 exécutés (R2.0.18, 212 tests) : tunnels (octets CURV tunnel/priorité, dessin en passes), menu natif, entrées sur toute la fenêtre, taille de fenêtre, vies tous les 50 000, cadence des pièces, roulement, décompte sur toutes les chaînes ; standalone envoyé. Avant : plans 05-08/05-09 exécutés (R2.0.17, 176 tests) : barème original (brèches, combos, enchaînements), STATS sur grille, décompte borné, netteté EPX 2× ; standalone envoyé. Avant : plans 05-05..05-07 exécutés (R2.0.16, 142 tests) : règles lues dans Zuma.exe (vitesse, pousseur, zone lente, arrivée, repeat/single, munitions, décompte, ACE TIME, pièces), alerte 600 px, roulement, bannière ZUMA, STATS couleurs/décompte ; standalone envoyé ; UAT 5 : flou, alignement STATS, décompte trop long, bonus de brèche
 
 Progress: [█████░░░░░] 57% (4/7 phases)
 
@@ -67,6 +67,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-10 19:00
-Stopped at: phase 5 (9 plans) exécutée, standalone R2.0.17 envoyé, en attente de l'UAT 6 ; ensuite `/gsd:verify-work 5` puis `/gsd:plan-phase 6`
+Last session: 2026-10-10 21:00
+Stopped at: phase 5 (11 plans) exécutée, standalone R2.0.18 envoyé, en attente de l'UAT 7 ; ensuite `/gsd:verify-work 5` puis `/gsd:plan-phase 6`
 Resume file: None

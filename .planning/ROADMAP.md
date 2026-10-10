@@ -77,8 +77,8 @@ Plans:
 - [x] 05-07-PLAN.md — Notes R2.0.16, README, CONCERNS, UAT, standalone et preuves Playwright, vérification finale
 - [x] 05-08-PLAN.md — UAT 5 : bonus de saut et score originaux (spike 02), libellés COMBO / ENCHAÎNEMENT, grille du STATS (D-20), compte à rebours borné + mode rapide (D-21), fondu du roulement, netteté 2 × EPX et STATS à l'échelle du canvas (D-19), R2.0.17
 - [x] 05-09-PLAN.md — Notes R2.0.17, README (score, netteté), CONCERNS, UAT (U22–U25, sixième session), standalone et preuves Playwright, vérification finale
-- [ ] 05-10-PLAN.md — UAT 6 : tunnels et priorités CURV (D-23), menu de jeu natif = dialogue OPTIONS en jeu (D-24), fenêtre et « Pixels nets » en pixels d'appareil (D-25), entrées (D-26), vies tous les 50 000 (D-27), cadence originale des pièces (D-28), roulement adouci (D-29), décompte simultané multi-chaînes (D-30), R2.0.18
-- [ ] 05-11-PLAN.md — Notes R2.0.18, README (commandes, tunnels, vies, pièces, menu), CONCERNS (C1–C4, déviation D-30), UAT (U26–U33, septième session), standalone et preuves Playwright, vérification finale
+- [x] 05-10-PLAN.md — UAT 6 : tunnels et priorités CURV (D-23), menu de jeu natif = dialogue OPTIONS en jeu (D-24), fenêtre et « Pixels nets » en pixels d'appareil (D-25), entrées (D-26), vies tous les 50 000 (D-27), cadence originale des pièces (D-28), roulement adouci (D-29), décompte simultané multi-chaînes (D-30), R2.0.18
+- [x] 05-11-PLAN.md — Notes R2.0.18, README (commandes, tunnels, vies, pièces, menu), CONCERNS (C1–C4, déviation D-30), UAT (U26–U33, septième session), standalone et preuves Playwright, vérification finale
 
 #### Phase 6: Progression et menus
 **Goal**: Aventure par temples, sauvegarde et menu principal
@@ -115,6 +115,6 @@ Plans:
 | 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
-| 5. Règles originales complètes | v1.1 | 9/11 | In progress (UAT 7 à venir) | - |
+| 5. Règles originales complètes | v1.1 | 11/11 | In progress (UAT 7) | - |
 | 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
