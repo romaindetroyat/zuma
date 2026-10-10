@@ -194,7 +194,7 @@ test('render.js draws the coin and its sparkle; main.js shows GET_READY then rea
 
 test('standalone bundle: no top-level identifier is declared by two modules (concatenated module scope)', () => {
   // R2.0.15 regression: `clamp01` (audio/feedback) and `canvasOf` (original/bitmapfont) made the single-file build a SyntaxError.
-  const modules = ['core', 'feedback', 'levels', 'audio', 'original', 'bitmapfont', 'statsdialog', 'render', 'main'];
+  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'main']; // R2.0.17: upscale.js (EPX) added before original
   assert.match(fs.readFileSync('tools/build.mjs', 'utf8'), new RegExp(`const MODULES = \\[${modules.map(m => `'${m}'`).join(', ')}\\]`), 'MODULES list mirrored');
   const owners = new Map();
   for (const m of modules) {
@@ -213,7 +213,7 @@ test('standalone bundle: the stripped concatenation keeps no import / export / r
   const m = bundler.match(/const strip = (s => [^\n]*);\n/);
   assert.ok(m, 'strip arrow found in build.mjs');
   const strip = new Function(`return ${m[1]}`)();
-  const modules = ['core', 'feedback', 'levels', 'audio', 'original', 'bitmapfont', 'statsdialog', 'render', 'main'];
+  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'main']; // R2.0.17: upscale.js (EPX) added before original
   const js = modules.map(name => strip(fs.readFileSync(`.compiled/${name}.js`, 'utf8'))).join('\n');
   assert.doesNotMatch(js, /^(import|export) /m, 'no module statement left');
   assert.doesNotMatch(js, /from '\.\/[a-z]+\.js'/, 'no module specifier left');

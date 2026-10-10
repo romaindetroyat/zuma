@@ -293,3 +293,101 @@ test('rampPlan: a ramp only when the loop target changes — 50 ms in to ROLLING
   assert.ok(body.indexOf('if (plan)') > 0 && body.indexOf('if (plan)') < body.indexOf('cancelScheduledValues'), 'the running ramp is cancelled only when a new one is planned');
   assert.match(body, /loop\.target = target/);
 });
+
+// ---------------------------------------------------------------- netteté D-19 (U22) — filtre pixel-art et composition à l'échelle
+import { upscale2x } from '../.compiled/upscale.js';
+
+/** RGBA image from a list of rows of [r, g, b, a] pixels. */
+const image = rows => {
+  const height = rows.length;
+  const width = rows[0]?.length ?? 0;
+  const data = new Uint8ClampedArray(width * height * 4);
+  rows.forEach((row, y) => row.forEach((px, x) => data.set(px, (y * width + x) * 4)));
+  return { width, height, data };
+};
+const px = (img, x, y) => Array.from(img.data.slice((y * img.width + x) * 4, (y * img.width + x) * 4 + 4));
+const W = [255, 255, 255, 255], K = [0, 0, 0, 255], R = [255, 0, 0, 255];
+/** Plain nearest-neighbour 2 × for comparison. */
+const nearest2x = src => {
+  const out = { width: src.width * 2, height: src.height * 2, data: new Uint8ClampedArray(src.width * src.height * 16) };
+  for (let y = 0; y < out.height; y++) for (let x = 0; x < out.width; x++) out.data.set(px(src, x >> 1, y >> 1), (y * out.width + x) * 4);
+  return out;
+};
+
+test('upscale2x: doubles the size, keeps flat areas and hard edges exactly, never modifies its input', () => {
+  const one = upscale2x(image([[R]]));
+  assert.deepEqual([one.width, one.height], [2, 2]);
+  for (let i = 0; i < 4; i++) assert.deepEqual(px(one, i % 2, i >> 1), R);
+  const flat = image(Array.from({ length: 4 }, () => Array.from({ length: 4 }, () => [10, 20, 30, 200])));
+  const flat2 = upscale2x(flat);
+  assert.deepEqual([flat2.width, flat2.height], [8, 8]);
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) assert.deepEqual(px(flat2, x, y), [10, 20, 30, 200], 'uniform, alpha preserved');
+  const empty = upscale2x({ width: 0, height: 0, data: new Uint8ClampedArray(0) });
+  assert.deepEqual([empty.width, empty.height, empty.data.length], [0, 0, 0]);
+  const half = image(Array.from({ length: 4 }, () => [W, W, K, K]));
+  const copy = Array.from(half.data);
+  const half2 = upscale2x(half);
+  assert.deepEqual(Array.from(half.data), copy, 'input untouched');
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) assert.deepEqual(px(half2, x, y), x < 4 ? W : K, `hard edge at (${x}, ${y})`);
+  const dot = image(Array.from({ length: 5 }, (_, y) => Array.from({ length: 5 }, (_, x) => (x === 2 && y === 2 ? W : K))));
+  const dot2 = upscale2x(dot);
+  for (let y = 0; y < 10; y++) for (let x = 0; x < 10; x++) assert.deepEqual(px(dot2, x, y), x >= 4 && x <= 5 && y >= 4 && y <= 5 ? W : K, `isolated pixel → 2 × 2 block (${x}, ${y})`);
+});
+
+test('upscale2x: EPX smooths diagonals without inventing colours (differs from nearest neighbour)', () => {
+  const diag = image(Array.from({ length: 3 }, (_, y) => Array.from({ length: 3 }, (_, x) => (x === y ? W : K))));
+  const out = upscale2x(diag);
+  const plain = nearest2x(diag);
+  assert.deepEqual([out.width, out.height], [6, 6]);
+  let differs = 0;
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) {
+    const p = px(out, x, y);
+    assert.ok(p.join() === W.join() || p.join() === K.join(), `only white or black at (${x}, ${y}): ${p}`);
+    if (p.join() !== px(plain, x, y).join()) differs++;
+  }
+  assert.ok(differs > 0, 'corners smoothed');
+  // EPX rules on (0, 1): A (up) white, B (right) white, C (left) = P, D (down) black → top-right sub-pixel takes B.
+  assert.deepEqual(px(out, 1, 2), W);
+  assert.deepEqual(px(out, 0, 2), K);
+  // A semi-transparent glyph keeps its alpha values on the flat blocks.
+  const soft = image([[[255, 255, 255, 90], [255, 255, 255, 90]], [[255, 255, 255, 90], [255, 255, 255, 90]]]);
+  const soft2 = upscale2x(soft);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) assert.equal(px(soft2, x, y)[3], 90);
+  const src = read('.compiled/upscale.js');
+  assert.doesNotMatch(src, /^(?!.*function).*\bdocument\b/m, 'no DOM access at module level');
+});
+
+test('composeStatsDialog composes at the backing-store scale; main.js shows it in a child canvas, no PNG, no background image (D-19)', () => {
+  const dialog = read('.compiled/statsdialog.js');
+  assert.match(dialog, /Math\.round\(STAGE_WIDTH \* s\)/, 'canvas sized by the scale');
+  assert.match(dialog, /Math\.round\(STAGE_HEIGHT \* s\)/);
+  assert.match(dialog, /ctx\.setTransform\(s, 0, 0, s, 0, 0\)/, 'logical units after the transform');
+  assert.match(dialog, /Math\.min\(4,/, 'scale bounded (T-05-22)');
+  const main = read('.compiled/main.js');
+  assert.match(main, /composeStatsDialog\([^;]*this\.renderer\.scale\)/, 'composed at the renderer scale');
+  assert.match(main, /stats-picture/, 'child canvas class');
+  assert.match(main, /prepend\(/, 'inserted first in .zuma-stats');
+  assert.doesNotMatch(main, /backgroundImage/, 'no inline background any more');
+  assert.doesNotMatch(main, /bitmapUrl\(/, 'no PNG encoding');
+  assert.doesNotMatch(main, /revokeObjectURL|createObjectURL/);
+  assert.match(read('.compiled/render.js'), /get scale\(\)/, 'Renderer.scale readable');
+  assert.match(read('.compiled/original.js'), /export function bitmapUrl/, 'bitmapUrl still exported (r215 lock)');
+});
+
+test('bundle and shell: upscale.js in MODULES before original, precached with bitmapfont.js and statsdialog.js, .stats-picture rule without url(', () => {
+  const build = read('tools/build.mjs');
+  const m = build.match(/const MODULES = \[([^\]]*)\]/);
+  assert.ok(m, 'MODULES list');
+  const modules = m[1].split(',').map(s => s.trim().replace(/'/g, ''));
+  assert.ok(modules.includes('upscale'));
+  assert.ok(modules.indexOf('upscale') < modules.indexOf('original'), 'upscale before original');
+  assert.ok(modules.indexOf('upscale') > modules.indexOf('core'));
+  const sw = read('public/sw.js');
+  for (const file of ['./js/upscale.js', './js/bitmapfont.js', './js/statsdialog.js']) assert.match(sw, new RegExp(file.replace(/[./]/g, '\\$&')), `${file} precached (offline shell)`);
+  for (const name of modules) assert.match(sw, new RegExp(`\\./js/${name}\\.js`), `${name}.js precached`);
+  const css = read('public/style.css');
+  const tail = css.slice(css.lastIndexOf('R2.0.11'));
+  assert.match(tail, /#stats\.stats-original \.stats-picture\{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none\}/);
+  assert.doesNotMatch(tail, /url\(/, 'r211: the stylesheet never references the picture');
+  assert.equal((read('index.html').match(/id="result-continue"/g) || []).length, 1);
+});
