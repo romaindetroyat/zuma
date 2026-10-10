@@ -217,7 +217,7 @@ class Game {
       name: def.name,
       tracks: [new Track(def.track)],
       frog: def.frog,
-      config: { colors: def.colors, start: def.start, total: def.total, target: def.target, speed: def.speed },
+      config: { colors: def.colors, startFraction: def.startFraction, total: def.total, target: def.target, speed: def.speed },
       graphics: null,
       parTime: null,
     };
@@ -352,7 +352,7 @@ class Game {
     }
     this.lastPositions = positions;
     const playing = engine.state === 'playing';
-    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.feedSpeed, playing });
+    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.speed, playing }); // interim until 05-06 rewrites the rolling loop (D-17)
     this.audio.setLoop('rolling', lv.rolling);
     // The lid follows the chain's proximity even while it drains into the pit; the beat only plays live (D-08).
     this.fx.threat = warningLevel(headDistance, true);
@@ -734,7 +734,7 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
   const parTime = Number(s.partime);
   return {
     colors: Math.max(3, Math.min(6, colors)),
-    start: s.start ?? 35,
+    startFraction: Math.max(0, Math.min(1, (s.start ?? 40) / 100)), // interim: Task 5 rewrites configFromSettings
     total: Number.POSITIVE_INFINITY,
     target: s.score ?? 1000,
     repeatChance: Math.max(0, Math.min(1, (s.repeat ?? 50) / 100)),

@@ -218,11 +218,11 @@ test('clearing: the tally starts at the last explosion, scores 10 per ball slot 
   assert.equal(g.state, 'won');
   assert.equal(g.balls.length, 0);
   assert.equal(g.cleanup, null);
-  const timeBonus = aceTimeBonus(won.tick / CANDIDATE.tickHz, 25);
+  const timeBonus = aceTimeBonus(g.levelTicks / CANDIDATE.tickHz, 25); // R2.0.16 (D-13): level clock, frozen at clearing
   assert.ok(timeBonus >= 100, 'won well under the 25 s partime');
   assert.equal(won.levelBonus, 500);
   assert.equal(won.timeBonus, timeBonus);
-  assert.equal(won.seconds, won.tick / CANDIDATE.tickHz);
+  assert.equal(won.seconds, g.levelTicks / CANDIDATE.tickHz);
   assert.equal(g.timeBonus, timeBonus);
   assert.equal(g.cleanupScore, steps * 10);
   assert.equal(g.score, scoreBefore + steps * 10 + 500 + timeBonus);

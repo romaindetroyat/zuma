@@ -6,7 +6,8 @@ export interface LevelDef {
   track: Point[];
   frog: Point;
   colors: number;
-  start: number;
+  /** Share of the track filled by the fast feed, like the original `start` % (0..1). */
+  startFraction: number;
   total: number;
   /** Points to score in the level to enter ZUMA mode (≈ 10 per destroyed ball). */
   target: number;
@@ -71,7 +72,7 @@ export const LEVELS: LevelDef[] = [
     track: spiral({ rx0: 300, ry0: 205, rx1: 92, ry1: 72, turns: 2.1, startAngle: Math.PI, leadIn: { x: -40, y: 262 } }),
     frog: CENTRE,
     colors: 4,
-    start: 18,
+    startFraction: 0.35,
     total: 56,
     target: 360,
     speed: 22,
@@ -86,7 +87,7 @@ export const LEVELS: LevelDef[] = [
     ]),
     frog: CENTRE,
     colors: 4,
-    start: 20,
+    startFraction: 0.36,
     total: 64,
     target: 420,
     speed: 24,
@@ -96,7 +97,7 @@ export const LEVELS: LevelDef[] = [
     track: spiral({ rx0: 305, ry0: 210, rx1: 96, ry1: 74, turns: 2.6, startAngle: 0, clockwise: false, leadIn: { x: 680, y: 262 } }),
     frog: CENTRE,
     colors: 5,
-    start: 22,
+    startFraction: 0.38,
     total: 72,
     target: 480,
     speed: 26,
@@ -111,7 +112,7 @@ export const LEVELS: LevelDef[] = [
     ]),
     frog: CENTRE,
     colors: 5,
-    start: 24,
+    startFraction: 0.40,
     total: 80,
     target: 540,
     speed: 28,
@@ -121,7 +122,7 @@ export const LEVELS: LevelDef[] = [
     track: spiral({ rx0: 310, ry0: 215, rx1: 95, ry1: 72, turns: 3.1, startAngle: Math.PI / 2, leadIn: { x: 320, y: 520 } }),
     frog: CENTRE,
     colors: 6,
-    start: 26,
+    startFraction: 0.42,
     total: 90,
     target: 600,
     speed: 30,
@@ -136,7 +137,7 @@ export const LEVELS: LevelDef[] = [
     ]),
     frog: CENTRE,
     colors: 6,
-    start: 28,
+    startFraction: 0.45,
     total: 100,
     target: 680,
     speed: 32,

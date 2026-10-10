@@ -207,8 +207,12 @@ export interface EngineConfig {
   ballSpacing: number;
   /** Number of colours in play (indexes 0..colors-1). */
   colors: number;
-  /** Balls fed at the fast intro speed before the chain settles to `speed`. */
-  start: number;
+  /** Share of the track length filled by the fast intro feed (original `start` %, 0..1). */
+  startFraction: number;
+  /** « PARTEZ » guard: feeding ends at the latest after this many ticks (500 maj × 0.6 = 300). */
+  feedMaxTicks: number;
+  /** « PARTEZ » when every chain is within this margin of `speed`, px/s (0.1 px/maj × 100 = 10). */
+  goMargin: number;
   /** Total balls streamed per chain (Infinity streams until ZUMA mode). */
   total: number;
   /** Points scored in the level needed to enter ZUMA mode (feed stops) — original `score` setting. */
@@ -219,7 +223,6 @@ export interface EngineConfig {
   singleChance: number;
   /** Pusher target speed, px/s (original `speed` in px per 100 Hz update × 100). */
   speed: number;
-  feedSpeed: number;
   /** Pusher acceleration towards a higher target, px/s² (0.005 px/maj² at 100 Hz × 10 000 = 50). */
   chainAccel: number;
   /** Pusher deceleration towards a lower target, px/s² (0.1 px/maj² × 10 000 = 1000). */
@@ -290,13 +293,14 @@ export const CANDIDATE: EngineConfig = {
   ballRadius: 16,
   ballSpacing: 32,
   colors: 4,
-  start: 20,
+  startFraction: 0.35,
+  feedMaxTicks: 300, // 500 maj × 0.6
+  goMargin: 10, // 0.1 px/maj × 100
   total: 60,
   target: 400,
   repeatChance: 0.5,
   singleChance: 0,
   speed: 24,
-  feedSpeed: 360,
   chainAccel: 50, // 0.005 px/maj² × 10 000
   chainDecel: 1000, // 0.1 px/maj² × 10 000
   pusherStopTicks: 24, // 40 maj × 0.6
@@ -350,6 +354,20 @@ export function endZoneFactor(headS: number, length: number, slowDistance: numbe
   const zoneStart = dangerStart - slowDistance;
   const f = slowDistance > 0 ? Math.max(0, Math.min(1, (headS - zoneStart) / slowDistance)) : headS >= dangerStart ? 1 : 0;
   return (1 - f) + f / endSlowFactor;
+}
+
+/**
+ * Initial speed of the fast intro feed (0x4050e7–0x405144), px/s, for a cruise `speed` (px/s)
+ * and a burst `distance` (px = original `start` % × curve length). In 100 Hz units with
+ * v = speed / 100 px/maj: V = v + 0.1 × ⌊18 + 0.5 × (√((v + 20)² + 80 d) − (v + 20))⌋, chosen so
+ * that decelerating at 0.1 px/maj² brings the chain to v after about `distance`. Never below
+ * `speed`; a non-finite or negative distance gives 0 (T-05-14).
+ */
+export function feedSpeed(speed: number, distance: number): number {
+  if (!Number.isFinite(distance) || distance < 0 || !Number.isFinite(speed)) return 0;
+  const v = speed / 100;
+  const V = v + 0.1 * Math.floor(18 + 0.5 * (Math.sqrt((v + 20) * (v + 20) + 80 * distance) - (v + 20)));
+  return Math.max(speed, V * 100);
 }
 
 /**
@@ -414,6 +432,10 @@ export class ZumaEngine {
   next: number;
   /** Fast intro feed in progress. */
   feeding = true;
+  /** Tick of the `go` event (0 when feeding was never on). */
+  goTick = 0;
+  /** Tick the board was cleared (start of the tally); null while playing. */
+  clearTick: number | null = null;
   /** New balls are streamed from the spawn holes. */
   stream = true;
   /** Balls destroyed in the level (statistics only; the gauge is driven by `levelScore`). */
@@ -484,6 +506,11 @@ export class ZumaEngine {
   }
   get spawned(): number {
     return this.chains.reduce((n, c) => n + c.spawned, 0);
+  }
+
+  /** Ticks of the level clock (D-13): from « PARTEZ » to the clearing of the board, then frozen. */
+  get levelTicks(): number {
+    return (this.clearTick ?? this.tick) - this.goTick;
   }
 
   // ----------------------------------------------------------------- queries
@@ -606,6 +633,7 @@ export class ZumaEngine {
     this.tickPowers();
     for (const chain of this.chains) this.spawnBalls(chain);
     for (const chain of this.chains) this.moveChain(chain);
+    this.checkGo();
     this.moveProjectiles();
     this.tickCoin();
     this.tickCleanup();
@@ -692,10 +720,21 @@ export class ZumaEngine {
       chain.balls.unshift(ball);
       chain.spawned++;
     }
-    if (this.feeding && this.chains.every(c => c.spawned >= this.config.start)) {
-      this.feeding = false;
-      this.emit('go'); // « PARTEZ » (D-11): the fast intro feed is over
-    }
+  }
+
+  /**
+   * « PARTEZ » (0x402070 / 0x428a03–0x428a5c): the fast intro feed is over once every chain has
+   * decelerated to within `goMargin` of `speed` (mSpeed − speed ≤ 0.1 px/maj), or after
+   * `feedMaxTicks` (500 maj) whatever happens. Starts the level clock (D-13).
+   */
+  private checkGo(): void {
+    if (!this.feeding) return;
+    const limit = this.config.speed + this.config.goMargin;
+    const settled = this.chains.every(c => c.speed !== null && c.speed <= limit);
+    if (!settled && this.tick < this.config.feedMaxTicks) return;
+    this.feeding = false;
+    this.goTick = this.tick;
+    this.emit('go');
   }
 
   /**
@@ -784,16 +823,17 @@ export class ZumaEngine {
 
   /**
    * Original pusher kinematics (0x4188b3–0x4188e6, 0x418905–0x41890e): the speed is created lazily
-   * on the chain's first move (fast-feed v0 — interim: the constant `feedSpeed` until the §2 formula
-   * lands — or the target), held at 0 while a pusher stop runs, otherwise moved towards the target
-   * by at most `chainDecel` × dt downwards or `chainAccel` × dt upwards. Always computed, even while
-   * a rollback or a recoil keeps the pusher from advancing, so the speed is coherent afterwards.
+   * on the chain's first move — the fast-feed v0 of `feedSpeed` for `startFraction` × track length
+   * (hypothesis A2: computed once at the start, the natural `chainDecel` deceleration does the rest)
+   * or the target — held at 0 while a pusher stop runs, otherwise moved towards the target by at
+   * most `chainDecel` × dt downwards or `chainAccel` × dt upwards. Always computed, even while a
+   * rollback or a recoil keeps the pusher from advancing, so the speed is coherent afterwards.
    */
   private updatePusher(chain: Chain, alive: Ball[]): void {
     const dt = 1 / this.config.tickHz;
     const target = this.pusherTarget(chain, alive);
     if (chain.speed === null) {
-      chain.speed = this.feeding ? this.config.feedSpeed : target;
+      chain.speed = this.feeding ? feedSpeed(this.config.speed, this.config.startFraction * chain.track.length) : target;
       return;
     }
     if (chain.stopTicks > 0) {
@@ -1281,6 +1321,7 @@ export class ZumaEngine {
     const spacing = Math.max(1, this.config.ballSpacing);
     const s = Math.max(0, Math.min(length, this.lastDestroy?.s ?? length));
     this.state = 'clearing';
+    this.clearTick = this.tick;
     this.projectiles = [];
     for (const c of this.chains) c.recoils = [];
     this.dropCoin();
@@ -1306,7 +1347,7 @@ export class ZumaEngine {
       this.emit('cleanup', { x: pos.x, y: pos.y, points, step: cleanup.step, steps: cleanup.steps, progress: cleanup.step / cleanup.steps, chain: cleanup.chain });
       if (cleanup.step < cleanup.steps) return;
     }
-    const seconds = this.tick / this.config.tickHz;
+    const seconds = this.levelTicks / this.config.tickHz; // D-13: level clock, not the engine tick
     this.timeBonus = aceTimeBonus(seconds, this.config.parTime);
     this.addScore(this.timeBonus);
     this.addScore(this.config.levelBonus);

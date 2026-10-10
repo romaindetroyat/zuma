@@ -142,7 +142,7 @@ test('configFromSettings: partime, zumaslow/zumaback (×0.6 → ticks), single a
   assert.equal(c.singleChance, 0.08, 'single 8 % → 0.08');
   assert.equal(c.target, 4500, 'score → target');
   assert.equal(c.colors, 5, 'temple 4 (stage index 3) → 5 colours');
-  assert.equal(c.start, 45);
+  assert.equal(c.startFraction, 0.45, 'R2.0.16: start is a share of the track length');
   assert.ok(Math.abs(c.speed - 60) < 1e-9, 'speed 0.6 px/step → 60 px/s');
 });
 
