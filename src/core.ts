@@ -195,8 +195,23 @@ export type EngineState = 'playing' | 'clearing' | 'draining' | 'lost' | 'gameov
 export interface TreasurePoint { x: number; y: number; curve: number; dist: number }
 /** The single coin currently on the board; `until` = tick at which it vanishes. */
 export interface Coin { id: number; x: number; y: number; curve: number; until: number }
-/** End-of-level tally marker: `s` walks from the last explosion to the skull one ball per `cleanupStepTicks`. */
-export interface Cleanup { chain: number; s: number; step: number; steps: number; nextTick: number }
+/**
+ * End-of-level tally marker (0x421550): `s` walks `cleanupStepPx` every `cleanupStepTicks` from the
+ * aligned start up to the skull; `nextTick` / `popNext` are fractional tick deadlines, `endTick` is
+ * set once the last step (or none) has fired.
+ */
+export interface Cleanup {
+  chain: number;
+  s: number;
+  step: number;
+  steps: number;
+  nextTick: number;
+  popNext: number;
+  popIndex: number;
+  /** Nominal tick of the last step: pops are scheduled while `popNext` ≤ this. */
+  lastStepTick: number;
+  endTick: number | null;
+}
 
 export interface EngineConfig {
   /** Simulation rate. Timings below are expressed in ticks or in px/s. */
@@ -264,8 +279,9 @@ export interface EngineConfig {
   /** How long a power stays attached to its ball before fading. */
   powerVisibleTicks: number;
   lives: number;
+  /** Level bonus per curve, credited when the board is cleared: (100 − coverage) × 100 with coverage 0 (0x428705, hypothesis A3). */
   levelBonus: number;
-  /** Points for a grabbed coin (hypothesis D-09). */
+  /** Points for a grabbed coin (0x4233fb: max(500, 100 × ⌊score / 600⌋), computed by configFromSettings). */
   coinPoints: number;
   /** Ticks a coin stays on its treasure point (6 s, D-07). */
   coinVisibleTicks: number;
@@ -274,10 +290,18 @@ export interface EngineConfig {
   coinMaxGapTicks: number;
   /** Projectile centre to coin centre distance that grabs the coin (D-09). */
   coinRadius: number;
-  /** Points per ball slot of the end-of-level tally (hypothesis D-10). */
-  cleanupPoints: number;
-  /** Ticks between two tally steps (D-10). */
+  /** End-of-level tally (0x421550): step length, px. */
+  cleanupStepPx: number;
+  /** Ticks between two tally steps (4 maj × 0.6 = 2.4). */
   cleanupStepTicks: number;
+  /** Ticks from the clearing to the first step (20 maj × 0.6 = 12). */
+  cleanupStartTicks: number;
+  /** Ticks from the last step to `won` (50 maj × 0.6 = 30). */
+  cleanupEndTicks: number;
+  /** Ticks between two `cleanup-pop` cues (10 maj × 0.6 = 6), from the first step + 1 maj. */
+  cleanupPopTicks: number;
+  /** Points credited at each step. */
+  cleanupPoints: number;
   /** Expert time in seconds (original `partime`); 0 = no time bonus. */
   parTime: number;
   /** Ticks the chain rolls back when ZUMA mode starts with the head past `zumaCoverage` (original `zumaback` 300 maj × 0.6 = 180). */
@@ -329,14 +353,18 @@ export const CANDIDATE: EngineConfig = {
   powerGuardTicks: 150,
   powerVisibleTicks: 480,
   lives: 3,
-  levelBonus: 1000,
-  coinPoints: 100,
+  levelBonus: 10000,
+  coinPoints: 500,
   coinVisibleTicks: 360,
   coinMinGapTicks: 540,
   coinMaxGapTicks: 900,
   coinRadius: 18,
-  cleanupPoints: 10,
-  cleanupStepTicks: 4,
+  cleanupStepPx: 60,
+  cleanupStepTicks: 2.4, // 4 maj × 0.6
+  cleanupStartTicks: 12, // 20 maj × 0.6
+  cleanupEndTicks: 30, // 50 maj × 0.6
+  cleanupPopTicks: 6, // 10 maj × 0.6
+  cleanupPoints: 100,
   parTime: 0,
   zumaBackTicks: 180, // 300 maj × 0.6
   zumaSlowTicks: 660, // 1100 maj × 0.6
@@ -371,12 +399,27 @@ export function feedSpeed(speed: number, distance: number): number {
 }
 
 /**
- * Expert time bonus (D-04, hypothesis): nothing without a `parTime` or once it is
- * exceeded, otherwise 10 points per whole second left, never less than 100.
+ * Original ACE TIME bonus (0x401cb0): with t = ⌊seconds⌋, 0 when t > parTime, otherwise
+ * 100 × (1 + ⌊250 × (1 − t / parTime)⌋) — 1-1 (par 25 s): 24 s → 1100, 20 s → 5100, 0 s → 25100.
+ * 0 without a par time. The ratio is computed as (par − t) / par so that exact fractions stay exact.
  */
 export function aceTimeBonus(seconds: number, parTime: number): number {
-  if (!(parTime > 0) || !Number.isFinite(seconds) || seconds > parTime) return 0;
-  return Math.max(100, 10 * Math.floor(parTime - seconds));
+  if (!(parTime > 0) || !Number.isFinite(seconds)) return 0;
+  const t = Math.floor(seconds);
+  if (t > parTime) return 0;
+  return 100 * (1 + Math.floor((250 * (parTime - t)) / parTime));
+}
+
+/**
+ * Par time (s) when `partime` is absent (0x42ad12–0x42ad86): ⌈score × 35 / 1000⌉ to the next
+ * multiple of 5, × 0.95 × curves when the level has several curves (hypothesis A7 on that factor).
+ * 0 for a non-finite or non-positive score.
+ */
+export function defaultParTime(score: number, curves: number): number {
+  if (!Number.isFinite(score) || score <= 0) return 0;
+  let base = (score * 35) / 1000;
+  if (curves > 1) base *= 0.95 * curves;
+  return Math.ceil(base / 5) * 5;
 }
 
 export interface Fixture {
@@ -456,8 +499,10 @@ export class ZumaEngine {
   coin: Coin | null = null;
   /** End-of-level tally in progress while `state === 'clearing'`. */
   cleanup: Cleanup | null = null;
-  /** Expert time bonus granted at the end of the level (0 until won). */
+  /** Expert time bonus computed at `won` (0 until then), NOT added to the score: the STATS count-up credits it. */
   timeBonus = 0;
+  /** Points of the time bonus already credited through creditBonus(). */
+  timeBonusCredited = 0;
   /** Points scored by the end-of-level tally. */
   cleanupScore = 0;
   stats: Stats = {
@@ -614,6 +659,18 @@ export class ZumaEngine {
     this.coin = null;
     this.nextCoinTick = Infinity;
     if (clean.length > 0) this.scheduleCoin();
+  }
+
+  /**
+   * Presentation-driven bonus points (STATS count-up of the ACE TIME bonus, 0x440b00): added to
+   * `score`, `levelScore` and `timeBonusCredited`. No RNG, no event, no ZUMA check (the level is
+   * over); non-finite or non-positive points are ignored (T-05-15).
+   */
+  creditBonus(points: number): void {
+    if (!Number.isFinite(points) || points <= 0) return;
+    this.score += points;
+    this.levelScore += points;
+    this.timeBonusCredited += points;
   }
 
   /** Test hook: places the coin of `treasure[index]` right now (same event as a natural appearance). */
@@ -1332,50 +1389,81 @@ export class ZumaEngine {
     }
   }
 
+  /** Tally cadence, guarded against a configuration that would stall it (T-05-14). */
+  private cleanupTiming(): { stepPx: number; stepTicks: number; popTicks: number } {
+    const { cleanupStepPx, cleanupStepTicks, cleanupPopTicks } = this.config;
+    return { stepPx: Math.max(1, cleanupStepPx), stepTicks: Math.max(0.5, cleanupStepTicks), popTicks: Math.max(0.5, cleanupPopTicks) };
+  }
+
   /**
-   * Last ball destroyed in ZUMA mode (D-10): no more input, the coin is dropped and the
-   * tally marker is set at the last explosion. `steps` is bounded by the track length
-   * and `s` is clamped to it, so the tally always terminates.
+   * Last ball destroyed in ZUMA mode (0x4288e6–0x428923, D-10): no more input, the coin is dropped,
+   * every curve pays its level bonus at once — (100 − coverage) × 100 with the board empty, hypothesis
+   * A3 — and the tally marker is set from the last explosion, aligned so that `cleanupStepPx` steps
+   * land exactly on the skull (0x421550). `steps` is bounded by the track length, so the tally
+   * always terminates.
    */
   private startClearing(): void {
     const index = this.lastDestroy?.chain ?? 0;
     const chain = this.chains[Math.min(index, this.chains.length - 1)];
     const length = chain.track.length;
-    const spacing = Math.max(1, this.config.ballSpacing);
-    const s = Math.max(0, Math.min(length, this.lastDestroy?.s ?? length));
+    const { stepPx, stepTicks } = this.cleanupTiming();
+    const from = Math.max(0, Math.min(length, this.lastDestroy?.s ?? length));
+    const steps = Math.ceil((length - from) / stepPx);
     this.state = 'clearing';
     this.clearTick = this.tick;
     this.projectiles = [];
     for (const c of this.chains) c.recoils = [];
     this.dropCoin();
-    this.cleanup = { chain: chain.index, s, step: 0, steps: Math.ceil((length - s) / spacing), nextTick: this.tick + this.config.cleanupStepTicks };
+    const bonus = this.config.levelBonus * this.chains.length;
+    this.addScore(bonus);
+    const { cleanupStartTicks, cleanupEndTicks } = this.config;
+    const s = length - steps * stepPx;
+    this.cleanup = {
+      chain: chain.index,
+      s,
+      step: 0,
+      steps,
+      nextTick: this.tick + cleanupStartTicks,
+      popNext: this.tick + cleanupStartTicks + 0.6, // first pop 1 maj after the first step
+      popIndex: 0,
+      lastStepTick: this.tick + cleanupStartTicks + stepTicks * (steps - 1),
+      endTick: steps === 0 ? this.tick + cleanupStartTicks + cleanupEndTicks : null,
+    };
     const pos = chain.track.pointAt(s);
-    this.emit('clearing', { x: pos.x, y: pos.y, chain: chain.index });
+    this.emit('clearing', { x: pos.x, y: pos.y, chain: chain.index, levelBonus: bonus });
   }
 
-  /** One tally step every `cleanupStepTicks`; once the marker reaches the skull the level is won. */
+  /**
+   * Tally (0x421550): one step of `cleanupStepPx` at +`cleanupPoints` every `cleanupStepTicks`
+   * from `cleanupStartTicks`, a `cleanup-pop` cue every `cleanupPopTicks` while steps remain, then
+   * `won` `cleanupEndTicks` after the last step with the ACE TIME bonus computed — not credited.
+   */
   private tickCleanup(): void {
     const cleanup = this.cleanup;
     if (this.state !== 'clearing' || !cleanup) return;
     const chain = this.chains[cleanup.chain];
-    if (cleanup.step < cleanup.steps) {
-      if (this.tick < cleanup.nextTick) return;
-      cleanup.s = Math.min(chain.track.length, cleanup.s + this.config.ballSpacing);
+    const { stepTicks, popTicks } = this.cleanupTiming();
+    const EPS = 1e-9;
+    if (cleanup.step < cleanup.steps && this.tick >= cleanup.nextTick - EPS) {
       cleanup.step++;
-      cleanup.nextTick += this.config.cleanupStepTicks;
+      cleanup.s = cleanup.step === cleanup.steps ? chain.track.length : cleanup.s + this.cleanupTiming().stepPx;
+      cleanup.nextTick = (this.clearTick ?? this.tick) + this.config.cleanupStartTicks + stepTicks * cleanup.step;
       const points = this.config.cleanupPoints;
       this.cleanupScore += points;
       this.addScore(points);
       const pos = chain.track.pointAt(cleanup.s);
       this.emit('cleanup', { x: pos.x, y: pos.y, points, step: cleanup.step, steps: cleanup.steps, progress: cleanup.step / cleanup.steps, chain: cleanup.chain });
-      if (cleanup.step < cleanup.steps) return;
+      if (cleanup.step === cleanup.steps) cleanup.endTick = this.tick + this.config.cleanupEndTicks;
     }
-    const seconds = this.levelTicks / this.config.tickHz; // D-13: level clock, not the engine tick
+    if (cleanup.steps > 0 && cleanup.popNext <= cleanup.lastStepTick + EPS && this.tick >= cleanup.popNext - EPS) {
+      this.emit('cleanup-pop', { index: cleanup.popIndex++, progress: cleanup.step / Math.max(1, cleanup.steps) });
+      cleanup.popNext += popTicks;
+    }
+    if (cleanup.endTick === null || this.tick < cleanup.endTick) return;
+    const seconds = this.levelTicks / this.config.tickHz; // D-13: level clock, frozen at clearing
     this.timeBonus = aceTimeBonus(seconds, this.config.parTime);
-    this.addScore(this.timeBonus);
-    this.addScore(this.config.levelBonus);
     this.state = 'won';
     this.cleanup = null;
-    this.emit('won', { score: this.score, levelBonus: this.config.levelBonus, timeBonus: this.timeBonus, seconds });
+    this.emit('won', { score: this.score, levelBonus: this.config.levelBonus * this.chains.length, timeBonus: this.timeBonus, seconds });
   }
 }
