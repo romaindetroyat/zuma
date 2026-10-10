@@ -329,9 +329,10 @@ class Game {
   }
 
   /**
-   * Rolling loop from the fastest ball displacement since the previous frame,
-   * warning beat from the head ball's distance to the skull (D-08, progressive since
-   * plan 04-05: the beat tightens as the threat grows). Recoil adds no sound (D-09).
+   * Rolling loop on whenever the fastest ball moved more than ROLLING_MIN_SPEED since the
+   * previous frame (D-17), warning beat from the head ball's distance to the skull (D-08;
+   * the original interval since 05-06: 4.1 s at 600 px down to 0.6 s). The pit cover opens
+   * over the same 600 px (`fx.threat`). Recoil adds no sound (D-09).
    */
   private updateLoops(engine: ZumaEngine, steps: number): void {
     const seconds = steps / engine.config.tickHz;
@@ -353,7 +354,7 @@ class Game {
     }
     this.lastPositions = positions;
     const playing = engine.state === 'playing';
-    const lv = loopLevels({ speed: moved / seconds, feedSpeed: engine.config.speed, playing }); // interim until 05-06 rewrites the rolling loop (D-17)
+    const lv = loopLevels({ speed: moved / seconds, playing });
     this.audio.setLoop('rolling', lv.rolling);
     // The lid follows the chain's proximity even while it drains into the pit; the beat only plays live (D-08).
     this.fx.threat = warningLevel(headDistance, true);

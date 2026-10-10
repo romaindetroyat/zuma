@@ -33,10 +33,11 @@ test('warningIntervalAt: max(0.1 + 4·rem/600, (rem/11 + 60)/100) s — 4.1 s at
   assert.equal(warningIntervalAt(-20), 0.6, 'clamped past the skull');
   assert.equal(warningIntervalAt(900), 4.1, 'clamped at WARNING_DISTANCE');
   assert.equal(warningIntervalAt(NaN), 0.6, 'non-finite → skull');
-  let previous = Infinity;
+  // Shrinks as the chain approaches: non-decreasing in the remaining distance, 0..600 by steps of 10.
+  let previous = -Infinity;
   for (let rem = 0; rem <= 600; rem += 10) {
     const v = warningIntervalAt(rem);
-    assert.ok(v <= previous + 1e-12, `non-increasing in rem (${rem} px: ${v} > ${previous})`);
+    assert.ok(v >= previous - 1e-12, `non-decreasing in rem (${rem} px: ${v} < ${previous})`);
     assert.ok(v >= 0.6 && v <= 4.1, 'within [0.6, 4.1]');
     previous = v;
   }

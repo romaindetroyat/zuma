@@ -3,7 +3,9 @@
  * them under assets/sounds/<key>.<ogg|m4a> (see sounds/manifest.json); otherwise
  * each cue is synthesised with WebAudio so the game stays audible without any
  * proprietary file. Every pack sound is decoded in parallel on the first user
- * gesture (D-07) so the first occurrence of a cue is already the original.
+ * gesture (D-07) so the first occurrence of a cue is already the original. The rolling
+ * loop plays at a constant gain whenever the chain moves and the warning beat at a
+ * constant gain with the original interval: neither is modulated by the speed (D-17, §5).
  */
 import { clamp01, type SoundCue } from './feedback.js';
 import { assetUrl } from './original.js';
@@ -50,15 +52,13 @@ export function pickFormat(formats: string[], canPlay: (mime: string) => string)
   return null;
 }
 
-/** Distance (track px) between the head ball and the skull under which the warning beat starts (D-08, plan 04-05). */
-export const WARNING_DISTANCE = 220;
-/** Seconds between two warning beats when the threat is nil (just inside WARNING_DISTANCE) and when it is at the skull. */
-export const WARNING_INTERVAL_FAR = 1.1;
-export const WARNING_INTERVAL_NEAR = 0.22;
-/** Beat gain at the edge of the zone and at the skull. */
-export const WARNING_GAIN_FAR = 0.35;
-export const WARNING_GAIN_NEAR = 1;
-
+/**
+ * Distance (track px) between the head ball and the skull under which the warning beat
+ * starts: the original `danger` setting, 600 px (0x41a9ac; never overridden by levels.xml).
+ */
+export const WARNING_DISTANCE = 600;
+/** Beat gain: the original plays `warning1` at full volume whatever the distance (0x418a74). */
+export const WARNING_GAIN = 1;
 
 /** Threat level 0..1 from the head ball's distance to the skull: 0 outside WARNING_DISTANCE, 1 at the skull. */
 export function warningLevel(headDistance: number | null, playing: boolean): number {
@@ -66,29 +66,43 @@ export function warningLevel(headDistance: number | null, playing: boolean): num
   return clamp01(1 - headDistance / WARNING_DISTANCE);
 }
 
-/** Seconds until the next warning beat: linear from WARNING_INTERVAL_FAR (level 0) to WARNING_INTERVAL_NEAR (level 1). */
-export function warningInterval(level: number): number {
-  const l = clamp01(level);
-  return WARNING_INTERVAL_FAR * (1 - l) + WARNING_INTERVAL_NEAR * l;
+/**
+ * Seconds between two beats for `remainingPx` to the skull (0x418a74, §5): the alert waits
+ * `100 + 4000 × rem / danger` ms, but the next one cannot fire before the trail light has run
+ * from the head to the skull at 11 px per update plus 60 updates — `(rem / 11 + 60)` × 10 ms.
+ * 4.1 s on entering the zone, 2.1 s at 300 px, ≈ 0.77 s at 100 px, 0.6 s at the skull.
+ */
+export function warningIntervalAt(remainingPx: number): number {
+  const r = Number.isFinite(remainingPx) ? Math.max(0, Math.min(WARNING_DISTANCE, remainingPx)) : 0;
+  return Math.max(0.1 + 4 * r / WARNING_DISTANCE, (r / 11 + 60) / 100);
 }
 
-/** Gain of a warning beat: linear from WARNING_GAIN_FAR (level 0) to WARNING_GAIN_NEAR (level 1). */
-export function warningGain(level: number): number {
-  const l = clamp01(level);
-  return WARNING_GAIN_FAR * (1 - l) + WARNING_GAIN_NEAR * l;
+/** Seconds until the next warning beat from the threat level (1 − distance / WARNING_DISTANCE). */
+export function warningInterval(level: number): number {
+  return warningIntervalAt((1 - clamp01(level)) * WARNING_DISTANCE);
+}
+
+/** Gain of a warning beat: constant (the level is accepted for symmetry with warningInterval). */
+export function warningGain(_level?: number): number {
+  return WARNING_GAIN;
 }
 
 export type LoopKey = 'rolling';
 export type PulseKey = 'warning';
 
-/** Loop gain derived from the simulation: rolling follows the chain speed (D-08). */
-export function loopLevels(input: { speed: number; feedSpeed: number; playing: boolean }): { rolling: number } {
-  const rolling = input.playing && input.feedSpeed > 0 ? clamp01(input.speed / input.feedSpeed) : 0;
+/** Gain of the rolling loop while the chain moves (D-17: constant, no modulation by the speed). */
+export const ROLLING_GAIN = 0.6;
+/** Displacement (px/s of the fastest ball) above which the chain is heard rolling. */
+export const ROLLING_MIN_SPEED = 2;
+/** Fade-out length when the chain stops; the attack stays at 50 ms. */
+export const ROLLING_FADE_SECONDS = 0.15;
+
+/** Loop level derived from the simulation: rolling is on (1) above ROLLING_MIN_SPEED while playing, else off (0) (D-17). */
+export function loopLevels(input: { speed: number; playing: boolean }): { rolling: 0 | 1 } {
+  const rolling = input.playing && Number.isFinite(input.speed) && input.speed > ROLLING_MIN_SPEED ? 1 : 0;
   return { rolling };
 }
 
-/** Base volume of each loop at level 1. */
-const LOOP_BASE: Record<LoopKey, number> = { rolling: 0.5 };
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
 
@@ -199,8 +213,9 @@ export class AudioManager {
   }
 
   /**
-   * Drives a looping pack sound (rolling). `level` 0..1 scales the loop's
-   * base volume with a short ramp; a loop left at 0 for LOOP_IDLE_SECONDS is stopped.
+   * Drives a looping pack sound (rolling) at pitch 1. `level` 0..1 scales ROLLING_GAIN:
+   * a rising target ramps in over 50 ms, a nil target fades out over ROLLING_FADE_SECONDS
+   * (D-17); a loop left at 0 for LOOP_IDLE_SECONDS is stopped.
    */
   setLoop(key: LoopKey, level: number): void {
     const ctx = this.ctx;
@@ -222,7 +237,12 @@ export class AudioManager {
       this.loops.set(key, loop);
     }
     if (!ctx) return;
-    loop.gain.gain.setTargetAtTime(target * LOOP_BASE[key], ctx.currentTime, 0.05);
+    const now = ctx.currentTime;
+    const g = loop.gain.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    if (target > 0) g.linearRampToValueAtTime(target * ROLLING_GAIN, now + 0.05);
+    else g.linearRampToValueAtTime(0, now + ROLLING_FADE_SECONDS);
     if (target > 0) {
       loop.idleSince = null;
       return;
