@@ -202,6 +202,10 @@ export interface EngineConfig {
   total: number;
   /** Destroyed balls needed to enter ZUMA mode (feed stops). */
   target: number;
+  /** Probability that a streamed ball repeats the previous colour (original `repeat` %, 0..1). */
+  repeatChance: number;
+  /** Probability that a streamed ball is isolated — different from both its neighbours (original `single` %, 0..1). */
+  singleChance: number;
   speed: number;
   feedSpeed: number;
   drainSpeed: number;
@@ -243,6 +247,8 @@ export const CANDIDATE: EngineConfig = {
   start: 20,
   total: 60,
   target: 40,
+  repeatChance: 0.5,
+  singleChance: 0,
   speed: 24,
   feedSpeed: 360,
   drainSpeed: 520,
@@ -296,7 +302,8 @@ export class Chain {
   recoils: Array<{ id: number; ticks: number }> = [];
   spawned = 0;
   lastSpawnColor = -1;
-  spawnRun = 0;
+  /** Armed after a `single`: the next streamed ball must differ from the isolated one. */
+  forceDifferent = false;
   constructor(readonly track: Track, readonly index: number) {}
 }
 
@@ -544,17 +551,35 @@ export class ZumaEngine {
     if (this.feeding && this.chains.every(c => c.spawned >= this.config.start)) this.feeding = false;
   }
 
-  /** Colour runs of at most two make matches reachable without handing out free triples. */
+  /**
+   * Streamed colour, driven by the original `repeat` / `single` settings: a ball repeats the
+   * previous colour with `repeatChance` (runs of any length can appear), or is isolated with
+   * `singleChance` (differs from the previous ball and forces the next one to differ too).
+   * The first ball of a chain is uniformly random.
+   */
   private spawnColor(chain: Chain): number {
     const n = this.config.colors;
-    if (chain.lastSpawnColor >= 0 && chain.spawnRun < 2 && this.rng.next() < 0.45) {
-      chain.spawnRun++;
-      return chain.lastSpawnColor;
+    const prev = chain.lastSpawnColor;
+    const differentFromPrev = (): number => {
+      let c = this.rng.int(n);
+      if (n > 1 && c === prev) c = (c + 1 + this.rng.int(n - 1)) % n;
+      return c;
+    };
+    let c: number;
+    if (prev < 0) {
+      c = this.rng.int(n);
+    } else if (chain.forceDifferent) {
+      chain.forceDifferent = false;
+      c = differentFromPrev();
+    } else if (this.rng.next() < this.config.singleChance) {
+      chain.forceDifferent = true;
+      c = differentFromPrev();
+    } else if (this.rng.next() < this.config.repeatChance) {
+      c = prev;
+    } else {
+      c = differentFromPrev();
     }
-    let c = this.rng.int(n);
-    if (n > 1 && c === chain.lastSpawnColor) c = (c + 1 + this.rng.int(n - 1)) % n;
     chain.lastSpawnColor = c;
-    chain.spawnRun = 1;
     return c;
   }
 

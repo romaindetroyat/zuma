@@ -167,10 +167,14 @@ test('singleChance 1 isolates every ball: no neighbour shares its colour', () =>
 
 test('singleChance injects isolated balls between runs', () => {
   // A single is different from the ball before it and forces the next one to differ too.
+  // Two states: normal (single 0.5 → forced, else repeat 0.9) and forced (always differs, back to normal).
+  // Stationary share of normal = 2/3, so the expected immediate repeat share is 2/3 × 0.5 × 0.9 = 0.30.
   const colours = streamColours(4000, { repeatChance: 0.9, singleChance: 0.5, colors: 4 });
   const share = repeats(colours) / (colours.length - 1);
-  assert.ok(share < 0.9 * 0.5 + 0.05 && share > 0.9 * 0.5 - 0.1, `repeat share ${share.toFixed(3)}`);
+  assert.ok(share > 0.26 && share < 0.34, `repeat share ${share.toFixed(3)}`);
   assert.ok(longestRun(colours) >= 3);
+  // Isolated balls exist: a colour different from both neighbours.
+  assert.ok(colours.some((c, i) => i > 0 && i + 1 < colours.length && c !== colours[i - 1] && c !== colours[i + 1]));
 });
 
 test('colour generation is deterministic for a given seed', () => {
