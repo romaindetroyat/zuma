@@ -128,13 +128,10 @@ test('gap keeps its original cue and recoil adds none (D-09)', () => {
   assert.deepEqual(soundCues({ tick: 1, kind: 'power-activate', power: 'backwards' }).map(c => c.key), ['powerback']);
 });
 
-// ---------------------------------------------------------------- STATS (plan 04-04, D-14)
+// ---------------------------------------------------------------- STATS (plan 04-04, D-14; picture mode replaced by the native dialog in 05-03)
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { Track, ZumaEngine, CANDIDATE } from '../.compiled/core.js';
 import { formatSeconds } from '../.compiled/main.js';
-import { extractStatsImage, importStats, STATS_LAYOUT } from '../tools/import-r212-stats.mjs';
 
 const RESULT_IDS = ['result-points', 'result-combo', 'result-coins', 'result-gaps', 'result-chain', 'result-combo-max', 'result-time', 'result-objective', 'result-expert', 'result-record'];
 
@@ -146,39 +143,6 @@ test('index.html carries the R2.0.12 STATS structure with one OK', () => {
   const css = fs.readFileSync('public/style.css', 'utf8');
   assert.match(css, /#stats\.stats-original/, 'pack mode lays the values inside the original dialog');
   assert.doesNotMatch(css, /url\(/, 'the picture never comes from the stylesheet');
-});
-
-// 1×1 transparent PNG (68 bytes) standing for the proprietary picture.
-const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-const fakeStandalone = `<html><head><style>.zuma-stats:before{display:none}
-.zuma-stats:before{content:"";position:absolute;inset:0;background-image:url(data:image/png;base64,${TINY_PNG});background-size:100% 100%}</style></head><body></body></html>`;
-
-test('import-r212-stats extracts the STATS picture and writes the measured layout', () => {
-  assert.equal(extractStatsImage('<style>.zuma-stats:before{display:none}</style>'), null, 'no data URL → null');
-  const image = extractStatsImage(fakeStandalone);
-  assert.equal(image.mime, 'image/png');
-  assert.equal(image.ext, '.png');
-  assert.equal(image.buffer.toString('base64'), TINY_PNG, 'the last .zuma-stats:before data URL is decoded as-is');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zuma-stats-'));
-  const src = path.join(dir, 'standalone.html');
-  fs.writeFileSync(src, fakeStandalone);
-  const out = path.join(dir, 'extra');
-  const written = importStats(src, out);
-  assert.deepEqual(written.size, { width: 1, height: 1 });
-  assert.equal(fs.readFileSync(path.join(out, 'stats_bg.png')).toString('base64'), TINY_PNG);
-  const layout = JSON.parse(fs.readFileSync(path.join(out, 'stats_layout.json'), 'utf8'));
-  assert.deepEqual(Object.keys(layout.slots).sort(), ['bonus', 'chain', 'coins', 'comboMax', 'combos', 'gaps', 'objective', 'points', 'record', 'time']);
-  for (const [key, slot] of Object.entries(layout.slots)) {
-    for (const r of [slot.box, slot.erase, slot.patch]) for (const v of Object.values(r)) assert.ok(v >= 0 && v <= 1, `${key}: fractions`);
-    assert.equal(slot.erase.w, slot.patch.w, `${key}: patch cloned 1:1`);
-    assert.equal(slot.erase.h, slot.patch.h, `${key}: patch cloned 1:1`);
-    assert.ok(slot.box.x + slot.box.w > slot.erase.x, `${key}: the live value ends on the erased digits`);
-    assert.match(slot.color, /^#[0-9a-f]{6}$/);
-    assert.ok(slot.fontSize > 0.02 && slot.fontSize < 0.05, `${key}: font size as a fraction of the height`);
-  }
-  assert.ok(layout.hudStrip.y === 0 && layout.hudStrip.h > 0.08 && layout.hudStrip.h < 0.1, 'HUD strip ≈ 44/480');
-  assert.deepEqual(layout, STATS_LAYOUT);
-  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('Stats.combos counts the destructions caused by a previous destruction (STATS « COMBOS »)', () => {

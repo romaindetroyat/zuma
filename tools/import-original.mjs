@@ -263,24 +263,6 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     const copied = copyImage(path.join(src, 'images'), name, path.join(out, 'images'));
     if (copied) images[name.toLowerCase()] = `images/${copied}`;
   }
-  // Extras produced by the other importers (tools/import-r212-stats.mjs → stats_bg.png):
-  // every image under original/extra/ is registered under its lower-cased stem.
-  const extraDir = path.join(src, 'extra');
-  if (fs.existsSync(extraDir)) {
-    for (const f of fs.readdirSync(extraDir).sort()) {
-      if (!IMAGE_EXTS.includes(path.extname(f).toLowerCase())) continue;
-      const stem = f.replace(/\.[^.]+$/, '');
-      const copied = copyImage(extraDir, stem, path.join(out, 'images'));
-      if (copied) images[stem.toLowerCase()] = `images/${copied}`;
-    }
-  }
-  // Measured layout of the painted STATS values (fractions of stats_bg): copied as-is.
-  let statsLayout = null;
-  const layoutSrc = path.join(extraDir, 'stats_layout.json');
-  if (images.stats_bg && fs.existsSync(layoutSrc)) {
-    fs.copyFileSync(layoutSrc, path.join(out, 'stats_layout.json'));
-    statsLayout = 'stats_layout.json';
-  }
 
   // --------------------------------------------------------------------- fonts
   // Scripts are latin1 in the install (accented glyph names); the pack keeps them UTF-8
@@ -326,7 +308,6 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     stages,
     sounds,
     images,
-    statsLayout,
     fonts,
     strings,
     music: music ? 'zuma' + path.extname(music).toLowerCase() : null,

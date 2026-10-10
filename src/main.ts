@@ -3,13 +3,16 @@ import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, type EngineConfig, type G
 import { EXPLOSION_RGB, makeColorBurst, soundCues, type ColorBurst } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
-import { OriginalPack, tintSheet, type PackGraphics, type PackSettings, type StatsArt } from './original.js';
+import { OriginalPack, bitmapUrl, tintSheet, type PackGraphics, type PackSettings } from './original.js';
+import { STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, composeStatsDialog, loadStatsKit, statsValues, type ButtonState, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 
 declare const __BUILD__: string;
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 
 interface ResolvedLevel {
+  /** Stable identifier for per-level persistence (pack graphics id, or `proc-N`). */
+  id: string;
   label: string;
   name: string;
   tracks: Track[];
@@ -37,9 +40,16 @@ class Game {
   private readonly renderer: Renderer;
   private readonly audio = new AudioManager();
   private pack: OriginalPack | null = null;
-  /** Original STATS dialog (cleaned picture + measured slots); null → vector STATS panel. */
-  private statsArt: StatsArt | null = null;
-  private statsArtApplied = false;
+  /** Native STATS (D-01): original pieces + fonts + strings; null → vector STATS panel. */
+  private statsKit: StatsKit | null = null;
+  private statsCanvas: HTMLCanvasElement | null = null;
+  private statsUrl: string | null = null;
+  private statsRevealed = 0;
+  private statsButton: ButtonState = 'normal';
+  private statsTip = '';
+  private statsValues: StatsValues | null = null;
+  /** Composition sequence: a blob URL that arrives after a newer composition (or after closing) is dropped. */
+  private statsRender = 0;
   private statsTimers: number[] = [];
   private engine: ZumaEngine | null = null;
   private level: ResolvedLevel | null = null;
@@ -58,7 +68,6 @@ class Game {
   private endAt: number | null = null;
   private seed = Date.now() >>> 0;
   private pointer: Point = { x: WIDTH / 2, y: HEIGHT };
-  private best = 0;
   private loading = true;
   /** « Pixels nets »: integer CSS scale with image-rendering: pixelated (persisted as zuma.pixelated). */
   private pixelated = false;
@@ -70,7 +79,6 @@ class Game {
     if (!(canvas instanceof HTMLCanvasElement)) throw new Error('missing #game canvas');
     this.canvas = canvas;
     this.renderer = new Renderer(canvas, null);
-    try { this.best = Number(localStorage.getItem('zuma.best') ?? 0) || 0; } catch { /* storage unavailable */ }
     try { this.pixelated = localStorage.getItem('zuma.pixelated') === '1'; } catch { /* storage unavailable */ }
     this.bindInput();
     this.bindPanels();
@@ -127,8 +135,8 @@ class Game {
     await this.audio.discover();
     if (this.pack) {
       this.renderer.assets = await this.loadAssets(this.pack);
-      // Cleaned in the background: the first STATS opened before it is ready uses the vector panel.
-      void this.pack.statsArt().then(art => { this.statsArt = art; });
+      // Loaded in the background: a STATS opened before the kit is ready uses the vector panel.
+      void loadStatsKit(this.pack).then(kit => { this.statsKit = kit; });
     }
     const badge = document.getElementById('build');
     if (badge) badge.textContent = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
@@ -175,6 +183,7 @@ class Game {
       if (graphics && graphics.curveFiles.length > 0) {
         const tracks = await this.pack.tracks(graphics);
         return {
+          id: graphics.id,
           label: `${this.progress.stage + 1}-${idx + 1}`,
           name: graphics.name,
           tracks,
@@ -187,6 +196,7 @@ class Game {
     }
     const def: LevelDef = levelFor(this.levelIndex);
     return {
+      id: `proc-${this.levelIndex + 1}`,
       label: `${this.levelIndex + 1}`,
       name: def.name,
       tracks: [new Track(def.track)],
@@ -477,7 +487,25 @@ class Game {
     const on = (id: string, handler: () => void): void => {
       document.getElementById(id)?.addEventListener('click', () => { this.audio.unlock(); handler(); });
     };
-    on('result-continue', () => void this.closeStats());
+    on('result-continue', () => {
+      if (this.statsKit) this.audio.play({ key: 'button', gain: 1, rate: 1 });
+      void this.closeStats();
+    });
+    // Painted OK states (D-05): the transparent control only reports hover / press.
+    const ok = document.getElementById('result-continue');
+    if (ok) {
+      const set = (state: ButtonState) => (): void => {
+        if (!this.statsKit || !this.statsOpen || this.statsButton === state) return;
+        this.statsButton = state;
+        this.renderStats();
+      };
+      ok.addEventListener('mouseenter', set('hover'));
+      ok.addEventListener('mouseleave', set('normal'));
+      ok.addEventListener('mousedown', set('pressed'));
+      ok.addEventListener('mouseup', set('hover'));
+      ok.addEventListener('touchstart', set('pressed'), { passive: true });
+      ok.addEventListener('touchend', set('normal'), { passive: true });
+    }
     on('menu-resume', () => this.toggleMenu());
     on('menu-new', () => { this.toggleMenu(); void this.newGame(); });
     on('menu-sound', () => this.toggleSound());
@@ -498,106 +526,102 @@ class Game {
 
   private statsOutcome: 'live' | 'won' | 'lost' | 'gameover' = 'live';
 
+  /**
+   * Opens the STATS dialog. The ten values go to the `strong#result-*` of the structure
+   * (vector panel) and, with the kit, into the composed 640×480 picture laid as the inline
+   * background of `.zuma-stats` (D-01). The best time per level is persisted under
+   * zuma.best.<id> on a win and always displayed as RECORD (D-04).
+   */
   private openStats(outcome: 'live' | 'won' | 'lost' | 'gameover'): void {
     const engine = this.engine;
     if (!engine || this.statsOpen) return;
     this.statsOutcome = outcome;
     this.statsOpen = true;
     this.audio.stopLoops();
-    if (engine.score > this.best) {
-      this.best = engine.score;
-      try { localStorage.setItem('zuma.best', String(this.best)); } catch { /* storage unavailable */ }
-    }
-    const title = document.getElementById('results-title');
-    if (title) {
-      title.textContent = outcome === 'won' ? 'NIVEAU TERMINÉ' : outcome === 'lost' ? 'VIE PERDUE' : outcome === 'gameover' ? 'PARTIE TERMINÉE' : 'STATISTIQUES';
-    }
+    const kit = this.statsKit;
+    const strings = kit?.strings ?? null;
+    const won = outcome === 'won';
     const s = engine.stats;
     const seconds = Math.round(engine.tick / engine.config.tickHz);
-    const parTime = this.level?.parTime ?? null;
-    const values: Record<string, string> = {
-      'result-points': String(engine.score),
-      'result-combo': String(s.combos),
-      'result-coins': '0',
-      'result-gaps': String(s.gaps),
-      'result-chain': String(s.maxStreak),
-      'result-combo-max': String(s.maxCombo),
-      'result-time': formatSeconds(seconds),
-      'result-objective': parTime ? formatSeconds(Math.round(parTime)) : '—',
-      // The original prints « PAS DE BONUS »; « AUCUN » keeps the live value inside the painted frame.
-      'result-expert': outcome === 'won' ? `+${engine.config.levelBonus}` : 'AUCUN',
-      'result-record': String(this.best),
-    };
-    for (const [id, text] of Object.entries(values)) {
-      const el = document.getElementById(id);
-      if (el) el.textContent = text;
+    const key = bestTimeKey(this.level?.id ?? 'unknown');
+    const stored = readBestTime(key);
+    const best = bestTime(stored, seconds, won);
+    if (won && best !== stored) {
+      try { localStorage.setItem(key, String(best)); } catch { /* storage unavailable */ }
     }
+    const values = statsValues({
+      levelScore: engine.levelScore, combos: s.combos, coins: s.coins, gaps: s.gaps, maxStreak: s.maxStreak, maxCombo: s.maxCombo,
+      seconds, parTime: this.level?.parTime ?? 0, timeBonus: engine.timeBonus, won, bestSeconds: best,
+      noBonusLabel: strings?.NO_TIME_BONUS ?? 'PAS DE BONUS',
+    });
+    this.statsValues = values;
+    const title = document.getElementById('results-title');
+    if (title) title.textContent = strings?.STATS ?? 'STATISTIQUES';
+    for (const [field, id] of Object.entries(RESULT_IDS)) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = values[field as keyof StatsValues];
+    }
+    this.statsTip = pickTip(strings);
     const tip = document.getElementById('stats-tip-text');
-    if (tip) tip.textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+    if (tip) tip.textContent = this.statsTip;
     const ok = document.getElementById('result-continue');
     if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : outcome === 'gameover' ? 'Nouvelle partie' : 'OK';
     const panel = document.getElementById('stats');
-    const original = this.statsArt !== null;
-    panel?.classList.toggle('stats-original', original);
-    if (this.statsArt) this.layoutOriginalStats(this.statsArt);
+    panel?.classList.toggle('stats-original', kit !== null);
+    if (kit) {
+      this.statsRevealed = 0;
+      this.statsButton = 'normal';
+      this.renderStats();
+      this.revealStats();
+    } else {
+      const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
+      if (dialog) dialog.style.backgroundImage = '';
+    }
     panel?.classList.add('open');
-    if (original) this.revealStats();
   }
 
-  /**
-   * Lays the live values inside the original dialog: the cleaned picture as inline
-   * background, each `strong#result-*` on the band of the erased digits (right-aligned,
-   * painted colour, size relative to the stage height) and the OK control on the painted button.
-   */
-  private layoutOriginalStats(art: StatsArt): void {
-    if (this.statsArtApplied) return;
+  /** Composes the dialog for the current reveal / button state and lays it as the inline background. */
+  private renderStats(): void {
+    const kit = this.statsKit;
+    const values = this.statsValues;
     const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
-    if (!dialog) return;
-    dialog.style.backgroundImage = `url("${art.url}")`;
-    const pct = (v: number): string => `${(v * 100).toFixed(2)}%`;
-    for (const [key, id] of Object.entries(STATS_SLOT_IDS)) {
-      const slot = art.layout.slots[key];
-      const el = document.getElementById(id);
-      if (!slot || !el) continue;
-      const { box } = slot;
-      el.style.left = pct(box.x);
-      el.style.right = pct(1 - box.x - box.w);
-      el.style.top = pct(box.y);
-      el.style.height = pct(box.h);
-      el.style.fontSize = `${(slot.fontSize * 100).toFixed(2)}cqh`;
-      el.style.color = slot.color;
-      el.style.justifyContent = slot.align === 'left' ? 'flex-start' : 'flex-end';
-    }
-    const ok = document.getElementById('result-continue');
-    if (ok) {
-      ok.style.left = pct(art.layout.ok.x);
-      ok.style.top = pct(art.layout.ok.y);
-      ok.style.width = pct(art.layout.ok.w);
-      ok.style.height = pct(art.layout.ok.h);
-    }
-    this.statsArtApplied = true;
-  }
-
-  /** Progressive reveal of the live values (90 ms per line), as in the reference build. */
-  private revealStats(): void {
-    this.clearStatsReveal();
-    Object.values(STATS_SLOT_IDS).forEach((id, i) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      this.statsTimers.push(window.setTimeout(() => el.classList.add('stats-reveal'), 90 * (i + 1)));
+    if (!kit || !values || !dialog || !this.statsOpen) return;
+    this.statsCanvas = composeStatsDialog(kit, values, { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip }, this.statsCanvas ?? undefined);
+    const seq = ++this.statsRender;
+    void bitmapUrl(this.statsCanvas).then(url => {
+      if (seq !== this.statsRender || !this.statsOpen) { revokeUrl(url); return; }
+      revokeUrl(this.statsUrl);
+      this.statsUrl = url;
+      dialog.style.backgroundImage = `url("${url}")`;
     });
   }
 
-  private clearStatsReveal(): void {
+  /** Reveals the ten values one line every 90 ms with a `pop` (D-05); timers are purged by closeStats(). */
+  private revealStats(): void {
+    this.clearStatsTimers();
+    for (let i = 1; i <= STATS_ORDER.length; i++) {
+      this.statsTimers.push(window.setTimeout(() => {
+        this.statsRevealed = i;
+        this.renderStats();
+        this.audio.play({ key: 'pop', gain: 0.8, rate: 1 });
+      }, 90 * i));
+    }
+  }
+
+  private clearStatsTimers(): void {
     for (const t of this.statsTimers) clearTimeout(t);
     this.statsTimers = [];
-    for (const id of Object.values(STATS_SLOT_IDS)) document.getElementById(id)?.classList.remove('stats-reveal');
   }
 
   private async closeStats(): Promise<void> {
     document.getElementById('stats')?.classList.remove('open');
-    this.clearStatsReveal();
+    this.clearStatsTimers();
     this.statsOpen = false;
+    this.statsRender++; // drop any composition still being encoded
+    const dialog = document.querySelector<HTMLElement>('#stats .zuma-stats');
+    if (dialog) dialog.style.backgroundImage = '';
+    revokeUrl(this.statsUrl);
+    this.statsUrl = null;
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
     if (outcome === 'won') await this.nextLevel();
@@ -606,8 +630,8 @@ class Game {
   }
 }
 
-/** Layout slot keys (stats_layout.json) → ids of the R2.0.12 STATS structure, in reveal order. */
-const STATS_SLOT_IDS: Record<string, string> = {
+/** StatsValues fields → ids of the R2.0.12 STATS structure. */
+const RESULT_IDS: Record<keyof StatsValues, string> = {
   points: 'result-points',
   combos: 'result-combo',
   coins: 'result-coins',
@@ -620,11 +644,31 @@ const STATS_SLOT_IDS: Record<string, string> = {
   record: 'result-record',
 };
 
-/** « 29 s » under a minute, « 1:42 » beyond, like the original dialog. */
-export function formatSeconds(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+/** Stored best time (seconds) or null when absent, unreadable or not a positive number (T-05-08). */
+function readBestTime(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    const v = Number(raw);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
 }
+
+function revokeUrl(url: string | null): void {
+  if (!url || !url.startsWith('blob:')) return;
+  try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+}
+
+/** An original tip (strings.json, `&cr;` → space) when the kit is loaded, else one of the built-in tips. */
+function pickTip(strings: Record<string, string> | null): string {
+  const pool = strings ? TIP_KEYS.map(k => strings[k]).filter((t): t is string => typeof t === 'string' && t.length > 0) : [];
+  const list = pool.length > 0 ? pool : TIPS;
+  return list[Math.floor(Math.random() * list.length)].replace(/&cr;/g, ' ');
+}
+
+export { formatSeconds } from './statsdialog.js';
 
 /**
  * Maps original level settings (100 Hz update units) onto the engine configuration.

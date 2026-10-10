@@ -63,7 +63,7 @@ test('bestTime keeps the best winning time (D-04)', () => {
 test('bestTimeKey sanitises the level id (T-05-08)', () => {
   assert.equal(bestTimeKey('spiral'), 'zuma.best.spiral');
   assert.equal(bestTimeKey('Proc 3/x'), 'zuma.best.proc-3-x');
-  assert.equal(bestTimeKey('Été/1'), 'zuma.best.-t-1');
+  assert.equal(bestTimeKey('Été/1'), 'zuma.best.-t--1', 'every character outside [a-z0-9-] becomes -');
   assert.match(bestTimeKey('<script>'), /^zuma\.best\.[a-z0-9-]+$/);
 });
 

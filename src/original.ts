@@ -5,7 +5,7 @@
  * the procedural levels and vector rendering. Nothing in this module embeds
  * proprietary data; it only reads what a local build placed under assets/.
  */
-import { Track, type Point } from './core.js';
+import { Track, type Point, type TreasurePoint } from './core.js';
 
 declare global {
   interface Window { __ZUMA_ASSETS__?: Record<string, string> }
@@ -36,7 +36,11 @@ export interface PackGraphics {
   background: string | null;
   layers: Record<string, PackLayer>;
   thumbnail: string | null;
+  /** Coin spots (`TreasurePoint` of levels.xml); emitted by the importer from plan 05-04, absent in older packs. */
+  treasure?: TreasurePoint[];
 }
+/** A PopCap bitmap font: script (`.txt`, UTF-8), colour picture and/or `_name` mask. */
+export interface PackFont { script: string; image: string | null; mask: string | null }
 export interface PackSettings {
   id: string;
   speed?: number;
@@ -60,36 +64,13 @@ export interface PackData {
   stages: Array<{ levels: string[]; settings: string[] }>;
   sounds: string[];
   images: Record<string, string>;
-  /** Measured layout of the painted STATS dialog values (`stats_layout.json`), when `images.stats_bg` exists. */
-  statsLayout?: string | null;
+  /** Bitmap fonts by lower-case stem (`cancun12`, `nativealienextended18`…). */
+  fonts?: Record<string, PackFont>;
+  /** Original strings extracted from properties/default.xml (`strings.json`). */
+  strings?: string | null;
   music: string | null;
 }
 export interface CurveFile { version: number; controls: number[][]; points: Array<[number, number, number]> }
-
-/** Rectangle in fractions of the STATS picture (x, w of its width; y, h of its height). */
-export interface LayoutRect { x: number; y: number; w: number; h: number }
-export interface StatsSlot {
-  /** Band where the live value is written (right-aligned on the painted right edge). */
-  box: LayoutRect;
-  /** Painted digits (with their drop shadow) to erase. */
-  erase: LayoutRect;
-  /** Clean texture of the same size cloned over `erase`. */
-  patch: LayoutRect;
-  align: 'left' | 'right';
-  color: string;
-  /** Font size as a fraction of the picture height. */
-  fontSize: number;
-}
-export interface StatsLayout {
-  format: number;
-  image: { width: number; height: number };
-  hudStrip: LayoutRect;
-  title: LayoutRect;
-  ok: LayoutRect;
-  slots: Record<string, StatsSlot>;
-}
-/** The original STATS dialog, cleaned of its baked values and HUD strip, ready to lay live values on. */
-export interface StatsArt { canvas: HTMLCanvasElement; layout: StatsLayout; url: string }
 
 export type Bitmap = HTMLCanvasElement | HTMLImageElement;
 
@@ -100,6 +81,7 @@ const COLOR_NAMES = ['blue', 'yellow', 'red', 'green', 'purple', 'white'] as con
 export class OriginalPack {
   private readonly cache = new Map<string, Promise<Bitmap | null>>();
   private readonly curves = new Map<string, Promise<Track>>();
+  private stringsPromise: Promise<Record<string, string> | null> | null = null;
 
   constructor(readonly base: string, readonly data: PackData) {}
 
@@ -187,23 +169,13 @@ export class OriginalPack {
     }
   }
 
-  /**
-   * Original STATS dialog (`stats_bg`) with every painted value erased by cloning the
-   * neighbouring panel texture (feathered 2 px seam) and the baked HUD strip made
-   * transparent so the live canvas HUD shows through. Null without picture or layout.
-   */
-  async statsArt(): Promise<StatsArt | null> {
-    const file = this.data.statsLayout;
-    if (!file || !this.data.images.stats_bg) return null;
-    const [image, layout] = await Promise.all([this.image('stats_bg'), this.json<StatsLayout>(file)]);
-    if (!image || !layout || !layout.slots || !layout.hudStrip) return null;
-    try {
-      const canvas = cleanStats(image, layout);
-      if (!canvas) return null;
-      return { canvas, layout, url: await bitmapUrl(canvas) };
-    } catch {
-      return null;
+  /** Original strings (`strings.json`, id → text); null without the file or on any error. Cached. */
+  strings(): Promise<Record<string, string> | null> {
+    if (!this.stringsPromise) {
+      const file = this.data.strings;
+      this.stringsPromise = file ? this.json<Record<string, string>>(file).then(table => (table && typeof table === 'object' ? table : null)) : Promise.resolve(null);
     }
+    return this.stringsPromise;
   }
 
   private async json<T>(file: string): Promise<T | null> {
@@ -322,37 +294,8 @@ export function applyMask(color: Bitmap, alpha: Bitmap, tile: boolean): HTMLCanv
   return out;
 }
 
-/**
- * Copies `patch` over `erase` for every slot, then clears the HUD strip. The clone is
- * drawn in three passes (4 px and 2 px wider at reduced alpha, then opaque) so the seam
- * fades into the surrounding texture instead of showing a step. Nothing else is painted.
- */
-export function cleanStats(image: Bitmap, layout: StatsLayout): HTMLCanvasElement | null {
-  const W = image.width;
-  const H = image.height;
-  const out = canvasOf(W, H);
-  const ctx = out.getContext('2d');
-  if (!ctx) return null;
-  ctx.drawImage(image, 0, 0, W, H);
-  const px = (r: LayoutRect) => ({ x: Math.round(r.x * W), y: Math.round(r.y * H), w: Math.round(r.w * W), h: Math.round(r.h * H) });
-  const passes: Array<[number, number]> = [[4, 0.35], [2, 0.6], [0, 1]];
-  for (const slot of Object.values(layout.slots)) {
-    const e = px(slot.erase);
-    const p = px(slot.patch);
-    if (e.w <= 0 || e.h <= 0 || p.w <= 0 || p.h <= 0) continue;
-    for (const [k, alpha] of passes) {
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(image, p.x - k, p.y - k, p.w + 2 * k, p.h + 2 * k, e.x - k, e.y - k, e.w + 2 * k, e.h + 2 * k);
-    }
-  }
-  ctx.globalAlpha = 1;
-  const hud = px(layout.hudStrip);
-  if (hud.w > 0 && hud.h > 0) ctx.clearRect(hud.x, hud.y, hud.w, hud.h);
-  return out;
-}
-
-/** Object URL of the canvas as PNG (data URL when `toBlob` is unavailable): keeps a 1445×1089 picture out of the style attribute. */
-function bitmapUrl(canvas: HTMLCanvasElement): Promise<string> {
+/** Object URL of the canvas as PNG (data URL when `toBlob` is unavailable): keeps the composed picture out of the style attribute. */
+export function bitmapUrl(canvas: HTMLCanvasElement): Promise<string> {
   return new Promise(resolve => {
     if (typeof canvas.toBlob !== 'function' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
       resolve(canvas.toDataURL('image/png'));
