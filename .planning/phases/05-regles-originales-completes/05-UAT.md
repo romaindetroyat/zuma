@@ -42,9 +42,9 @@ Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome),
 - Recul / ralenti ZUMA appliqués à toutes les chaînes d'après la couverture maximale.
 - Interligne STATS 18 px (hauteur de capitale mesurée).
 - Couvercle du crâne ouvert dès 600 px.
-- Compte à rebours sans mode rapide (un bonus de ≈ 24 000 compte ≈ 24 s ; le reste est crédité sur OK).
+- Compte à rebours sans mode rapide (un bonus de ≈ 24 000 compte ≈ 24 s ; le reste est crédité sur OK) — livré en 05-08 : remplacé par le pas borné et le clic de D-21 (U24).
 - `levelwin` (`chant5`) qui se chevauche avec les `pop` du dialogue.
-- Fondu du roulement à l'arrêt : décroissance quasi exponentielle d'≈ 0,4 s (rampe relancée à chaque image) plutôt que 150 ms linéaires — acceptable à l'oreille ? (voir `deferred-items.md`).
+- Fondu du roulement à l'arrêt : décroissance quasi exponentielle d'≈ 0,4 s (rampe relancée à chaque image) plutôt que 150 ms linéaires — acceptable à l'oreille ? (voir `deferred-items.md`) — livré en 05-08 : rampe linéaire de 150 ms armée une seule fois par changement de cible (`rampPlan`).
 
 ### Observation reportée (cosmétique, 05-04)
 
@@ -54,9 +54,41 @@ Standalone R2.0.16 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome),
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
-| U22 | « Les écrans sont flous » (captures 2000 × 1500 : canvas ≈ 1000 px CSS sur Retina, soit ≈ 3,1 × le 640 × 480) | Tout est composé en 640 × 480 avec les bitmaps d'origine (fond, polices, cadre) puis rééchantillonné ; le STATS est composé à 1 × puis étiré une seconde fois ; R2.0.12 dessinait les textes en polices vectorielles (Georgia), nettes à toute échelle | Plan 05-08 : composition du STATS et des textes HUD à l'échelle du canvas (un seul rééchantillonnage) ; agrandissement pixel-art 2 × (xBR/Scale2x) des polices, du cadre, des boutons et des sprites de billes avant affichage ; le fond de niveau reste bilinéaire (D-19) |
-| U23 | « Textes mal alignés » (STATS) | Sur la capture : BONUS entre PIÈCES et SAUTS au lieu d'être sur la ligne SAUTS, RECORD sur ENCH. MAX. ; « + » du bonus teinté autrement que les chiffres ; OBJECTIF « 1:00 » contre TEMPS « 34 s » ; astuce centrée sur 3 lignes, collée à l'étiquette | Plan 05-08 : colonne droite calée sur la grille de gauche (TEMPS = POINTS, OBJECTIF = COMBOS, filet = PIÈCES, BONUS = SAUTS, RECORD = ENCH. MAX.), signe et chiffres de même teinte, formateur unique minutes:secondes, astuce alignée à gauche à côté de l'étiquette avec césure sur 2 lignes (D-20) ; géométrie vérifiée contre le constructeur du dialogue si le spike 02 la livre |
-| U24 | « Le comptage du bonus est trop long » (10 900 → 11 s) | +100 toutes les 100 ms sans mode rapide ; l'original a un mode rapide (2 500 par pas, déclencheur recherché par le spike 02) | Plan 05-08 : durée plafonnée à ≈ 2 s (pas = multiple de 100 ≥ total/20), un clic sur le dialogue crédite le reste aussitôt ; déclencheur original repris si le spike le livre (D-21) |
-| U25 | « Les tirs dans les brèches doivent rapporter plus de points quand ils sont des succès » | Moteur : +100 par brèche traversée à l'insertion, réussie ou non | Spike 02 (bonus de brèche, barème des combos) puis plan 05-08 : bonus crédité seulement si l'insertion produit une destruction, montant original (D-22) |
+| U22 | « Les écrans sont flous » (captures 2000 × 1500 : canvas ≈ 1000 px CSS sur Retina, soit ≈ 3,1 × le 640 × 480) | Tout est composé en 640 × 480 avec les bitmaps d'origine (fond, polices, cadre) puis rééchantillonné ; le STATS est composé à 1 × puis étiré une seconde fois ; R2.0.12 dessinait les textes en polices vectorielles (Georgia), nettes à toute échelle | Plan 05-08 : composition du STATS et des textes HUD à l'échelle du canvas (un seul rééchantillonnage) ; agrandissement pixel-art 2 × (xBR/Scale2x) des polices, du cadre, des boutons et des sprites de billes avant affichage ; le fond de niveau reste bilinéaire (D-19) → livré en 05-08 (STATS composé à l'échelle du canvas dans un canvas enfant `.stats-picture`, plus de PNG intermédiaire ; polices HUD et STATS, cadre, tête, bouton, billes, ombre, icônes de power-up et barre de menu agrandis 2 × EPX dès 1,5 pixel physique par pixel logique ; fond, découpes, grenouille, pièce, jauge et explosions bilinéaires ; « Pixels nets » inchangé ; 16,3 Mio d'images 2 × mesurés, bascule sans rechargement) |
+| U23 | « Textes mal alignés » (STATS) | Sur la capture : BONUS entre PIÈCES et SAUTS au lieu d'être sur la ligne SAUTS, RECORD sur ENCH. MAX. ; « + » du bonus teinté autrement que les chiffres ; OBJECTIF « 1:00 » contre TEMPS « 34 s » ; astuce centrée sur 3 lignes, collée à l'étiquette | Plan 05-08 : colonne droite calée sur la grille de gauche (TEMPS = POINTS, OBJECTIF = COMBOS, filet = PIÈCES, BONUS = SAUTS, RECORD = ENCH. MAX.), signe et chiffres de même teinte, formateur unique minutes:secondes, astuce alignée à gauche à côté de l'étiquette avec césure sur 2 lignes (D-20) ; géométrie vérifiée contre le constructeur du dialogue si le spike 02 la livre → livré en 05-08 (grille D-20 : TEMPS = POINTS, OBJECTIF = COMBOS, filet sur PIÈCES, BONUS = SAUTS, RECORD = ENCH. MAX., libellés droits à `x0 + 200` comme dans la fonction de dessin originale ; signe « + » : le masque `Cancun12` du « + » culmine à l'alpha 187 contre 255 pour les chiffres, normalisé par glyphe (`normalizeGlyphAlpha`), même teinte mesurée ; `formatSeconds` unique « N s » / « m:ss » ; astuce sur 2 lignes à gauche après « ASTUCE : », police réduite puis « ... » ; `y` exacts et alignement des valeurs non lus : hypothèse B3) |
+| U24 | « Le comptage du bonus est trop long » (10 900 → 11 s) | +100 toutes les 100 ms sans mode rapide ; l'original a un mode rapide (2 500 par pas, déclencheur recherché par le spike 02) | Plan 05-08 : durée plafonnée à ≈ 2 s (pas = multiple de 100 ≥ total/20), un clic sur le dialogue crédite le reste aussitôt ; déclencheur original repris si le spike le livre (D-21) → livré en 05-08 (pas = 100 jusqu'à 2 000, sinon multiple de 100 ≥ total / 20, ≤ 20 pas soit ≈ 2 s ; clic sur le dialogue hors OK → 2 500 par pas ; OK crédite le reste ; le spike 02 a établi que l'original n'accélère jamais en aventure — le « 2 500 » est un drapeau de mode de jeu : déviation volontaire documentée) |
+| U25 | « Les tirs dans les brèches doivent rapporter plus de points quand ils sont des succès » | Moteur : +100 par brèche traversée à l'insertion, réussie ou non | Spike 02 (bonus de brèche, barème des combos) puis plan 05-08 : bonus crédité seulement si l'insertion produit une destruction, montant original (D-22) → livré en 05-08 (bonus payé au match seulement, barème 500 / 440 / 350 / 270 / 190 / 100 / 10 selon la largeur minimale de brèche ≤ 64 … ≥ 364 px × nombre de brèches, gardé par une bille posée contre sa couleur, perdu sinon ; score `10n + 100·combo`, enchaînement `(chain + 5) × 10` dès le 5ᵉ tir réussi ; libellés COMBO / ENCHAÎNEMENT remis à l'endroit, « +N » dans la couleur de la bille, `gapbonus1` à 0 / 150 / 300 ms ; unité de la largeur = hypothèse B1) |
 
 Validés implicitement : arrivée rapide, couleurs, alerte, roulement, bannière ZUMA, décompte « +100 », couleurs du STATS, record. Le +10 000 par courbe n'a pas été relevé (16 260 points au 1-1 affichés sans remarque) : conservé jusqu'à avis contraire.
+
+## Sixième session (à remplir)
+
+Standalone R2.0.17 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, écran Retina), niveau 1-1. Notes de version : `R217_RELEASE_NOTES.md`.
+
+### Points à vérifier (U22–U25)
+
+- U22 — à la taille de la fenêtre sur un écran Retina, le HUD (score, niveau, barre de menu), la chaîne et l'écran STATS (titre, libellés, cadre, bouton OK) sont nets ; comparer avec « Pixels nets » (échelle entière sans lissage, actifs 1 ×) ; aucune différence attendue sur le fond de niveau, qui reste bilinéaire.
+- U23 — STATS : TEMPS sur la ligne POINTS, OBJECTIF sur COMBOS, filet sur PIÈCES, BONUS sur SAUTS, RECORD sur ENCH. MAX. ; le « + » du bonus de la même couleur que ses chiffres ; « 34 s » / « 1:00 » cohérents entre TEMPS, OBJECTIF et RECORD ; astuce à gauche après « ASTUCE : », deux lignes au plus, terminée par « ... » si elle est coupée.
+- U24 — le BONUS se compte en ≈ 2 s quel que soit le montant (20 pas au plus) ; un clic sur le dialogue (hors OK) l'accélère (2 500 par pas) ; OK crédite le reste d'un coup, POINTS et le score du HUD suivent.
+- U25 — un tir à travers une brèche qui fait exploser : « BONUS SAUT » et un « +N » gonflé (500 pour une brèche serrée, moins pour une large), son `gapbonus1` ; un tir à travers une brèche sans explosion : rien, ni texte ni points ; une réaction en chaîne : « COMBO x2 » et +100 ; cinq tirs réussis de suite : « ENCHAÎNEMENT x5 » et +100 dans le « +N » du match, son `chain1` ; un tir raté remet l'enchaînement à zéro.
+
+### Hypothèses à confirmer au ressenti
+
+- B1 — barème de saut (largeur de brèche en px de piste) : trop généreux (500 trop souvent) ou pas assez ?
+- B3 — alignement des valeurs du STATS (à droite dans leur colonne) et hauteur des lignes.
+- D-21 — le pas du compte à rebours (≈ 2 s au total) se lit-il encore comme un compte à rebours ? Le clic est-il naturel ?
+- Bille en attente sans enchaînement : une bille posée contre sa couleur garde son bonus de saut mais l'enchaînement retombe à zéro — trop difficile à tenir ?
+- B4 — les sons de match jouent même quand le groupe déclenche un power-up.
+- Couleur du « +N » = couleur de la bille rendue.
+- EPX (plutôt que xBR) : lisibilité des glyphes 2 × et des bords des billes ; léger escalier possible sur les courbes des grandes lettres.
+- Canvas enfant du STATS : redimensionnement de la fenêtre pendant le dialogue, survol et pression du bouton OK.
+- Reportées de la cinquième session (non tranchées) : A3 (+10 000 par courbe), arrêt du pousseur à chaque insertion arrière, A1, A2, A4, A5, A7, recul ZUMA sur toutes les chaînes, interligne 18 px, couvercle du crâne à 600 px, `levelwin` / pops.
+
+### Observation reportée (cosmétique, 05-04)
+
+- Le score du HUD est dessiné sous la tête du STATS natif — toujours cosmétique.
+
+### Constats
+
+| # | Constat | Analyse | Décision |
+|---|---------|---------|----------|
