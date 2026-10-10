@@ -31,3 +31,15 @@
 | U9 | Trop de billes isolées, pas assez de groupes de couleur dans les premiers niveaux | `repeat`/`single` de `levels.xml` non utilisés ; séries limitées à 2 à l'apparition ; `repeat` pris pour un objectif de billes | Plan 04-06 |
 | U10 | Écrans STATS ne correspondent pas à l'original (vu sur la version sans 04-04) ; « creuser dans le .exe » | 04-04 livré depuis l'image R2.0.12 ; les ressources du .exe (dialogbox, GodHead, DialogButton, polices Cancun12 / NativeAlienExtended18, chaînes STATS) permettent une reconstruction native si l'image R2.0.12 n'est pas jugée fidèle | À valider sur le standalone 04-04 ; plan 04-07 si rejeté |
 | U11 | Effet de zoom de tout l'écran dans le niveau 1-3 | Oscillation appliquée aux calques BackgroundAlpha quasi plein écran (`drawOverlays`) | Plan 04-05 |
+
+## Troisième session (2026-10-10, standalone R2.0.14 complet, macOS)
+
+Verdict utilisateur : « on approche ». Points restants :
+
+| # | Constat | Décision |
+|---|---------|----------|
+| U10 (suite) | STATS : se rapprocher encore du vrai écran, ou l'égaler ; **le temps record doit être affiché** (RECORD = meilleur temps du niveau, chaîne originale `BEST_TIME`) | Phase 5 : reconstruction native depuis les briques du `.exe` (dialogbox, GodHead, DialogButton, polices Cancun12 / NativeAlienExtended18, chaînes), record de temps par niveau persisté, bonus « temps d'expert » |
+| U12 | Pièces (coins) absentes : elles apparaissent à différents endroits, rapportent des points et maintiennent la série de tirs réussis | Phase 5 (GAME-03) : TreasurePoints de `levels.xml`, sprite `COIN` 30 trames, sons jewelappear / coingrab / gemvanishes |
+| U13 | Fin de niveau : série de points attribués depuis la dernière bille explosée jusqu'au trou, animation d'addition, sons associés | Phase 5 (GAME-04) : décompte le long de la piste avec `endoflevelpop1`, puis STATS |
+
+Validés implicitement (aucune remarque) : fonds 1:1, insertion animée, sons originaux au premier clic, groupes de couleurs, alerte progressive, calques fixes. Navigateur : macOS (Safari ou Chrome, à préciser).

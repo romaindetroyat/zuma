@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 
 ## Current Position
 
-Phase: 4 of 7 (Point de validation jouable)
-Plan: 6 of 6 in current phase executed (01-06) ; validation utilisateur en cours
-Status: In progress — awaiting UAT verdict
-Last activity: 2026-10-10 - Phase 4 plans 04-01..04-06 exécutés (R2.0.14, 60 tests) ; standalone envoyé pour validation
+Phase: 5 of 7 (Règles originales complètes)
+Plan: 0 of TBD in current phase
+Status: Ready to plan (contexte 05-CONTEXT.md écrit depuis l'UAT 3)
+Last activity: 2026-10-10 - UAT 3 de la phase 4 (« on approche ») ; phase 5 contextualisée : STATS natif + record, pièces, décompte de fin de niveau
 
-Progress: [████░░░░░░] 43% (3/7 phases)
+Progress: [█████░░░░░] 57% (4/7 phases)
 
 ## Performance Metrics
 
