@@ -1,7 +1,7 @@
 // R2.0.15 — pièces aux TreasurePoints, décompte de fin de niveau, bonus de temps d'expert, « PARTEZ », zumaslow/zumaback
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Track, ZumaEngine, CANDIDATE, aceTimeBonus } from '../.compiled/core.js';
+import { Track, ZumaEngine, CANDIDATE, ENGINE_VERSION, aceTimeBonus } from '../.compiled/core.js';
 import { soundCues, coinFrame, sparkleFrame } from '../.compiled/feedback.js';
 
 const straight = () => new Track([[0, 240], [640, 240]]);
@@ -25,6 +25,10 @@ const stepUntil = (g, kind, limit) => {
   }
   throw new Error(`no ${kind} within ${limit} ticks`);
 };
+
+test('baseline R2.0.15', () => {
+  assert.equal(ENGINE_VERSION, '2.0.15');
+});
 
 // ------------------------------------------------------------------ pièces (D-07, D-09)
 

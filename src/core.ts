@@ -6,13 +6,16 @@
  * recolouring, progressive insertion over mergeTicks (run detection deferred
  * until the slot is fully open), 40-tick destruction persistence, local recoil
  * propagated from segment to segment, attraction that only reconnects after
- * physical contact, immutable projectile colour and the four power-up families.
+ * physical contact, immutable projectile colour, the four power-up families,
+ * coins on the treasure points (one at a time, clearance by `dist`, grabbed by a
+ * projectile without breaking the streak) and the end-of-level tally that walks
+ * from the last explosion to the skull before the time and level bonuses.
  *
  * A level may run several chains at once (the original "dual" boards); the
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.14';
+export const ENGINE_VERSION = '2.0.15';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {
