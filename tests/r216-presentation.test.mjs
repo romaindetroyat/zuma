@@ -86,3 +86,51 @@ test('audio.js: setLoop fades with linearRampToValueAtTime / ROLLING_FADE_SECOND
   assert.doesNotMatch(main, /feedSpeed/, 'no feedSpeed in main.js');
   assert.match(main, /loopLevels\(\{ speed: moved \/ seconds, playing \}\)/, 'measured displacement drives the loop');
 });
+
+// ---------------------------------------------------------------- ZUMA / décompte (U16, U20, D-16, §7)
+import { soundCues, makeSparks } from '../.compiled/feedback.js';
+
+test('cues: the tally step is silent, cleanup-pop plays bonuspop at 0.5 without pitch, zuma / won keep chant4 / chant5', () => {
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 0.5 }), [], 'the « +100 » step makes no sound (0x421550)');
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup-pop', index: 3, progress: 0.4 }), [{ key: 'bonuspop', gain: 0.5, rate: 1 }]);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'zuma', coverage: 0.6, pushback: true }), [{ key: 'zuma', gain: 1, rate: 1 }]);
+  assert.equal(soundCues({ tick: 1, kind: 'won' })[0].key, 'levelwin');
+  assert.deepEqual(soundCues({ tick: 1, kind: 'clearing', x: 0, y: 0, chain: 0, levelBonus: 10000 }), []);
+});
+
+test('makeSparks: 5 white sparkles within ± 10 px of the step, deterministic from (step, tick), no Math.random', () => {
+  const burst = makeSparks(100, 200, 3, 500);
+  assert.equal(burst.particles.length, 5);
+  assert.equal(burst.color, 5, 'white');
+  assert.equal(burst.start, 500);
+  assert.equal(burst.id, 3);
+  for (const p of burst.particles) {
+    assert.ok(Math.abs(p.x - 100) <= 10, `|x − 100| ≤ 10 (${p.x})`);
+    assert.ok(Math.abs(p.y - 200) <= 10, `|y − 200| ≤ 10 (${p.y})`);
+    assert.ok(p.size === 1 || p.size === 2, 'size 1 or 2');
+    assert.ok(Number.isFinite(p.vx) && Number.isFinite(p.vy));
+  }
+  assert.deepEqual(makeSparks(100, 200, 3, 500), burst, 'deterministic');
+  assert.notDeepEqual(makeSparks(100, 200, 4, 500).particles, burst.particles, 'another step → other sparkles');
+  const src = fs.readFileSync('.compiled/feedback.js', 'utf8');
+  const start = src.indexOf('export function makeSparks(');
+  assert.ok(start > 0, 'makeSparks compiled');
+  const body = src.slice(start, src.indexOf('\n}\n', start));
+  assert.doesNotMatch(body, /Math\.random/, 'presentation RNG only (SeededRandom)');
+  assert.match(body, /SeededRandom/, 'seeded from step and tick');
+});
+
+test('main.js: ZUMA banner, sparkles and « +100 » per tally step, STATS at won, TEMPS from the level clock; render.js pulses the full gauge', () => {
+  const main = fs.readFileSync('.compiled/main.js', 'utf8');
+  assert.match(main, /'ZUMA !'/, 'built-in banner label (strings.json has no ZUMA key)');
+  assert.match(main, /makeSparks\(/, 'sparkles pushed into fx.bursts');
+  assert.doesNotMatch(main, /Niveau terminé/, 'D-15 message replaced by the STATS count-up');
+  assert.doesNotMatch(main, /Bonus de temps/, 'no separate time bonus announcement');
+  assert.doesNotMatch(main, /Videz la chaîne/, 'no sub-line under ZUMA !');
+  assert.match(main, /Math\.floor\(engine\.levelTicks \/ engine\.config\.tickHz\)/, 'TEMPS = ⌊levelTicks / tickHz⌋ (D-13)');
+  assert.doesNotMatch(main, /engine\.tick \/ engine\.config\.tickHz/, 'the raw tick is not the level clock');
+  assert.match(main, /engine\.state === 'won' \? 0 :/, 'the STATS open at won without extra delay (the engine already waited 50 updates)');
+  assert.match(main, /'#ffff00'/, 'the « +100 » is yellow (0xffff00)');
+  const render = fs.readFileSync('.compiled/render.js', 'utf8');
+  assert.equal((render.match(/0\.55 \+ 0\.45 \* Math\.sin\(frame \/ 4\)/g) || []).length, 2, 'gauge pulse amplitude ≥ 0.4 in both HUD branches');
+});

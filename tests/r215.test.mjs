@@ -323,10 +323,11 @@ test('feedback: coin and cleanup cues, coinFrame and sparkleFrame', () => {
   assert.equal(soundCues({ tick: 1, kind: 'coin-appear' })[0].key, 'coinappear');
   assert.equal(soundCues({ tick: 1, kind: 'coin' })[0].key, 'coin');
   assert.equal(soundCues({ tick: 1, kind: 'coin-vanish' })[0].key, 'coinvanish');
-  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 0 }), [{ key: 'bonuspop', gain: 1, rate: 1 }]);
-  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 1 }), [{ key: 'bonuspop', gain: 1, rate: 1.5 }]);
-  assert.equal(soundCues({ tick: 1, kind: 'cleanup', progress: 0.5 })[0].rate, 1.25);
-  assert.equal(soundCues({ tick: 1, kind: 'cleanup', progress: 7 })[0].rate, 1.5);
+  // R2.0.16 (§7): the step itself is silent; `endoflevelpop1` comes from `cleanup-pop` every 6 ticks at 0.5, pitch 1 (the rising pitch moved to the STATS count-up).
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 0 }), []);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup', progress: 1 }), []);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup-pop', index: 0, progress: 0 }), [{ key: 'bonuspop', gain: 0.5, rate: 1 }]);
+  assert.deepEqual(soundCues({ tick: 1, kind: 'cleanup-pop', index: 9, progress: 1 }), [{ key: 'bonuspop', gain: 0.5, rate: 1 }]);
   assert.equal(soundCues({ tick: 1, kind: 'won' })[0].key, 'levelwin');
   assert.equal(coinFrame(0), 0);
   assert.equal(coinFrame(3), 1);
