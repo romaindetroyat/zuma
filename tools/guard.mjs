@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 
 const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
 const banned = [
-  /\.(exe|dll|ogg|mo3|mp3|wav|pak|dat|cab)$/i,
+  /\.(exe|dll|ogg|m4a|aac|mo3|mp3|wav|pak|dat|cab)$/i,
   /\.pack\.json$/i,
   /^(private_assets|standalone|dist|\.compiled)\//,
   /^levels\//,

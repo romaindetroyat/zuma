@@ -10,7 +10,11 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+
+/** Only these extensions may be copied as images: the level directories also hold CURV `.dat` curves. */
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif'];
 
 /** Sound keys used by src/feedback.ts → original resource file names. */
 export const SOUND_MAP = {
@@ -84,14 +88,27 @@ export function parseCurve(buf) {
 
 const round2 = v => Math.round(v * 100) / 100;
 
-function findFile(dir, baseName) {
+/** Case-insensitive lookup by stem; `exts` (lower-case, with dot) restricts the accepted extensions. */
+function findFile(dir, baseName, exts = null) {
   if (!fs.existsSync(dir)) return null;
   const want = baseName.toLowerCase();
   for (const f of fs.readdirSync(dir)) {
     const stem = f.replace(/\.[^.]+$/, '').toLowerCase();
-    if (stem === want) return path.join(dir, f);
+    if (stem !== want) continue;
+    if (exts && !exts.includes(path.extname(f).toLowerCase())) continue;
+    return path.join(dir, f);
   }
   return null;
+}
+
+/** True when an `ffmpeg` binary answers on PATH (used for the optional AAC transcode). */
+function hasFfmpeg() {
+  try {
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function findDir(parent, name) {
@@ -100,16 +117,21 @@ function findDir(parent, name) {
   return hit ? path.join(parent, hit) : null;
 }
 
-function copyImage(fromDir, name, toDir) {
-  const file = fromDir ? findFile(fromDir, name) : null;
+function copyImage(fromDir, name, toDir, targetStem = name.toLowerCase()) {
+  const file = fromDir ? findFile(fromDir, name, IMAGE_EXTS) : null;
   if (!file) return null;
   fs.mkdirSync(toDir, { recursive: true });
-  const target = name.toLowerCase() + path.extname(file).toLowerCase();
+  const target = targetStem + path.extname(file).toLowerCase();
   fs.copyFileSync(file, path.join(toDir, target));
   return target;
 }
 
-export function importOriginal(srcDir = 'private_assets/original', outDir = 'private_assets/pack') {
+/**
+ * @param {string} srcDir extracted original install
+ * @param {string} outDir generated pack (wiped first)
+ * @param {{ transcode?: boolean }} [options] `transcode: false` (or ZUMA_NO_TRANSCODE=1) skips the AAC step
+ */
+export function importOriginal(srcDir = 'private_assets/original', outDir = 'private_assets/pack', { transcode = true } = {}) {
   const src = path.resolve(srcDir);
   const out = path.resolve(outDir);
   if (!fs.existsSync(path.join(src, 'levels', 'levels.xml'))) {
@@ -191,7 +213,9 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
       const color = copyImage(levelSrc, c.image, bgDir);
       g.layers[c.image] = { alpha: alpha ? `levels/${g.id}/${alpha}` : null, color: color ? `levels/${g.id}/${color}` : null };
     }
-    const thumb = copyImage(path.join(src, 'levels', 'perm_thumbnails'), g.id, bgDir);
+    // The 320×240 thumbnail lives beside the 640×480 background under its own name,
+    // so it can never overwrite `<id>.jpg`.
+    const thumb = copyImage(path.join(src, 'levels', 'perm_thumbnails'), g.id, bgDir, 'thumb');
     g.thumbnail = thumb ? `levels/${g.id}/${thumb}` : null;
   }
 
@@ -199,13 +223,30 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
   const soundDir = path.join(out, 'sounds');
   fs.mkdirSync(soundDir, { recursive: true });
   const sounds = [];
+  const formats = {};
+  const useFfmpeg = transcode && process.env.ZUMA_NO_TRANSCODE !== '1' && hasFfmpeg();
+  let m4aCount = 0;
+  let warnedTranscode = false;
   for (const [key, original] of Object.entries(SOUND_MAP)) {
     const file = findFile(path.join(src, 'sounds'), original);
-    if (!file) continue;
-    fs.copyFileSync(file, path.join(soundDir, `${key}.ogg`));
+    if (!file || path.extname(file).toLowerCase() !== '.ogg') continue;
+    const oggPath = path.join(soundDir, `${key}.ogg`);
+    fs.copyFileSync(file, oggPath);
     sounds.push(key);
+    formats[key] = ['ogg'];
+    if (!useFfmpeg) continue;
+    // AAC twin for browsers without a Vorbis decoder (Safari). Never a shell: argv array only.
+    const m4aPath = path.join(soundDir, `${key}.m4a`);
+    try {
+      execFileSync('ffmpeg', ['-y', '-v', 'error', '-i', oggPath, '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', m4aPath], { stdio: 'ignore' });
+      formats[key].push('m4a');
+      m4aCount++;
+    } catch {
+      fs.rmSync(m4aPath, { force: true });
+      if (!warnedTranscode) { console.warn(`ffmpeg could not transcode ${key}.ogg (keeping .ogg only)`); warnedTranscode = true; }
+    }
   }
-  fs.writeFileSync(path.join(soundDir, 'manifest.json'), JSON.stringify(sounds));
+  fs.writeFileSync(path.join(soundDir, 'manifest.json'), JSON.stringify({ format: 2, sounds: formats }));
   const music = findFile(path.join(src, 'music'), 'zuma');
   if (music) fs.copyFileSync(music, path.join(out, 'zuma' + path.extname(music).toLowerCase()));
 
@@ -229,13 +270,14 @@ export function importOriginal(srcDir = 'private_assets/original', outDir = 'pri
     music: music ? 'zuma' + path.extname(music).toLowerCase() : null,
   };
   fs.writeFileSync(path.join(out, 'pack.json'), JSON.stringify(pack, null, 1));
-  console.log(`pack written to ${out}: ${Object.keys(graphics).length} levels, ${curveCount} curves, ${sounds.length} sounds, ${Object.keys(images).length} images`);
+  const audioNote = useFfmpeg ? `${m4aCount} m4a` : '0 m4a (ffmpeg absent : .ogg seuls)';
+  console.log(`pack written to ${out}: ${Object.keys(graphics).length} levels, ${curveCount} curves, ${sounds.length} sounds, ${audioNote}, ${Object.keys(images).length} images`);
   return pack;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    importOriginal(process.argv[2], process.argv[3]);
+    importOriginal(process.argv[2], process.argv[3], {});
   } catch (err) {
     console.error(err instanceof Error ? err.message : err);
     process.exit(1);

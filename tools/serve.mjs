@@ -10,7 +10,7 @@ const port = Number(process.env.PORT ?? 8080);
 const types = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.ogg': 'audio/ogg', '.mo3': 'application/octet-stream',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mo3': 'application/octet-stream',
 };
 http.createServer((req, res) => {
   const url = decodeURIComponent((req.url ?? '/').split('?')[0]);

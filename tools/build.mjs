@@ -72,7 +72,7 @@ if (standalone) {
       }
     };
     walk(path.join(dist, 'assets'));
-    const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.mo3': 'application/octet-stream' };
+    const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mo3': 'application/octet-stream' };
     const inline = Object.fromEntries(Object.entries(assets).map(([k, p]) => [k, `data:${mime[path.extname(p)] ?? 'application/octet-stream'};base64,${fs.readFileSync(p).toString('base64')}`]));
     // src/original.ts resolves every asset path through window.__ZUMA_ASSETS__ when present.
     html = html.replace('<script type="module">', `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n</script>\n<script type="module">`);
