@@ -1,0 +1,8 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {Track,ZumaEngine,CANDIDATE,ENGINE_VERSION} from '../.compiled/core.js';
+const track=new Track([[0,240],[640,240]]);const frog={x:320,y:400};
+const make=()=>{const g=new ZumaEngine(track,frog,{...CANDIDATE,start:4,speed:0,feedSpeed:50,target:99999},123);g.loadFixture({balls:[{color:0,s:120},{color:1,s:152},{color:2,s:184},{color:3,s:216}],current:0,next:1,stream:false});return g};
+test('R2.0.7 version',()=>assert.equal(ENGINE_VERSION,'2.0.7'));
+test('repeated insertions preserve every pre-existing id and colour',()=>{const g=make();for(let n=0;n<300;n++){const before=new Map(g.balls.map(b=>[b.id,b.color]));const idx=n%(g.balls.length+1);const s=idx===0?g.balls[0].s-32:g.balls[idx-1].s+32;g.insert(idx,{id:10000+n,color:n%4},{x:0,y:0},s);for(const [id,c] of before){const b=g.balls.find(x=>x.id===id);assert.ok(b,`lost id ${id} at ${n}`);assert.equal(b.color,c);}}});
+test('due removal cannot delete a ball that was not explicitly destroying',()=>{const g=make();const survivor=g.balls[1];const victim=g.balls[2];victim.destroyingUntil=1;g.removals?.push?.({ids:[survivor.id,victim.id],leftId:null,rightId:null,shotId:0,depth:1,due:1});g.step();assert.ok(g.balls.some(b=>b.id===survivor.id));assert.ok(!g.balls.some(b=>b.id===victim.id));});
+test('projectile colour remains immutable while another insertion changes chain indices',()=>{const g=make();g.command({kind:'shoot',x:320,y:200});g.step();assert.equal(g.projectiles.length,1);const p=g.projectiles[0],c=p.color;g.insert(1,{id:9000,color:3},{x:0,y:0},152);assert.equal(p.color,c);});
