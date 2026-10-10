@@ -211,3 +211,71 @@ test('statsdialog.js composes the title by multiplication, derives the line heig
   assert.match(font, /this\.capHeight = /, 'capHeight defined');
   assert.match(font, /\|mult\|/, 'multiplied atlas cached under its own key');
 });
+
+// ---------------------------------------------------------------- bout en bout : valeurs STATS d'une fixture connue (U19, D-18)
+import { Track, ZumaEngine, CANDIDATE, aceTimeBonus } from '../.compiled/core.js';
+
+test('end to end: the STATS values of the r215 cleared level are the expected literals, then the count-up credits the bonus', () => {
+  // Straight 2000 px track, no slow zone, no pusher, no power-ups; two colour-0 balls at 320 / 352 and a colour-0 shot
+  // at (336, 240): the run of three explodes, `total` is raised so no ball follows, the board is cleared and tallied.
+  const g = new ZumaEngine(new Track([[0, 240], [2000, 240]]), { x: 320, y: 400 }, { ...CANDIDATE, endSlowFactor: 1, speed: 0, powerChance: 0, target: 30, total: 2, levelBonus: 500, parTime: 25 }, 5);
+  g.feeding = false;
+  g.loadFixture({ balls: [{ color: 0, s: 320 }, { color: 0, s: 352 }], current: 0, next: 0, stream: true });
+  g.command({ kind: 'shoot', x: 336, y: 240 });
+  const stepUntil = (kind, limit) => {
+    for (let i = 0; i < limit; i++) {
+      const before = g.events.length;
+      g.step();
+      const e = g.events.slice(before).find(ev => ev.kind === kind);
+      if (e) return e;
+    }
+    throw new Error(`no ${kind} within ${limit} ticks`);
+  };
+  const destroy = stepUntil('destroy', 60);
+  g.config.total = 99;
+  stepUntil('clearing', 60);
+  stepUntil('won', 400);
+  assert.equal(g.state, 'won');
+  // Derivation of every number below:
+  //   points  = 30 (run of three: 3 × 10) + 500 (levelBonus × 1 curve at clearing) + 100 × 28 steps = 3330,
+  //             steps = ⌈(2000 − 352) / 60⌉ = 28 (the last destruction sits at s = 352 → x = 352 on the straight track);
+  //   combos / coins / gaps = 0 (a direct destruction, no coin, no gap), chain = comboMax = 1 (one match, depth 1);
+  //   time    = formatSeconds(⌊levelTicks / 60⌋) with levelTicks = clearTick − goTick = 62 − 0 (feeding off → go at tick 0) → « 1 s »;
+  //   objective = « 25 s » (parTime); bonus = aceTimeBonus(1, 25) = ⌊250 × 24 / 25⌋ × 100 = 24000 + 100 = 24100 → « +24100 »;
+  //   record  = the current time when no best time is stored → « 1 s ».
+  assert.equal(destroy.x, 352);
+  assert.equal(g.levelTicks, 62);
+  assert.equal(g.timeBonus, aceTimeBonus(1, 25));
+  const input = {
+    levelScore: g.levelScore, combos: g.stats.combos, coins: g.stats.coins, gaps: g.stats.gaps, maxStreak: g.stats.maxStreak, maxCombo: g.stats.maxCombo,
+    seconds: Math.floor(g.levelTicks / 60), parTime: 25, timeBonus: g.timeBonus, won: true, bestSeconds: null, noBonusLabel: 'PAS DE BONUS',
+  };
+  assert.deepEqual(statsValues(input), {
+    points: '3330', combos: '0', coins: '0', gaps: '0', chain: '1', comboMax: '1', time: '1 s', objective: '25 s', bonus: '+24100', record: '1 s',
+  });
+  // The dialog opens on « +0 » and counts the bonus into the level score (creditBonus); the final frame shows everything.
+  assert.equal(statsValues({ ...input, timeBonusShown: 0 }).bonus, '+0');
+  assert.equal(statsValues({ ...input, timeBonusShown: bonusCountUp(g.timeBonus, 1000) }).bonus, '+100');
+  assert.equal(g.timeBonusCredited, 0, 'nothing credited before the count-up');
+  g.creditBonus(g.timeBonus);
+  assert.equal(g.levelScore, 3330 + 24100);
+  assert.equal(g.timeBonusCredited, g.timeBonus);
+  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).points, String(3330 + 24100));
+  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).bonus, '+24100');
+});
+
+test('main.js counts the time bonus up inside the STATS dialog through creditBonus and credits the rest on close (U17, T-05-15)', () => {
+  const main = fs.readFileSync('.compiled/main.js', 'utf8');
+  assert.match(main, /engine\.creditBonus\(/, 'the engine credits the bonus');
+  assert.match(main, /bonusCountUp\(/, 'schedule from the pure function');
+  assert.match(main, /bonusPopRate\(/, 'rising pop pitch');
+  assert.match(main, /key: 'bonuspop'/, 'endoflevelpop1 on each step');
+  assert.match(main, /timeBonusShown/, 'the shown share goes to statsValues');
+  assert.match(main, /engine\.timeBonus - engine\.timeBonusCredited/, 'total bounded by what is still uncredited');
+  const closeStart = main.indexOf('async closeStats()');
+  assert.ok(closeStart > 0, 'Game.closeStats compiled');
+  const close = main.slice(closeStart, main.indexOf('\n  }\n', closeStart));
+  assert.match(close, /creditBonus\(/, 'the remainder is credited when the dialog closes');
+  assert.match(close, /statsBonus = null/, 'credited once only');
+  assert.match(main, /Math\.floor\(engine\.levelTicks/, 'TEMPS from the level clock');
+});
