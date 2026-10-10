@@ -50,11 +50,12 @@ Plans:
   2. La grenouille originale tient la bille en bouche et la suivante dans l'écoutille, avec un tir partant de la bouche
   3. Vitesse de chaîne, recul et power-ups ne provoquent plus de remarque bloquante
   4. `npm test` reste vert et chaque correction de règle ajoute un test
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 04-01: Session UAT guidée (checklist, captures, consignation)
-- [ ] 04-02: Corrections de ressenti issues de l'UAT
+- [ ] 04-01-PLAN.md — Importateur corrigé (fond 640×480, thumb.jpg, extensions image, .m4a), fond 1:1 + overlays sous les billes, DPR et option « Pixels nets »
+- [ ] 04-02-PLAN.md — Moteur : insertion progressive (width/mergeTicks), détection différée, muzzleOffset, rollFrame ; verrous r214 ; baseline R2.0.14
+- [ ] 04-03-PLAN.md — Rendu de l'insertion, grenouille fidèle (bouche/écoutille/langue/clignement), audio original (formats, préchargement, boucles rolling/warning), vérification de bout en bout
 
 #### Phase 5: Règles originales complètes
 **Goal**: Interpréter tous les réglages de `levels.xml` et ajouter les éléments de niveau manquants
