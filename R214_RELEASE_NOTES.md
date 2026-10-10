@@ -25,6 +25,11 @@ Première baseline issue d'une session de jeu réelle sur R2.0.13 (phase 4, « P
 - Trame de roulement des sprites fournie par `rollFrame(s, frames)` : un recul fait tourner les billes en sens inverse.
 - Grenouille : offsets mesurés sur `SMALLFROGonPAD` — bille courante dans la bouche à `FROG_FRONT = 24` px devant le centre, suivante dans l'écoutille à `FROG_BACK = 26` px derrière ; `EngineConfig.muzzleOffset` est câblé sur `FROG_FRONT` quand le sprite est présent (le tir part de la bouche). Langue (`Tongue` + masque) sortie pendant 10 ticks après chaque tir ; clignement (`EYEBLINK`, deux trames 58×20 rendues transparentes par la couleur de coin via `OriginalPack.keyed()`) toutes les 240 images.
 
+## Écran STATS (`index.html`, `public/style.css`, `src/original.ts`, `src/main.ts`, `src/core.ts`)
+- Structure R2.0.12 reprise telle quelle (`stats-idol`, `h2#results-title`, `stats-columns` gauche/droite, `stats-rule`, `stats-gap`, `stats-tip`, un seul `#result-continue.stats-ok`) : POINTS, COMBOS, PIÈCES, SAUTS, ENCH. MAX., COMBO MAX. / TEMPS, OBJECTIF, BONUS, RECORD ; temps au format « 29 s » (ou « 1:42 »), objectif = `partime`, bonus = `+N` du niveau gagné sinon « AUCUN », record = meilleur score connu.
+- Avec le pack : l'écran est le dialogue original (`stats_bg`, extrait d'un standalone R2.0.12 par `tools/import-r212-stats.mjs`). `OriginalPack.statsArt()` efface les chiffres figés par clonage de la texture voisine (trois passes fondues, aucun rectangle ni dégradé ajouté) et rend transparent le bandeau HUD figé ; `main.ts` pose l'image en style inline sur `.zuma-stats`, cache les textes de la structure (titre, libellés, astuce et OK sont ceux peints) et écrit chaque valeur vivante à l'emplacement exact des chiffres effacés (`stats_layout.json` : position, alignement à droite, couleur, taille relative à la hauteur), révélation progressive de 90 ms par ligne. **Aucun panneau superposé.** Sans pack, le panneau vectoriel reste.
+- `Stats.combos` : nombre de destructions provoquées par une destruction précédente (profondeur > 1).
+
 ## Audio (`src/audio.ts`, `src/main.ts`)
 - `sounds/manifest.json` format 2 (`{ format: 2, sounds: { clé: ["ogg", "m4a"] } }`, l'ancien tableau de clés reste accepté) ; `pickFormat()` retient par clé le premier conteneur que `canPlayType` accepte : Ogg Vorbis sur Chrome/Firefox, AAC/MP4 sur Safari.
 - Tous les sons du pack sont décodés en parallèle dès le premier geste (`unlock()`), de sorte que la première occurrence de chaque son est l'original ; une clé dont le décodage échoue repasse en synthèse, une clé encore en cours de décodage reste muette plutôt que de doubler l'original.
@@ -33,9 +38,10 @@ Première baseline issue d'une session de jeu réelle sur R2.0.13 (phase 4, « P
 - Paramètre d'URL `?level=S-L` (ex. `?level=1-3`) pour ouvrir directement un niveau du pack (relecture) ; ignoré sans pack ou hors limites.
 
 ## Outils (`tools/`)
+- `import-r212-stats.mjs` (nouveau) : extrait l'image STATS (`.zuma-stats:before`) d'un standalone R2.0.12 vers `private_assets/original/extra/stats_bg.png` et écrit `stats_layout.json` (mesures en fractions) ; `import-original.mjs` copie les images de `original/extra/` dans `pack/images/` et le JSON dans `pack/` (`pack.json.statsLayout`).
 - `import-original.mjs` : le fond 640×480 n'est plus écrasé par la vignette (copiée sous `levels/<id>/thumb.jpg`) ; seules les extensions image sont copiées (plus de `.dat`) ; transcodage AAC optionnel (`ffmpeg`, 96 kb/s, `+faststart`) de chaque `.ogg` en `.m4a` à côté, désactivable par `ZUMA_NO_TRANSCODE=1` ; `sounds/manifest.json` au format 2.
 - `build.mjs` (standalone) et `serve.mjs` servent `.m4a` en `audio/mp4` ; `guard.mjs` bannit aussi `.m4a`/`.aac`.
 
 ## Tests (plans 04-01 et 04-03)
 - `tests/r214-import.test.mjs` : importateur (fond préservé, `thumb.jpg`, extensions, manifest format 2, transcodage désactivable).
-- `tests/r214-presentation.test.mjs` : `insertionPose` (extrémités, monotonie, grossissement ≤ 15 %), `FROG_FRONT`/`FROG_BACK`, `pickFormat` (Safari/Chrome/aucun format), `loopLevels` (vitesse, borne, `feedSpeed ≤ 0`, distance au crâne, vidange) et `WARNING_DISTANCE`, sons `gap`/`powerback` inchangés.
+- `tests/r214-presentation.test.mjs` : `insertionPose` (extrémités, monotonie, grossissement ≤ 15 %), `FROG_FRONT`/`FROG_BACK`, `pickFormat` (Safari/Chrome/aucun format), `loopLevels` (vitesse, borne, `feedSpeed ≤ 0`, distance au crâne, vidange) et `WARNING_DISTANCE`, sons `gap`/`powerback` inchangés ; STATS (plan 04-04) : structure R2.0.12 et OK unique dans `index.html`, `extractStatsImage`/`importStats` sur un faux standalone (PNG 1×1), `stats_layout.json` (10 emplacements, fractions, patch de même taille), `Stats.combos` sur la fixture d'attraction de r213, `formatSeconds`.

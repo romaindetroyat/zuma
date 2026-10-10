@@ -67,3 +67,79 @@ test('gap keeps its original cue and recoil adds none (D-09)', () => {
   assert.equal(soundCues({ tick: 1, kind: 'gap', count: 1 })[0].key, 'gap');
   assert.deepEqual(soundCues({ tick: 1, kind: 'power-activate', power: 'backwards' }).map(c => c.key), ['powerback']);
 });
+
+// ---------------------------------------------------------------- STATS (plan 04-04, D-14)
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Track, ZumaEngine, CANDIDATE } from '../.compiled/core.js';
+import { formatSeconds } from '../.compiled/main.js';
+import { extractStatsImage, importStats, STATS_LAYOUT } from '../tools/import-r212-stats.mjs';
+
+const RESULT_IDS = ['result-points', 'result-combo', 'result-coins', 'result-gaps', 'result-chain', 'result-combo-max', 'result-time', 'result-objective', 'result-expert', 'result-record'];
+
+test('index.html carries the R2.0.12 STATS structure with one OK', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  for (const id of RESULT_IDS) assert.equal((html.match(new RegExp(`id="${id}"`, 'g')) || []).length, 1, id);
+  assert.equal((html.match(/id="result-continue"/g) || []).length, 1);
+  for (const cls of ['stats-idol', 'stats-columns', 'stats-left', 'stats-right', 'stats-rule', 'stats-gap', 'stats-tip', 'stats-ok']) assert.match(html, new RegExp(`class="${cls}`), cls);
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  assert.match(css, /#stats\.stats-original/, 'pack mode lays the values inside the original dialog');
+  assert.doesNotMatch(css, /url\(/, 'the picture never comes from the stylesheet');
+});
+
+// 1×1 transparent PNG (68 bytes) standing for the proprietary picture.
+const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const fakeStandalone = `<html><head><style>.zuma-stats:before{display:none}
+.zuma-stats:before{content:"";position:absolute;inset:0;background-image:url(data:image/png;base64,${TINY_PNG});background-size:100% 100%}</style></head><body></body></html>`;
+
+test('import-r212-stats extracts the STATS picture and writes the measured layout', () => {
+  assert.equal(extractStatsImage('<style>.zuma-stats:before{display:none}</style>'), null, 'no data URL → null');
+  const image = extractStatsImage(fakeStandalone);
+  assert.equal(image.mime, 'image/png');
+  assert.equal(image.ext, '.png');
+  assert.equal(image.buffer.toString('base64'), TINY_PNG, 'the last .zuma-stats:before data URL is decoded as-is');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zuma-stats-'));
+  const src = path.join(dir, 'standalone.html');
+  fs.writeFileSync(src, fakeStandalone);
+  const out = path.join(dir, 'extra');
+  const written = importStats(src, out);
+  assert.deepEqual(written.size, { width: 1, height: 1 });
+  assert.equal(fs.readFileSync(path.join(out, 'stats_bg.png')).toString('base64'), TINY_PNG);
+  const layout = JSON.parse(fs.readFileSync(path.join(out, 'stats_layout.json'), 'utf8'));
+  assert.deepEqual(Object.keys(layout.slots).sort(), ['bonus', 'chain', 'coins', 'comboMax', 'combos', 'gaps', 'objective', 'points', 'record', 'time']);
+  for (const [key, slot] of Object.entries(layout.slots)) {
+    for (const r of [slot.box, slot.erase, slot.patch]) for (const v of Object.values(r)) assert.ok(v >= 0 && v <= 1, `${key}: fractions`);
+    assert.equal(slot.erase.w, slot.patch.w, `${key}: patch cloned 1:1`);
+    assert.equal(slot.erase.h, slot.patch.h, `${key}: patch cloned 1:1`);
+    assert.ok(slot.box.x + slot.box.w > slot.erase.x, `${key}: the live value ends on the erased digits`);
+    assert.match(slot.color, /^#[0-9a-f]{6}$/);
+    assert.ok(slot.fontSize > 0.02 && slot.fontSize < 0.05, `${key}: font size as a fraction of the height`);
+  }
+  assert.ok(layout.hudStrip.y === 0 && layout.hudStrip.h > 0.08 && layout.hudStrip.h < 0.1, 'HUD strip ≈ 44/480');
+  assert.deepEqual(layout, STATS_LAYOUT);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Stats.combos counts the destructions caused by a previous destruction (STATS « COMBOS »)', () => {
+  const quiet = { ...CANDIDATE, speed: 0, feedSpeed: 0, powerChance: 0, target: 99999 };
+  const g = new ZumaEngine(new Track([[0, 240], [640, 240]]), { x: 320, y: 400 }, quiet, 7);
+  g.feeding = false;
+  g.loadFixture({ balls: [{ color: 1, s: 200 }, { color: 1, s: 232 }, { color: 0, s: 264 }, { color: 0, s: 296 }, { color: 1, s: 328 }], current: 0, next: 1, stream: false });
+  assert.equal(g.stats.combos, 0);
+  g.command({ kind: 'shoot', x: 280, y: 240 });
+  for (let i = 0; i < 24; i++) g.step();
+  assert.equal(g.stats.matches, 1, 'first destruction (depth 1)');
+  assert.equal(g.stats.combos, 0, 'a direct destruction is not a combo');
+  for (let i = 0; i < 200; i++) g.step();
+  assert.equal(g.stats.maxCombo, 2, 'the neighbours merged into a depth-2 destruction');
+  assert.equal(g.stats.combos, 1, 'exactly one combo counted');
+});
+
+test('formatSeconds prints « 29 s » under a minute and « 1:42 » beyond', () => {
+  assert.equal(formatSeconds(29), '29 s');
+  assert.equal(formatSeconds(0), '0 s');
+  assert.equal(formatSeconds(102), '1:42');
+  assert.equal(formatSeconds(60), '1:00');
+  assert.equal(formatSeconds(-3), '0 s');
+});

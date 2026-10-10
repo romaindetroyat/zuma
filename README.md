@@ -45,6 +45,31 @@ npm run standalone                                                        # stan
 
 L'import décode les fichiers de courbes (`CURV` : points de contrôle puis polyligne échantillonnée au pixel avec drapeaux de tunnel), `levels.xml` (positions de la grenouille, découpes, réglages de difficulté, progression par temples) et renomme les sons selon les clés de `feedback.ts`.
 
+### Écran STATS d'origine
+
+Avec le pack, l'écran STATS est le dialogue original lui-même (tête de divinité, titre, libellés, astuce et bouton OK peints) : les chiffres figés de l'image sont effacés au chargement par clonage de la texture voisine, puis les valeurs vivantes s'inscrivent exactement aux mêmes emplacements, dans la même typographie et les mêmes couleurs, sans aucun panneau superposé ; le bandeau HUD figé de l'image est rendu transparent pour laisser le HUD vivant du canvas. L'image vient d'un standalone R2.0.12 et n'entre jamais dans le dépôt :
+
+```bash
+node tools/import-r212-stats.mjs chemin/vers/Zuma_R2_0_12_Local_Autonome.html   # → private_assets/original/extra/stats_bg.png + stats_layout.json
+npm run import                                                                  # copie stats_bg dans pack/images/ et stats_layout.json dans pack/
+```
+
+`stats_layout.json` (hors Git : il décrit une image propriétaire) donne, en fractions de la largeur/hauteur de l'image (4 décimales) :
+
+```
+{ "format": 1, "image": { "width": 1445, "height": 1089 },
+  "hudStrip": { "x", "y", "w", "h" },          // bandeau HUD figé, rendu transparent
+  "title":    { "x", "y", "w", "h" },          // titre peint (repère)
+  "ok":       { "x", "y", "w", "h" },          // bouton OK peint, reçoit le contrôle transparent
+  "slots": { "points" | "combos" | "coins" | "gaps" | "chain" | "comboMax" | "time" | "objective" | "bonus" | "record":
+    { "box":   { "x", "y", "w", "h" },         // bande où s'écrit la valeur vivante (alignée à droite)
+      "erase": { "x", "y", "w", "h" },         // chiffres figés (avec leur ombre) à effacer
+      "patch": { "x", "y", "w", "h" },         // texture propre de même taille, clonée sur `erase`
+      "align": "right", "color": "#rrggbb", "fontSize": <fraction de la hauteur> } } }
+```
+
+Sans pack, l'écran STATS reste le panneau vectoriel (même structure, mêmes valeurs).
+
 ## Verrous de non-régression
 
 - insertion sans remplacement ni recoloration des billes existantes ;
@@ -58,7 +83,7 @@ L'import décode les fichiers de courbes (`CURV` : points de contrôle puis poly
 - filtrage des munitions sur les couleurs présentes ;
 - quatre familles de power-ups (Bombe, Ralentir, Retour, Visée) avec leurs sons dédiés ;
 - bonus saut, enchaînements, mode ZUMA, perte de vie et victoire ;
-- HUD natif 640×480 et écran STATS monolithique à bouton OK unique ;
+- HUD natif 640×480 et écran STATS monolithique à bouton OK unique (structure R2.0.12, valeurs incrustées dans le dialogue original avec le pack) ;
 - décodeur de courbes originales vérifié sur un fichier synthétique.
 
 ## Fournir ses propres graphismes de niveau
