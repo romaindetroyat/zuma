@@ -34,3 +34,36 @@ test('frog offsets measured on SMALLFROGonPAD are exported by the renderer', () 
   assert.equal(FROG_FRONT, 24, 'mouth: 24 px ahead of the sprite centre');
   assert.equal(FROG_BACK, 26, 'hatch: 26 px behind the sprite centre');
 });
+
+// ---------------------------------------------------------------- audio (D-06, D-08, D-09)
+import { pickFormat, loopLevels, WARNING_DISTANCE } from '../.compiled/audio.js';
+import { soundCues } from '../.compiled/feedback.js';
+
+test('pickFormat picks the first format canPlayType accepts', () => {
+  const safari = mime => (mime.startsWith('audio/mp4') ? 'maybe' : '');
+  const chrome = mime => (mime.startsWith('audio/ogg') ? 'probably' : 'maybe');
+  assert.equal(pickFormat(['ogg', 'm4a'], safari), 'm4a', 'Safari: no Vorbis, AAC in MP4');
+  assert.equal(pickFormat(['ogg', 'm4a'], chrome), 'ogg', 'Chrome/Firefox: first accepted format wins');
+  assert.equal(pickFormat(['ogg'], () => ''), null, 'nothing playable → null');
+  assert.equal(pickFormat(['flac', 'ogg'], chrome), 'ogg', 'unknown formats are ignored');
+});
+
+test('loopLevels: rolling follows the chain speed, warning the distance to the skull', () => {
+  const base = { speed: 0, feedSpeed: 360, headDistance: 400, playing: true };
+  assert.deepEqual(loopLevels(base), { rolling: 0, warning: 0 });
+  assert.equal(loopLevels({ ...base, speed: 360 }).rolling, 1, 'full gain at feedSpeed');
+  assert.equal(loopLevels({ ...base, speed: 900 }).rolling, 1, 'clamped above feedSpeed');
+  assert.equal(loopLevels({ ...base, speed: 180 }).rolling, 0.5, 'proportional below');
+  assert.equal(loopLevels({ ...base, speed: 180, feedSpeed: 0 }).rolling, 0, 'feedSpeed <= 0 → silent');
+  assert.equal(loopLevels({ ...base, speed: 180, playing: false }).rolling, 0, 'no rolling when not playing');
+  assert.equal(loopLevels({ ...base, headDistance: 100 }).warning, 1, 'head within 160 px of the skull');
+  assert.equal(loopLevels({ ...base, headDistance: 160 }).warning, 0, 'threshold is exclusive');
+  assert.equal(loopLevels({ ...base, headDistance: 100, playing: false }).warning, 0, 'cut while draining/paused');
+  assert.equal(loopLevels({ ...base, headDistance: null }).warning, 0, 'no ball → no warning');
+  assert.equal(WARNING_DISTANCE, 160);
+});
+
+test('gap keeps its original cue and recoil adds none (D-09)', () => {
+  assert.equal(soundCues({ tick: 1, kind: 'gap', count: 1 })[0].key, 'gap');
+  assert.deepEqual(soundCues({ tick: 1, kind: 'power-activate', power: 'backwards' }).map(c => c.key), ['powerback']);
+});
