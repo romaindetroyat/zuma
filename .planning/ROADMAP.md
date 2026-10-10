@@ -65,7 +65,13 @@ Plans:
   1. `configFromSettings` couvre `single`, `zumaslow`, `zumaback`, couleurs par temple et `partime`, documentés dans le README et testés
   2. Les pièces bonus apparaissent aux TreasurePoints, disparaissent après délai et rapportent des points avec leur son
   3. Chaque niveau démarre par « Attention / PARTEZ » et se termine par la vidange, le pop et le bonus de temps
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Importateur (polices bitmap, strings.json, sons pièces/pop, garde) + `src/bitmapfont.ts` (parseur/mise en page PopCap testés en Node)
+- [ ] 05-02-PLAN.md — Moteur : pièces aux TreasurePoints, état `clearing` + décompte, bonus de temps d'expert, `go`, zumaslow/zumaback, R2.0.15
+- [ ] 05-03-PLAN.md — STATS natif composé depuis dialogbox/GodHead/DialogButton + polices, record de temps par niveau, retrait du mode image R2.0.12
+- [ ] 05-04-PLAN.md — Rendu pièces/décompte/« Attention · PARTEZ », câblage partime/zumaslow/zumaback, documentation des hypothèses, vérification finale
 
 #### Phase 6: Progression et menus
 **Goal**: Aventure par temples, sauvegarde et menu principal
@@ -102,6 +108,6 @@ Plans:
 | 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
-| 5. Règles originales complètes | v1.1 | 0/TBD | Not started | - |
+| 5. Règles originales complètes | v1.1 | 0/4 | Planned | - |
 | 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
