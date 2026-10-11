@@ -54,15 +54,25 @@ self.addEventListener('activate', event => {
     .then(() => self.clients.claim()));
 });
 
+/**
+ * A cached response that followed a redirect, rebuilt as a plain one (same status, headers and body). Pages redirects
+ * /index.html to / and the manifest's start_url is ../index.html, so the precached ./index.html is `redirected`;
+ * a navigation (redirect mode « manual ») cannot be answered with such a response and the installed app would not start.
+ */
+function clean(response) {
+  if (!response || !response.redirected) return response;
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 async function navigation(request) {
   const shell = await caches.open(SHELL_CACHE);
   const hit = await shell.match(request, { ignoreSearch: true });
-  if (hit) return hit;
+  if (hit) return clean(hit);
   try {
     return await fetch(request);
   } catch (error) {
     const index = await shell.match('./index.html');
-    if (index) return index;
+    if (index) return clean(index);
     throw error;
   }
 }
