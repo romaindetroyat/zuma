@@ -437,10 +437,19 @@ test('planProvision (D-43): existing apps with empty allowed_idps are pinned to 
   assert.deepEqual(listed.actions[1], { kind: 'pin-idp', id: 'app-Prisme', name: 'Prisme', idps: ['idp-cf'] });
   const unlisted = planProvision(state, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' });
   assert.ok(unlisted.conflict.length > 0 && unlisted.actions.length === 0, 'unlisted apps → conflict, nothing written');
+  // Resuming an interrupted run: an app already pinned to exactly the current providers counts as done.
   const pinned = structuredClone(state);
   pinned.apps[1].allowed_idps = ['idp-cf'];
-  const differs = planProvision(pinned, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev', pinIdpApps: ['Prisme', 'ssh'] });
-  assert.ok(differs.conflict.length > 0 && differs.actions.length === 0, 'an app no longer empty → conflict');
+  const resumed = planProvision(pinned, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev', pinIdpApps: ['Prisme', 'ssh'] });
+  assert.deepEqual(resumed.conflict, []);
+  assert.deepEqual(resumed.actions.filter(a => a.kind === 'pin-idp').map(a => a.name), ['Prisme']);
+  // Any other non-empty value, a listed app that does not exist, or an unlisted empty app → conflict, nothing written.
+  for (const mutate of [s => { s.apps[1].allowed_idps = ['idp-other']; }, s => { s.apps.pop(); }, s => { s.apps.push(otherApp('label', 'label.example.org')); }]) {
+    const st = structuredClone(state);
+    mutate(st);
+    const differs = planProvision(st, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev', pinIdpApps: ['Prisme', 'ssh'] });
+    assert.ok(differs.conflict.length > 0 && differs.actions.length === 0, 'differs from the expected list → conflict');
+  }
   const withOtp = structuredClone(state);
   withOtp.idps.push({ id: 'idp-otp', type: 'onetimepin' });
   assert.ok(!planProvision(withOtp, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' }).actions.some(a => a.kind === 'pin-idp'), 'OTP present → no pin');
@@ -525,7 +534,8 @@ test('run (D-43): listed existing apps get allowed_idps = [cloudflare] before OT
       assert.deepEqual(put.body[k], was[k], `${was.name}.${k} unchanged`);
     }
     const now = cloud.s.apps.find(a => a.id === was.id);
-    assert.deepEqual({ ...now, allowed_idps: [], updated_at: was.updated_at }, was, `${was.name}: only allowed_idps changed`);
+    const ids = a => a.policies.map(x => ({ id: x.id, precedence: x.precedence }));
+    assert.deepEqual({ ...now, allowed_idps: [], updated_at: was.updated_at, policies: ids(now) }, { ...was, policies: ids(was) }, `${was.name}: only allowed_idps changed`);
   }
   assert.match(out, /Prisme.*allowed_idps \[\] → \[/);
   assert.match(out, /remettre \[\]/);
