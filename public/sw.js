@@ -10,7 +10,7 @@ const ASSETS_CACHE = 'zuma-assets-__ASSETS_HASH__';
 const SHELL = [
   './', './index.html', './public/style.css', './public/manifest.webmanifest', './public/icon.svg',
   './js/core.js', './js/feedback.js', './js/levels.js', './js/audio.js', './js/upscale.js', './js/original.js', './js/pwa.js',
-  './js/bitmapfont.js', './js/statsdialog.js', './js/render.js', './js/menudialog.js', './js/progress.js', './js/welcome.js', './js/adventure.js', './js/main.js',
+  './js/bitmapfont.js', './js/statsdialog.js', './js/render.js', './js/menudialog.js', './js/progress.js', './js/records.js', './js/welcome.js', './js/adventure.js', './js/main.js',
 ];
 const ASSETS = [/* __ASSETS__ */];
 const BATCH = 8;

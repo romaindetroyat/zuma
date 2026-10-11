@@ -106,7 +106,7 @@ test('TEMPLE_NAMES: four temples, non-empty French fallbacks (QUETZAL_QUATL / PO
 test('bundle: progress after menudialog in MODULES, copied to dist/js, pure (no DOM, no storage global)', () => {
   // R2.0.21: progress after menudialog (plan 06-02).
   // R2.0.21 (D-01): welcome comes between progress and main (plan 06-03).
-  assert.match(fs.readFileSync('tools/build.mjs', 'utf8'), /'menudialog', 'progress', 'welcome', 'adventure', 'main'/); // R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04)
+  assert.match(fs.readFileSync('tools/build.mjs', 'utf8'), /'menudialog', 'progress', 'records', 'welcome', 'adventure', 'main'/); // R2.0.22: records after progress (plan 06.1-01); R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04)
   assert.ok(fs.existsSync('dist/js/progress.js'), 'dist/js/progress.js produced by the build');
   const src = fs.readFileSync('src/progress.ts', 'utf8');
   assert.doesNotMatch(src, /localStorage|window\.|document\./);
@@ -267,7 +267,7 @@ const ROMAIN = { name: 'Romain', maxStage: 4 };
 const boot = (o = {}) => P.initialApp({ profile: ROMAIN, save: null, scores: P.defaultScores(), sizes: SIZES, startLives: 3, review: null, ...o });
 const kinds = effects => effects.map(e => e.kind);
 const effect = (effects, kind) => effects.find(e => e.kind === kind);
-const WRITES = ['save-run', 'save-profile', 'save-scores'];
+const WRITES = ['save-run', 'save-profile', 'save-scores', 'record-score']; // R2.0.22: record-score is a write effect too (plan 06.1-01)
 /** Applies events in order; returns the last { state, effects } and every effect seen. */
 const play = (state, events) => {
   let r = { state, effects: [] };
