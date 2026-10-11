@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import * as R from '../.compiled/records.js';
 import { bestTimeKey } from '../.compiled/statsdialog.js';
-import { defaultScores } from '../.compiled/progress.js';
+import * as P from '../.compiled/progress.js';
+
+const { defaultScores } = P;
 
 const ID = n => n.toString(16).padStart(16, '0');
 const S = (score, extra = {}) => ({ score, stage: 0, level: 0, day: '', ...extra });
@@ -229,4 +231,153 @@ test('bundle: records after progress in MODULES, precached by the worker shell, 
   assert.ok(fs.existsSync('dist/js/records.js'), 'dist/js/records.js produced by the build');
   const js = fs.readFileSync('.compiled/records.js', 'utf8');
   assert.doesNotMatch(js, /\b(document|window|localStorage|location)\b/);
+});
+
+// ------------------------------------------------------------ entrées de démonstration et reprise de l'existant (D-08)
+
+const hs = (name, score, extra = {}) => ({ name, score, stage: 0, level: 0, date: '', ...extra });
+
+test('isDemoScore: the three defaultScores() entries; the same name and score with a date is a real score', () => {
+  for (const e of defaultScores()) assert.equal(R.isDemoScore(e), true, e.name);
+  assert.equal(R.isDemoScore(hs('Zuma', 10000, { date: '2026-10-11' })), false);
+  assert.equal(R.isDemoScore(hs('Zuma', 10001)), false);
+  assert.equal(R.isDemoScore(hs('Alice', 10000)), false);
+});
+
+test('migrationItems: local entries named after the player (no demo, no other name) and the valid local best times; never a name', () => {
+  const local = [
+    hs('Alice', 23000, { stage: 3, level: 2, date: '2026-10-11' }), ...defaultScores(), hs('Bruno', 7000),
+    hs('Alice', 1500), hs('Alice', 100000000), hs('Zuma', 10000, { name: 'Alice' }),
+  ];
+  const got = R.migrationItems(local, { spiral: 83, x: 0, 'A B': 9, 'loop-3': 2.5, big: 3601, ok: 3600 }, 'Alice');
+  assert.deepEqual(got.scores, [
+    { score: 23000, stage: 3, level: 2, day: '2026-10-11' },
+    { score: 1500, stage: 0, level: 0, day: '' },
+    { score: 10000, stage: 0, level: 0, day: '' },
+  ]);
+  assert.deepEqual(got.times, { spiral: 83, ok: 3600 });
+  assert.doesNotMatch(JSON.stringify(got), /Alice|Bruno|"name"/);
+  assert.deepEqual(R.migrationItems(defaultScores(), {}, 'Zuma'), { scores: [], times: {} }, 'demo entries never sent, even under that name');
+});
+
+// ------------------------------------------------------------ vues « Tous » / « Moi » (D-09)
+
+test('scoresView with a server copy: server list ∪ pending (named after the player), sorted, ≤ 10, date = day', () => {
+  const cache = state({
+    shared: { scores: [rs('Bruno', 9000, { day: '2026-10-10' }), rs('Alice', 5000), rs('Bruno', 4000)], times: {} },
+    mine: { scores: [rs('Alice', 5000)], times: {} },
+  });
+  let s = withCache(cache);
+  s = R.queueScore(s, S(5000, { stage: 2, level: 1, day: '2026-10-11' }), ID(1));
+  s = R.queueScore(s, S(6000), ID(2));
+  const all = R.scoresView(s, 'shared', defaultScores(), 'Alice');
+  assert.deepEqual(all, [
+    hs('Bruno', 9000, { date: '2026-10-10' }), hs('Alice', 6000), hs('Alice', 5000),
+    hs('Alice', 5000, { stage: 2, level: 1, date: '2026-10-11' }), hs('Bruno', 4000),
+  ], 'server entries before pending ones on equal scores');
+  const mine = R.scoresView(s, 'mine', defaultScores(), 'Alice');
+  assert.deepEqual(mine, [hs('Alice', 6000), hs('Alice', 5000), hs('Alice', 5000, { stage: 2, level: 1, date: '2026-10-11' })]);
+  const full = withCache(state({ shared: { scores: Array.from({ length: 10 }, (_, i) => rs('Bruno', 10000 - i * 100)), times: {} } }));
+  const view = R.scoresView(R.queueScore(full, S(9950), ID(3)), 'shared', [], 'Alice');
+  assert.equal(view.length, 10);
+  assert.deepEqual(view[1], hs('Alice', 9950));
+  assert.equal(view[9].score, 9200);
+});
+
+test('scoresView without a server copy: « Tous » = the local table as is, « Moi » = local non-demo entries of the player', () => {
+  const local = [hs('Alice', 23000), ...defaultScores(), hs('Bruno', 7000), hs('Alice', 300)];
+  const store = R.emptyRecordsStore();
+  const all = R.scoresView(store, 'shared', local, 'Alice');
+  assert.deepEqual(all, local);
+  assert.notEqual(all, local, 'a copy');
+  assert.deepEqual(R.scoresView(store, 'mine', local, 'Alice'), [hs('Alice', 23000), hs('Alice', 300)]);
+  assert.deepEqual(R.scoresView(R.queueScore(store, S(500), ID(1)), 'mine', local, 'Alice'), [hs('Alice', 23000), hs('Alice', 300)],
+    'the pending score is already in the local table');
+});
+
+test('levelRecord: the best time with its holder, the personal best only when it differs', () => {
+  const cache = state({ shared: { times: { spiral: { seconds: 60, name: 'Bruno' } } }, mine: { times: { spiral: 75 } } });
+  const s = withCache(cache);
+  assert.deepEqual(R.levelRecord(s, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 75 });
+  assert.deepEqual(R.levelRecord(s, 'spiral', 55, 'Alice'), { best: { seconds: 55, name: 'Alice' }, personal: null });
+  assert.deepEqual(R.levelRecord(s, 'spiral', 90, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 75 });
+  const tie = withCache(state({ shared: { times: { spiral: { seconds: 60, name: 'Bruno' } } }, mine: { times: { spiral: 60 } } }));
+  assert.deepEqual(R.levelRecord(tie, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: null });
+  assert.deepEqual(R.levelRecord(R.emptyRecordsStore(), 'spiral', 83, 'Alice'), { best: { seconds: 83, name: 'Alice' }, personal: null }, 'standalone');
+  assert.deepEqual(R.levelRecord(R.emptyRecordsStore(), 'spiral', null, 'Alice'), { best: null, personal: null });
+  assert.deepEqual(R.levelRecord(s, 'loop-3', null, 'Alice'), { best: null, personal: null });
+  const queued = R.queueTime(s, 'spiral', 70);
+  assert.deepEqual(R.levelRecord(queued, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 70 }, 'a pending time counts as personal');
+  assert.deepEqual(R.levelRecord(R.queueTime(s, 'spiral', 50), 'spiral', 52, 'Alice'), { best: { seconds: 50, name: 'Alice' }, personal: null });
+  assert.deepEqual(R.levelRecord(s, 'constructor', null, 'Alice'), { best: null, personal: null }, 'never an inherited member');
+});
+
+test('rankOf: 0-based row of the first entry with that name and score, else null', () => {
+  const list = [hs('Bruno', 9000), hs('Alice', 5000), hs('Alice', 5000), hs('Alice', 300)];
+  assert.equal(R.rankOf(list, 'Alice', 5000), 1);
+  assert.equal(R.rankOf(list, 'Alice', 300), 3);
+  assert.equal(R.rankOf(list, 'Bruno', 5000), null);
+  assert.equal(R.rankOf([], 'Alice', 1), null);
+});
+
+test('recordsEnabled: hosted build only (http(s), not a loopback host, pack present) — D-01', () => {
+  assert.equal(R.recordsEnabled({ protocol: 'https:', hostname: 'zuma-x.pages.dev', hasPack: true }), true);
+  assert.equal(R.recordsEnabled({ protocol: 'http:', hostname: 'zuma.example.org', hasPack: true }), true);
+  for (const where of [
+    { protocol: 'file:', hostname: '', hasPack: true },
+    { protocol: 'http:', hostname: 'localhost', hasPack: true },
+    { protocol: 'http:', hostname: '127.0.0.1', hasPack: true },
+    { protocol: 'http:', hostname: '[::1]', hasPack: true },
+    { protocol: 'http:', hostname: '::1', hasPack: true },
+    { protocol: 'https:', hostname: 'zuma-x.pages.dev', hasPack: false },
+    { protocol: 'data:', hostname: 'zuma-x.pages.dev', hasPack: true },
+  ]) {
+    assert.equal(R.recordsEnabled(where), false, JSON.stringify(where));
+  }
+});
+
+// ------------------------------------------------------------ machine d'états : effet record-score (D-07)
+
+const SIZES = [5, 5, 5, 6, 6, 6, 7, 7, 7, 7, 7, 7, 1];
+const run = (stage, level, score = 0, lives = 3) => ({ stage, level, score, lives });
+const ALICE = { name: 'Alice', maxStage: 12 };
+const boot = (o = {}) => P.initialApp({ profile: ALICE, save: null, scores: defaultScores(), sizes: SIZES, startLives: 3, review: null, ...o });
+const onLevel = (r, profile = ALICE) => {
+  const { state: s } = boot({ profile, save: r });
+  return P.reduceApp(P.reduceApp(s, { kind: 'adventure' }).state, { kind: 'continue' }).state;
+};
+const kindsOf = effects => effects.map(e => e.kind);
+
+test('record-score: emitted at a game over right after save-scores, with the inserted entry', () => {
+  const over = P.reduceApp(onLevel(run(3, 2, 15000, 1)), { kind: 'gameover', score: 23000, date: '2026-10-11' });
+  assert.deepEqual(kindsOf(over.effects), ['save-scores', 'record-score', 'save-run']);
+  const entry = { name: 'Alice', score: 23000, stage: 3, level: 2, date: '2026-10-11' };
+  assert.deepEqual(over.effects[1], { kind: 'record-score', entry });
+  assert.deepEqual(over.effects[0].scores[0], entry);
+  const anon = P.reduceApp({ ...onLevel(run(0, 0)), profile: null }, { kind: 'gameover', score: 1500, date: '' });
+  assert.equal(anon.effects.find(e => e.kind === 'record-score').entry.name, 'Joueur');
+});
+
+test('record-score: emitted by the final route of won (after the final STATS), right after save-scores', () => {
+  const fin = P.reduceApp(onLevel(run(12, 0, 200000, 2)), { kind: 'won', score: 230000, lives: 2, date: '2026-10-11' });
+  assert.deepEqual(kindsOf(fin.effects), ['save-scores', 'record-score', 'save-run', 'sound']);
+  assert.deepEqual(fin.effects[1], { kind: 'record-score', entry: { name: 'Alice', score: 230000, stage: 12, level: 0, date: '2026-10-11' } });
+});
+
+test('record-score: no other transition emits it; dropped in review sessions (?level=)', () => {
+  const events = [
+    [onLevel(run(0, 0)), { kind: 'won', score: 100, lives: 3, date: '' }],
+    [onLevel(run(0, 4)), { kind: 'won', score: 100, lives: 3, date: '' }],
+    [onLevel(run(2, 4)), { kind: 'won', score: 100, lives: 3, date: '' }],
+    [onLevel(run(1, 1)), { kind: 'retry', lives: 2 }],
+    [onLevel(run(1, 1)), { kind: 'leave' }],
+  ];
+  for (const [s, ev] of events) {
+    assert.ok(!kindsOf(P.reduceApp(s, ev).effects).includes('record-score'), JSON.stringify(ev));
+  }
+  const over = P.reduceApp(boot({ review: run(1, 1) }).state, { kind: 'gameover', score: 99999, date: '' });
+  assert.deepEqual(over.effects, []);
+  const fin = P.reduceApp(boot({ review: run(12, 0, 1, 3) }).state, { kind: 'won', score: 300000, lives: 3, date: '' });
+  assert.deepEqual(kindsOf(fin.effects), ['sound']);
+  assert.match(fs.readFileSync('src/progress.ts', 'utf8'), /new Set\(\[[^\]]*'record-score'[^\]]*\]\)/, 'record-score in WRITE_EFFECTS');
 });

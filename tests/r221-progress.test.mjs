@@ -267,7 +267,7 @@ const ROMAIN = { name: 'Romain', maxStage: 4 };
 const boot = (o = {}) => P.initialApp({ profile: ROMAIN, save: null, scores: P.defaultScores(), sizes: SIZES, startLives: 3, review: null, ...o });
 const kinds = effects => effects.map(e => e.kind);
 const effect = (effects, kind) => effects.find(e => e.kind === kind);
-const WRITES = ['save-run', 'save-profile', 'save-scores'];
+const WRITES = ['save-run', 'save-profile', 'save-scores', 'record-score']; // R2.0.22: record-score is a write effect too (plan 06.1-01)
 /** Applies events in order; returns the last { state, effects } and every effect seen. */
 const play = (state, events) => {
   let r = { state, effects: [] };
