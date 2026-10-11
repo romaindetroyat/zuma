@@ -490,6 +490,23 @@ test('lives: lives − 1 at each loss, game over when the count reaches 0 (three
   assert.equal(lose(0).state, 'gameover');
 });
 
+test('one `lost` event per loss: emitted at the loss, not again at the end of the drain (« Perdu… » once)', () => {
+  const lose = lives => {
+    const g = fixture(balls([[0, 600], [1, 632]]), { speed: 600, lives });
+    run(g, 200);
+    return g;
+  };
+  const kept = lose(3);
+  assert.equal(kept.state, 'lost');
+  assert.equal(ofKind(kept, 'lost').length, 1, 'a single lost event for one loss');
+  assert.equal(ofKind(kept, 'lost')[0].lives, 2, 'the event carries the remaining count');
+  assert.equal(ofKind(kept, 'gameover').length, 0);
+  const last = lose(1);
+  assert.equal(last.state, 'gameover');
+  assert.equal(ofKind(last, 'lost').length, 1, 'the last frog: one lost at the loss');
+  assert.equal(ofKind(last, 'gameover').length, 1, 'then one gameover at the end of the drain');
+});
+
 // ------------------------------------------------------------ baseline
 
 test('baseline 2.0.19: ENGINE_VERSION and package.json agree', () => {
