@@ -97,7 +97,7 @@ Avec les graphismes du jeu, sans panneau DOM (D-09). Sans données de records (a
 
 ## Build
 
-- **Suite** : `npm test` → **573 tests** verts + `publication guard: 593 tracked files, none proprietary`. `npm run check` propre, `node tools/guard.mjs` vert.
+- **Suite** : `npm test` → **573 tests** verts + `publication guard: 594 tracked files, none proprietary`. `npm run check` propre, `node tools/guard.mjs` vert.
 - **Build public** (`node tools/build.mjs`) : code seul, identique à ce que construit la CI ; `records.js` rejoint `dist/js/` et le shell du service worker ; sans pack, les records restent inactifs (`recordsEnabled` exige le pack).
 - **Standalone** (`node tools/build.mjs --standalone`) : `standalone/zuma-standalone.html`, **9 440 691 octets** (9,0 Mio ; 9 407 484 en R2.0.21). Seize modules concaténés (`records` après `progress`), insérés par des fonctions de remplacement, sans service worker ; `R2.0.22` y apparaît 10 fois. Verrous de fichier unique (`r215-presentation`, 15 tests) verts.
   - **Démarrage sur `file://`** (Chromium, 1 000 × 750 CSS, DPR 2) : écran principal, aucun moteur ; Aventure → écran d'aventure (kit 2 ×), plaque RECORDS sans libellé de portée (tableau local de démonstration) ; Jouer → 1-1 en jeu, 3 vies ; aucune clé `zuma.records.v1`, **aucune requête réseau**, **console propre**.
