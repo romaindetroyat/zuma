@@ -339,3 +339,11 @@ Constats déjà mesurés sur `ZumaSetup-fr-1.0.exe` (7 521 288 octets), à conse
 - Comportement PWA iOS derrière Access : **BASSE**, à valider en UAT avant de planifier la synchronisation
 - Accès réseau de la session : HAUTE (constaté : bloqué)
 - **Valide jusqu'au** 2026-11-10
+
+## Addendum (2026-10-11, vérifications en lecture seule par l'orchestrateur)
+
+- **Réseau** : `api.cloudflare.com` répond depuis la session (via le proxy) ; le jeton de l'utilisateur est injecté par le proxy en secret réseau (aucune variable d'environnement visible, aucune valeur lue). Le refus 403 constaté pendant le spike ne se reproduit plus.
+- **Jeton** : vérifié actif (`/user/tokens/verify`), validité jusqu'au 2027-05-31. Lecture autorisée : Pages, D1, Access (apps, organisation, fournisseurs d'identité), zones. **Pas** de droit DNS sur la zone `rdtoulon.com` (« Authentication error ») : un domaine personnalisé `zuma.rdtoulon.com` demanderait la permission Zone › DNS › Edit ou un enregistrement ajouté par l'utilisateur.
+- **Compte** : un seul compte (identifiant lu par l'API, non secret, gardé hors dépôt). Pages : un projet existant (`concierge-prive-app`), aucun projet `zuma`. D1 : aucune base.
+- **Zero Trust déjà actif** : organisation `falling-sun-db70.cloudflareaccess.com` ; trois applications Access existantes (`Prisme`, `ssh`, `label` sur `*.rdtoulon.com`), chacune avec une politique « Romain uniquement » de type `email` (romaindetroyat@gmail.com), `allowed_idps` vide ; un seul fournisseur d'identité, de type `cloudflare` (pas encore de code à usage unique par e-mail).
+- **Conséquence** : ajouter le fournisseur « One-time PIN » ne change pas l'accès aux trois applications existantes (leurs politiques restent limitées à l'adresse de l'utilisateur) ; il permet de se connecter au jeu sur iPhone / iPad sans compte Cloudflare. Hébergement prévu sur `zuma.pages.dev` (ou le sous-domaine attribué), protégé par une application Access dédiée, politique e-mail = adresse de l'utilisateur, durée de session 730 h comme `Prisme`.
