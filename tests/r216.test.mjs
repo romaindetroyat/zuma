@@ -153,39 +153,41 @@ const zumaFixture = (length, extra = {}, prepare = () => {}) => {
 };
 
 test('ZUMA: pushback and ×0.25 slowdown only when the head covers more than half of the track', () => {
+  // R2.0.19 (D-35): per-chain counters (curve+0x5c / +0x58); `backwardsTicks` stays the RECUL power-up's.
   const { g, zuma } = zumaFixture(640, { zumaBackTicks: 30, zumaSlowTicks: 60 });
-  assert.equal(g.backwardsTicks, 30);
-  assert.equal(g.zumaSlowLeft, 60);
+  assert.equal(g.chains[0].zumaBackLeft, 30);
+  assert.equal(g.chains[0].zumaSlowLeft, 60);
+  assert.equal(g.backwardsTicks, 0);
   assert.equal(g.slowTicks, 0, 'the SLOW power-up is not touched');
   assert.equal(zuma.pushback, true);
   near(zuma.coverage, headS(g) / 640, 1e-9, 'coverage = most advanced ball / track length');
   assert.ok(zuma.coverage > 0.5 && zuma.coverage < 0.65, `coverage ${zuma.coverage}`);
   const far = zumaFixture(2000, { zumaBackTicks: 30, zumaSlowTicks: 60 });
-  assert.equal(far.g.backwardsTicks, 0);
-  assert.equal(far.g.zumaSlowLeft, 0);
+  assert.equal(far.g.chains[0].zumaBackLeft, 0);
+  assert.equal(far.g.chains[0].zumaSlowLeft, 0);
   assert.equal(far.zuma.pushback, false);
   assert.ok(far.zuma.coverage < 0.5 && far.zuma.coverage > 0.15, `coverage ${far.zuma.coverage}`);
   assert.ok(far.g.zumaMode, 'ZUMA mode itself does not depend on the coverage');
-  const longer = zumaFixture(640, { zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.backwardsTicks = 500; e.zumaSlowLeft = 1000; });
-  assert.equal(longer.g.backwardsTicks, 500 - longer.zuma.tick, 'a longer rollback already running is kept (it counted down meanwhile)');
-  assert.equal(longer.g.zumaSlowLeft, 1000 - longer.zuma.tick);
-  assert.ok(longer.g.backwardsTicks > 30 && longer.g.zumaSlowLeft > 60);
+  const longer = zumaFixture(640, { zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.chains[0].zumaBackLeft = 500; e.chains[0].zumaSlowLeft = 1000; });
+  assert.equal(longer.g.chains[0].zumaBackLeft, 500 - longer.zuma.tick, 'a longer rollback already running is kept (it counted down meanwhile)');
+  assert.equal(longer.g.chains[0].zumaSlowLeft, 1000 - longer.zuma.tick);
+  assert.ok(longer.g.chains[0].zumaBackLeft > 30 && longer.g.chains[0].zumaSlowLeft > 60);
   const defaults = zumaFixture(640);
-  assert.equal(defaults.g.backwardsTicks, CANDIDATE.zumaBackTicks);
-  assert.equal(defaults.g.zumaSlowLeft, CANDIDATE.zumaSlowTicks);
+  assert.equal(defaults.g.chains[0].zumaBackLeft, CANDIDATE.zumaBackTicks);
+  assert.equal(defaults.g.chains[0].zumaSlowLeft, CANDIDATE.zumaSlowTicks);
 });
 
 test('ZUMA slowdown: the target is speed × 0.25 while zumaSlowLeft runs, cumulated with the SLOW power-up', () => {
   const g = fixture([{ color: 0, s: 300 }, { color: 1, s: 332 }], { speed: 60 }, 3, 2000);
-  g.zumaSlowLeft = 1000;
+  g.chains[0].zumaSlowLeft = 1000; // R2.0.19 (D-35): per chain
   run(g, 60);
   assert.equal(g.chains[0].speed, 15);
-  assert.equal(g.zumaSlowLeft, 940, 'counted down every tick');
+  assert.equal(g.chains[0].zumaSlowLeft, 940, 'counted down every tick');
   g.slowTicks = 1000;
   run(g, 10);
   assert.equal(g.chains[0].speed, 3.75, '60 × 0.25 ÷ 4');
   g.slowTicks = 0;
-  g.zumaSlowLeft = 0;
+  g.chains[0].zumaSlowLeft = 0;
   run(g, 120);
   assert.equal(g.chains[0].speed, 60, 'back to the nominal speed at +50 px/s²');
 });

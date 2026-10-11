@@ -366,9 +366,10 @@ test('tally, one chain: unchanged cadence through cleanup.markers[0]; a board em
 
 // ------------------------------------------------------------ baseline
 
-test('baseline 2.0.18: ENGINE_VERSION and package.json agree', () => {
-  assert.equal(ENGINE_VERSION, '2.0.18');
+test('baseline 2.0.18 (superseded): ENGINE_VERSION and package.json agree', () => {
+  // R2.0.19: the baseline moved on (r219 locks '2.0.19'); this test keeps the manifest / engine agreement and the ordering.
+  assert.ok(ENGINE_VERSION > '2.0.18');
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  assert.equal(pkg.version, '2.0.18');
-  assert.match(pkg.description, /^Zuma R2\.0\.18 — /);
+  assert.equal(pkg.version, ENGINE_VERSION);
+  assert.match(pkg.description, new RegExp(`^Zuma R${ENGINE_VERSION.replace(/\./g, '\\.')} — `));
 });

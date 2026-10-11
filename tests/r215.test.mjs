@@ -110,16 +110,32 @@ test('coins: setTreasure sanitises the pack data (curve clamped, dist defaulted,
   ]);
 });
 
-test('coins: a projectile within 18 px grabs the coin (+500, stats.coins), keeps the streak and flies on', () => {
+test('coins: a projectile within coinRadius grabs the coin (+500, stats.coins) and keeps the streak; consumed by default, flies on with coinConsumesShot false', () => {
   // R2.0.16: coinPoints 500 = max(500, 100 × ⌊score / 600⌋) at level 1-1 (0x4233fb), no longer the D-09 hypothesis of 100.
-  const g = fixture([{ color: 0, s: 100 }]);
-  g.setTreasure([{ x: 320, y: 200, curve: 0, dist: 0 }]);
-  g.spawnCoinForTest(0);
-  assert.ok(g.coin && g.coin.x === 320 && g.coin.y === 200);
-  assert.equal(ofKind(g, 'coin-appear').length, 1);
-  g.streak = 3;
+  // R2.0.19 (D-31): the original destroys the grabbing projectile (0x4236a9–0x4236eb) — the default now; the R2.0.18
+  // fly-on behaviour stays behind `coinConsumesShot: false` and keeps the former assertions.
+  const make = extra => {
+    const g = fixture([{ color: 0, s: 100 }], extra);
+    g.setTreasure([{ x: 320, y: 200, curve: 0, dist: 0 }]);
+    g.spawnCoinForTest(0);
+    assert.ok(g.coin && g.coin.x === 320 && g.coin.y === 200);
+    assert.equal(ofKind(g, 'coin-appear').length, 1);
+    g.streak = 3;
+    g.command({ kind: 'shoot', x: 320, y: 0 });
+    return g;
+  };
+  const eaten = make({});
+  const score0 = eaten.score;
+  const grab0 = stepUntil(eaten, 'coin', 40);
+  assert.equal(grab0.points, 500);
+  assert.equal(eaten.score, score0 + 500);
+  assert.equal(eaten.projectiles.length, 0, 'the projectile is consumed');
+  assert.equal(eaten.streak, 3, 'the streak is preserved');
+  run(eaten, 60);
+  assert.equal(ofKind(eaten, 'miss').length, 0, 'no miss: the projectile never leaves the board');
+
+  const g = make({ coinConsumesShot: false });
   const score = g.score, levelScore = g.levelScore;
-  g.command({ kind: 'shoot', x: 320, y: 0 });
   const grab = stepUntil(g, 'coin', 40);
   const p = g.projectiles[0];
   assert.ok(p, 'projectile continues after the grab');
@@ -311,15 +327,18 @@ test('zumaBackTicks / zumaSlowTicks arm the rollback and the ZUMA slow phase whe
     stepUntil(g, 'zuma', 60);
     return g;
   };
+  // R2.0.19 (D-35): the pushback and the slowdown are armed per chain (curve+0x5c / +0x58), no longer through the
+  // RECUL power-up counter `backwardsTicks`.
   const g = make({ zumaBackTicks: 30, zumaSlowTicks: 60 });
-  assert.equal(g.backwardsTicks, 30);
-  assert.equal(g.zumaSlowLeft, 60);
+  assert.equal(g.chains[0].zumaBackLeft, 30);
+  assert.equal(g.chains[0].zumaSlowLeft, 60);
+  assert.equal(g.backwardsTicks, 0);
   assert.equal(g.slowTicks, 0, 'the SLOW power-up is not armed by a ZUMA');
-  const longer = make({ zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.zumaSlowLeft = 1000; e.backwardsTicks = 500; });
-  assert.ok(longer.zumaSlowLeft > 60 && longer.backwardsTicks > 30, 'a longer running phase is kept');
+  const longer = make({ zumaBackTicks: 30, zumaSlowTicks: 60 }, e => { e.chains[0].zumaSlowLeft = 1000; e.chains[0].zumaBackLeft = 500; });
+  assert.ok(longer.chains[0].zumaSlowLeft > 60 && longer.chains[0].zumaBackLeft > 30, 'a longer running phase is kept');
   const plain = make({});
-  assert.equal(plain.backwardsTicks, CANDIDATE.zumaBackTicks);
-  assert.equal(plain.zumaSlowLeft, CANDIDATE.zumaSlowTicks);
+  assert.equal(plain.chains[0].zumaBackLeft, CANDIDATE.zumaBackTicks);
+  assert.equal(plain.chains[0].zumaSlowLeft, CANDIDATE.zumaSlowTicks);
 });
 
 // ------------------------------------------------------------- cues et trames (feedback.ts)

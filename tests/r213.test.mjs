@@ -162,6 +162,11 @@ test('reaching the skull drains the board, costs a life and ends in lost (then g
   const last = fixture([{ color: 0, s: 630 }], { speed: 600, lives: 0, endSlowFactor: 1 });
   run(last, 200);
   assert.equal(last.state, 'gameover');
+  // R2.0.19 (D-33): lives − 1 then game over at ≤ 0 (0x428383–0x4283a5): the last frog in play ends the game.
+  const one = fixture([{ color: 0, s: 630 }], { speed: 600, lives: 1, endSlowFactor: 1 });
+  run(one, 200);
+  assert.equal(one.state, 'gameover');
+  assert.equal(one.lives, 0);
 });
 
 test('ZUMA mode stops the feed and clearing the board wins the level with its bonus', () => {

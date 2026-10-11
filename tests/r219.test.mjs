@@ -286,3 +286,215 @@ test('the pusher catching a still segment emits merge but arms no recoil', () =>
   stepUntil(g, 'merge', 200);
   assert.equal(g.chains[0].recoils.length, 0);
 });
+
+// ------------------------------------------------------------ recul ZUMA par chaîne (D-35, 0x40a980 / 0x40ab60)
+
+/** Enters ZUMA mode through a coin grab (coinPoints ≥ target): coin 70 px above the frog, shot straight up. */
+const zumaByCoin = g => {
+  g.setTreasure([{ x: g.frog.x, y: 330, curve: 0, dist: 0 }]);
+  g.spawnCoinForTest(0);
+  g.command({ kind: 'shoot', x: g.frog.x, y: 0 });
+  return stepUntil(g, 'zuma', 20);
+};
+const headOf = (g, chain = 0) => Math.max(...g.alive(g.chains[chain]).map(b => b.s));
+/** Alternating colours, contiguous balls from `from` to `to` (no run of three). */
+const packed = (from, to) => { const out = []; for (let s = from, i = 0; s <= to + 1e-9; s += 32, i++) out.push({ color: 1 + (i % 2), s }); return out; };
+
+test('CANDIDATE: zumaBackSpeed 100 px/s, zumaBackMinHead 50 px, coinRadius 36, coinConsumesShot; ZUMA counters per chain', () => {
+  assert.equal(CANDIDATE.zumaBackSpeed, 100, '1 px/maj × 100 (0x40abde)');
+  assert.equal(CANDIDATE.zumaBackMinHead, 50, '0x54c690');
+  assert.equal(CANDIDATE.zumaBackTicks, 180, '300 maj × 0.6');
+  assert.equal(CANDIDATE.zumaSlowTicks, 660, '1 100 maj × 0.6');
+  assert.equal(CANDIDATE.coinRadius, 36, '16 + 20 (0x4233b6–0x4233e5)');
+  assert.equal(CANDIDATE.coinConsumesShot, true, 'the original destroys the projectile (0x4236a9–0x4236eb)');
+  const g = fixture(balls([[0, 100]]));
+  assert.equal('zumaSlowLeft' in g, false, 'the slowdown is per chain');
+  assert.equal(g.chains[0].zumaBackLeft, 0);
+  assert.equal(g.chains[0].zumaSlowLeft, 0);
+});
+
+test('ZUMA: only the chains whose head covers more than half of their track roll back and slow down', () => {
+  const g = new ZumaEngine([straight(640, 240), straight(640, 100)], { x: 400, y: 400 }, { ...quiet, target: 30, speed: 60 }, 7);
+  g.feeding = false;
+  g.loadFixture({ balls: balls([[1, 160], [2, 192]]), stream: false }, g.chains[1]);
+  g.loadFixture({ balls: balls([[0, 352], [0, 384], [2, 416], [1, 448]]), current: 0, next: 0, stream: false });
+  g.command({ kind: 'shoot', x: 400, y: 240 });
+  const zuma = stepUntil(g, 'zuma', 60);
+  assert.equal(zuma.pushback, true);
+  assert.deepEqual(zuma.chains, [0]);
+  const cover = c => Math.max(...g.chains[c].balls.map(b => b.s)) / 640;
+  assert.ok(cover(0) > 0.5 && cover(1) < 0.5, `coverages ${cover(0)} / ${cover(1)}`);
+  near(zuma.coverage, Math.max(cover(0), cover(1)), 1e-9, 'coverage = the maximum');
+  assert.equal(g.chains[0].zumaBackLeft, 180);
+  assert.equal(g.chains[0].zumaSlowLeft, 660);
+  assert.equal(g.chains[1].zumaBackLeft, 0);
+  assert.equal(g.chains[1].zumaSlowLeft, 0);
+  assert.equal(g.backwardsTicks, 0, 'the RECUL power-up counter is not used');
+  run(g, 240);
+  assert.equal(g.chains[0].speed, 15, 'chain 0: target × 0.25 after its pushback');
+  assert.equal(g.chains[1].speed, 60, 'chain 1: nominal target');
+});
+
+test('ZUMA pushback: the head rolls back 100 px/s, constant, the pusher held at 0', () => {
+  const g = fixture(packed(194, 450), { target: 100, speed: 20 });
+  zumaByCoin(g);
+  const h0 = headOf(g);
+  assert.ok(h0 > 449 && h0 < 452, `head ${h0}`);
+  for (let i = 0; i < 180; i++) {
+    g.step();
+    assert.equal(g.chains[0].speed, 0, `tick ${i + 1}: pusher stopped`);
+    if (i === 59) near(h0 - headOf(g), 100, 1, '60 ticks');
+  }
+  near(h0 - headOf(g), 300, 2, '180 ticks');
+});
+
+test('ZUMA pushback closes a gap from the front: the rear segment waits for the head, then both roll back', () => {
+  const g = fixture(balls([[1, 196], [2, 228], [3, 324], [0, 356], [1, 388]]), { target: 100 });
+  const rear = g.balls[0];
+  const zuma = zumaByCoin(g);
+  let merge = null;
+  for (let i = 0; i < 60 && !merge; i++) {
+    const before = g.events.length;
+    g.step();
+    merge = g.events.slice(before).find(e => e.kind === 'merge') ?? null;
+    if (!merge) assert.equal(rear.s, 196, 'the rear segment does not move before the contact');
+  }
+  assert.ok(merge, 'the head segment caught the rear segment');
+  assert.ok(Math.abs(merge.tick - zuma.tick - 64 / (100 / 60)) <= 1, `contact ${merge.tick - zuma.tick} ticks after the passage`);
+  const at = rear.s;
+  run(g, 30);
+  near(at - rear.s, 50, 1, 'both roll back together');
+});
+
+test('ZUMA pushback lasts 180 ticks at most, then the pusher restarts from 0 at target × 0.25 while zumaSlowLeft runs', () => {
+  const g = fixture(balls([[1, 1436], [2, 1468], [1, 1500]]), { target: 100, speed: 60 }, 0, 2000);
+  zumaByCoin(g);
+  const h0 = headOf(g);
+  run(g, 180);
+  near(h0 - headOf(g), 300, 2, '300 px in 180 ticks');
+  assert.equal(g.chains[0].zumaBackLeft, 0);
+  const h180 = headOf(g);
+  const speeds = [];
+  for (let i = 0; i < 80; i++) { g.step(); speeds.push(g.chains[0].speed); assert.ok(headOf(g) >= h180 - 1e-9, 'no more pushback'); }
+  const restart = speeds.findIndex(v => v > 0);
+  assert.ok(restart >= 11, `pusher held ${restart} ticks after the pushback`);
+  assert.ok(speeds[restart] <= CANDIDATE.chainAccel / 60 + 1e-9, 'restarting from 0');
+  assert.equal(speeds[speeds.length - 1], 15, 'target × 0.25');
+  assert.ok(g.chains[0].zumaSlowLeft > 0);
+});
+
+test('ZUMA pushback stops early once the head is below 50 px: pushback, slowdown and pusher stop reset', () => {
+  const g = new ZumaEngine(new Track([[0, 240], [200, 240]]), frog, { ...quiet, target: 100 }, 7);
+  g.feeding = false;
+  g.loadFixture({ balls: balls([[2, 57], [1, 89], [0, 121]]), current: 0, next: 0, stream: false });
+  zumaByCoin(g);
+  const chain = g.chains[0];
+  assert.equal(chain.zumaBackLeft, 180, 'head at 60 % of a 200 px track');
+  let stopped = null;
+  for (let i = 0; i < 100 && stopped === null; i++) {
+    g.step();
+    if (headOf(g) < 50) stopped = i;
+  }
+  assert.ok(stopped !== null, 'the head went below 50 px');
+  assert.deepEqual([chain.zumaBackLeft, chain.zumaSlowLeft, chain.stopTicks], [0, 0, 0]);
+  const head = headOf(g);
+  assert.ok(head >= 48 && head < 50, `head ${head}`);
+  run(g, 30);
+  assert.equal(headOf(g), head, 'no further pushback');
+});
+
+// ------------------------------------------------------------ sortie par l'entrée en mode ZUMA (0x423b60 → 0x423970)
+
+test('ZUMA mode: balls passing below s = 1 are deleted one by one (`ball-exit`, no score, no destruction); the queue goes at the passage', () => {
+  const g = fixture([{ color: 3, s: -30 }, ...packed(10, 394)], { target: 100 });
+  const queued = g.balls[0];
+  const zuma = zumaByCoin(g);
+  const exits = ofKind(g, 'ball-exit');
+  assert.deepEqual(exits.map(e => [e.tick, e.chain, e.id, e.color]), [[zuma.tick, 0, queued.id, 3]], 'the queued ball goes at the passage');
+  const score = g.score;
+  const destroyed = g.stats.destroyed;
+  run(g, 200);
+  const all = ofKind(g, 'ball-exit');
+  assert.equal(all.length, 11, '10 balls pushed below 1 px plus the queued one');
+  const ticks = all.map(e => e.tick);
+  assert.equal(new Set(ticks).size, ticks.length, 'one at a time');
+  for (const e of all) assert.equal(byId(g, e.id), undefined, `ball ${e.id} deleted`);
+  assert.ok(g.balls.every(b => b.s >= 1));
+  assert.equal(g.balls.length, 3);
+  assert.equal(g.score, score, 'no points');
+  assert.equal(g.stats.destroyed, destroyed, 'no destruction statistic');
+  assert.equal(ofKind(g, 'destroy').length, 0);
+});
+
+test('ZUMA mode: when every ball leaves through the entrance the board is empty and the clearing starts; outside ZUMA they stay', () => {
+  const g = fixture(balls([[1, 40], [2, 72]]));
+  g.zumaMode = true;
+  g.backwardsTicks = 240;
+  const clearing = stepUntil(g, 'clearing', 120);
+  assert.equal(ofKind(g, 'ball-exit').length, 2);
+  assert.equal(g.balls.length, 0);
+  assert.equal(g.state, 'clearing');
+  assert.ok(clearing.tick >= ofKind(g, 'ball-exit')[1].tick);
+  const plain = fixture(balls([[1, 40], [2, 72]]));
+  plain.backwardsTicks = 240;
+  run(plain, 60);
+  assert.equal(plain.balls.length, 2, 'outside ZUMA the balls rolled below 0 are kept');
+  assert.ok(plain.balls.every(b => b.s < 0));
+  assert.equal(ofKind(plain, 'ball-exit').length, 0);
+});
+
+// ------------------------------------------------------------ pièce : 36 px, projectile consommé (D-31, 0x423330)
+
+test('coin: grabbed within 36 px and the projectile is consumed (no insert, no miss, streak kept); coinConsumesShot false flies on', () => {
+  const make = extra => {
+    const g = fixture(balls([[0, 100]]), extra, 0, 640, { x: 350, y: 400 });
+    g.setTreasure([{ x: 320, y: 200, curve: 0, dist: 0 }]);
+    g.spawnCoinForTest(0);
+    g.streak = 3;
+    g.command({ kind: 'shoot', x: 350, y: 0 });
+    g.step();
+    const id = g.projectiles[0].id;
+    return { g, id };
+  };
+  const { g, id } = make({});
+  const coin = stepUntil(g, 'coin', 40);
+  assert.equal(coin.shotId, id);
+  assert.equal(g.projectiles.length, 0, 'consumed at the grab tick');
+  assert.equal(g.stats.coins, 1);
+  assert.equal(g.streak, 3, 'the streak is kept');
+  run(g, 100);
+  assert.equal(ofKind(g, 'insert').length, 0);
+  assert.equal(ofKind(g, 'miss').length, 0);
+  assert.equal(g.stats.misses, 0);
+  const narrow = make({ coinRadius: 18 });
+  run(narrow.g, 60);
+  assert.equal(ofKind(narrow.g, 'coin').length, 0, 'a 30 px pass is not a grab at 18 px');
+  const fly = make({ coinConsumesShot: false });
+  const flyCoin = stepUntil(fly.g, 'coin', 40);
+  assert.equal(flyCoin.shotId, fly.id);
+  assert.equal(fly.g.projectiles.length, 1, 'R2.0.18 behaviour: the projectile flies on');
+  stepUntil(fly.g, 'miss', 60);
+});
+
+// ------------------------------------------------------------ trois grenouilles par partie (0x428383–0x4283a5)
+
+test('lives: lives − 1 at each loss, game over when the count reaches 0 (three frogs with lives 3)', () => {
+  const lose = lives => {
+    const g = fixture(balls([[0, 630]]), { speed: 600, lives });
+    run(g, 200);
+    return g;
+  };
+  const outcomes = [3, 2, 1].map(l => { const g = lose(l); return [g.state, g.lives]; });
+  assert.deepEqual(outcomes, [['lost', 2], ['lost', 1], ['gameover', 0]]);
+  assert.equal(lose(1).state, 'gameover');
+  assert.equal(lose(0).state, 'gameover');
+});
+
+// ------------------------------------------------------------ baseline
+
+test('baseline 2.0.19: ENGINE_VERSION and package.json agree', () => {
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  assert.equal(ENGINE_VERSION, '2.0.19');
+  assert.equal(pkg.version, '2.0.19');
+  assert.match(pkg.description, /R2\.0\.19/);
+});
