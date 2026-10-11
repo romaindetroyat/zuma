@@ -41,8 +41,8 @@ export function assetKey(buf, ext) {
   return blake3Hex(Buffer.from(buf).toString('base64') + ext).slice(0, 32);
 }
 
-/** Root-level names the Pages CLI never uploads as assets. */
-const ROOT_EXCLUDED = new Set(['_worker.js', '_redirects', '_headers', '_routes.json', 'functions', '.wrangler']);
+/** Root-level names never uploaded as assets (the Pages CLI list, plus `_d1/`, the dry-run output of plan 05-17). */
+const ROOT_EXCLUDED = new Set(['_worker.js', '_redirects', '_headers', '_routes.json', 'functions', '.wrangler', '_d1']);
 /** Names excluded at any depth. */
 const ANY_EXCLUDED = new Set(['.DS_Store', 'node_modules', '.git']);
 
