@@ -381,3 +381,192 @@ test('record-score: no other transition emits it; dropped in review sessions (?l
   assert.deepEqual(kindsOf(fin.effects), ['sound']);
   assert.match(fs.readFileSync('src/progress.ts', 'utf8'), /new Set\(\[[^\]]*'record-score'[^\]]*\]\)/, 'record-score in WRITE_EFFECTS');
 });
+
+// ------------------------------------------------------------ client d'échange api/records (D-06, D-07), fetch simulé
+
+const VALID = state({ shared: { scores: [rs('Bruno', 9000)], times: { spiral: { seconds: 60, name: 'Bruno' } } }, mine: { scores: [], times: { spiral: 75 } } });
+const reply = (status, data = VALID, o = {}) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  type: o.type ?? 'basic',
+  headers: { get: name => (name.toLowerCase() === 'content-type' ? (o.contentType ?? 'application/json; charset=utf-8') : null) },
+  json: async () => { if (o.badJson) throw new SyntaxError('Unexpected token <'); return data; },
+});
+/** Fake transport: answers in order (a function answer is called with the init), every call logged. */
+function fakeIo(answers, timeoutMs) {
+  const calls = [];
+  const queue = [...answers];
+  const io = {
+    calls,
+    fetch(url, init) {
+      calls.push({ url, init });
+      const next = queue.length > 0 ? queue.shift() : reply(200);
+      if (typeof next === 'function') return next(init);
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    },
+  };
+  if (timeoutMs !== undefined) io.timeoutMs = timeoutMs;
+  return io;
+}
+
+test('exchangeRecords: GET without a body, POST JSON with one; same-origin relative path, no-store, manual redirect, never a name', async () => {
+  const io = fakeIo([reply(200), reply(200)]);
+  const got = await R.exchangeRecords(io, null);
+  assert.deepEqual(got, { kind: 'ok', state: R.parseRecordsState(VALID) });
+  assert.equal(io.calls[0].url, 'api/records');
+  const get = io.calls[0].init;
+  assert.equal(get.method, 'GET');
+  assert.equal(get.credentials, 'same-origin');
+  assert.equal(get.cache, 'no-store');
+  assert.equal(get.redirect, 'manual');
+  assert.deepEqual(get.headers, { Accept: 'application/json' });
+  assert.equal(get.body, undefined);
+  let s = R.queueScore(R.emptyRecordsStore(), S(5000, { day: '2026-10-11' }), ID(1));
+  s = R.queueTime(s, 'spiral', 80);
+  const body = R.postBody(s);
+  await R.exchangeRecords(io, { ...body, name: 'Alice', scores: body.scores.map(e => ({ ...e, name: 'Alice' })) });
+  const post = io.calls[1].init;
+  assert.equal(io.calls[1].url, 'api/records');
+  assert.equal(post.method, 'POST');
+  assert.deepEqual(post.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
+  assert.equal(post.body, JSON.stringify(body));
+  assert.doesNotMatch(post.body, /name|Alice/, 'D-04: the client never sends a name');
+  assert.ok(post.signal === undefined || typeof post.signal.aborted === 'boolean');
+});
+
+test('exchangeRecords: 400 / 413 / 415 → drop; every other failure → retry; never rejects', async () => {
+  for (const status of [400, 413, 415]) assert.deepEqual(await R.exchangeRecords(fakeIo([reply(status, {})]), null), { kind: 'drop' }, String(status));
+  for (const status of [401, 403, 404, 405, 429, 500, 502, 503]) {
+    assert.deepEqual(await R.exchangeRecords(fakeIo([reply(status, {})]), null), { kind: 'retry' }, String(status));
+  }
+  const retries = [
+    reply(0, null, { type: 'opaqueredirect' }),
+    reply(200, VALID, { type: 'opaqueredirect' }),
+    reply(302, null),
+    reply(200, VALID, { contentType: 'text/html; charset=utf-8' }),
+    reply(200, null, { badJson: true }),
+    reply(200, { shared: 1 }),
+    reply(200, [1, 2]),
+    new TypeError('Failed to fetch'),
+    () => { throw new Error('synchronous'); },
+    () => Promise.resolve(null),
+  ];
+  for (const answer of retries) assert.deepEqual(await R.exchangeRecords(fakeIo([answer]), null), { kind: 'retry' });
+});
+
+test('exchangeRecords: no answer within timeoutMs → retry, the request signal aborted', async () => {
+  const io = fakeIo([() => new Promise(() => {})], 20);
+  const t0 = Date.now();
+  assert.deepEqual(await R.exchangeRecords(io, null), { kind: 'retry' });
+  assert.ok(Date.now() - t0 < 2000, 'gave up quickly');
+  assert.equal(io.calls[0].init.signal.aborted, true);
+  // A slow body read is bounded too.
+  const slow = fakeIo([{ ...reply(200), json: () => new Promise(() => {}) }], 20);
+  assert.deepEqual(await R.exchangeRecords(slow, null), { kind: 'retry' });
+});
+
+// ------------------------------------------------------------ synchronisation (D-07, D-08)
+
+/** In-memory access to zuma.records.v1; `onSet` sees every persisted store. */
+function memory(initial) {
+  let current = initial;
+  const sets = [];
+  return { sets, get: () => current, set: s => { current = s; sets.push(s); }, poke: f => { current = f(current); } };
+}
+const NO_MIGRATION = () => ({ scores: [], times: {} });
+let idSeq = 100;
+const makeId = () => ID(idSeq++);
+
+test('syncRecords: nothing pending → one GET, the server copy persisted', async () => {
+  const mem = memory({ ...R.emptyRecordsStore(), migrated: true });
+  const io = fakeIo([reply(200)]);
+  assert.equal(await R.syncRecords(mem, io, NO_MIGRATION, makeId), true);
+  assert.equal(io.calls.length, 1);
+  assert.equal(io.calls[0].init.method, 'GET');
+  assert.equal(mem.sets.length, 1);
+  assert.deepEqual(mem.get().cache, R.parseRecordsState(VALID));
+});
+
+test('syncRecords: pending items POSTed, the answer applied to the CURRENT store (a score queued meanwhile stays pending)', async () => {
+  let s = { ...R.emptyRecordsStore(), migrated: true };
+  s = R.queueScore(s, S(5000), ID(1));
+  s = R.queueTime(s, 'spiral', 80);
+  const mem = memory(s);
+  const io = fakeIo([
+    init => { mem.poke(cur => R.queueScore(cur, S(700), ID(2))); return Promise.resolve(reply(200)); },
+    reply(200),
+  ]);
+  assert.equal(await R.syncRecords(mem, io, NO_MIGRATION, makeId), true);
+  assert.equal(io.calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(io.calls[0].init.body), { scores: [{ id: ID(1), ...S(5000) }], times: [{ level: 'spiral', seconds: 80 }] });
+  assert.deepEqual(JSON.parse(io.calls[1].init.body), { scores: [{ id: ID(2), ...S(700) }], times: [] }, 'the queued-meanwhile score sent next');
+  assert.equal(mem.sets.length, 2, 'set after each successful exchange');
+  assert.deepEqual(mem.sets[0].pending.scores.map(e => e.id), [ID(2)]);
+  assert.deepEqual(mem.get().pending, { scores: [], times: {} });
+  assert.deepEqual(mem.get().cache, R.parseRecordsState(VALID));
+});
+
+test('syncRecords: drop removes the refused send with the cache unchanged; retry leaves the store untouched and resolves false', async () => {
+  let s = { ...R.emptyRecordsStore(), migrated: true, cache: R.parseRecordsState(VALID) };
+  s = R.queueScore(s, S(5000), ID(1));
+  const dropped = memory(s);
+  assert.equal(await R.syncRecords(dropped, fakeIo([reply(415, {}), reply(200, state())]), NO_MIGRATION, makeId), true);
+  assert.deepEqual(dropped.sets[0].pending.scores, []);
+  assert.deepEqual(dropped.sets[0].cache, R.parseRecordsState(VALID), 'cache unchanged by a drop');
+  assert.equal(dropped.sets.length, 2, 'then the GET refreshes the copy');
+  const offline = memory(s);
+  assert.equal(await R.syncRecords(offline, fakeIo([new TypeError('offline')]), NO_MIGRATION, makeId), false);
+  assert.equal(offline.sets.length, 0);
+  assert.equal(offline.get(), s);
+  const onlyDrop = memory(s);
+  assert.equal(await R.syncRecords(onlyDrop, fakeIo([reply(400, {}), new TypeError('offline')]), NO_MIGRATION, makeId), false);
+  assert.equal(onlyDrop.sets.length, 1);
+});
+
+test('syncRecords: D-08 import once, after the first success, persisted with migrated in the same set, then sent', async () => {
+  const mem = memory(R.emptyRecordsStore());
+  let calls = 0;
+  const migrate = () => {
+    calls++;
+    return { scores: [{ score: 23000, stage: 3, level: 2, day: '2026-10-11' }], times: { spiral: 83, 'loop-3': 120 } };
+  };
+  const failing = await R.syncRecords(mem, fakeIo([new TypeError('offline')]), migrate, makeId);
+  assert.equal(failing, false);
+  assert.equal(calls, 0, 'not before a successful exchange');
+  assert.equal(mem.get().migrated, false);
+  const io = fakeIo([reply(200), reply(200)]);
+  assert.equal(await R.syncRecords(mem, io, migrate, makeId), true);
+  assert.equal(calls, 1);
+  assert.deepEqual(kindsOf(io.calls.map(c => ({ kind: c.init.method }))), ['GET', 'POST']);
+  const first = mem.sets[0];
+  assert.equal(first.migrated, true);
+  assert.equal(first.pending.scores.length, 1, 'queued in the same set as migrated: true');
+  assert.deepEqual(first.pending.times, { 'loop-3': 120, spiral: 83 });
+  const sent = JSON.parse(io.calls[1].init.body);
+  assert.match(sent.scores[0].id, /^[0-9a-f]{16}$/);
+  assert.deepEqual({ ...sent.scores[0], id: 'x' }, { id: 'x', score: 23000, stage: 3, level: 2, day: '2026-10-11' });
+  assert.doesNotMatch(io.calls[1].init.body, /name/);
+  assert.deepEqual(mem.get().pending, { scores: [], times: {} });
+  await R.syncRecords(mem, fakeIo([reply(200)]), migrate, makeId);
+  assert.equal(calls, 1, 'never again on this device');
+});
+
+test('syncRecords: at most 3 exchanges per call; never rejects', async () => {
+  let s = { ...R.emptyRecordsStore(), migrated: true };
+  s = R.queueScore(s, S(5000), ID(1));
+  const mem = memory(s);
+  let n = 0;
+  // Every answer comes with a fresh score queued meanwhile: the queue never empties.
+  const io = fakeIo(Array.from({ length: 10 }, () => () => { mem.poke(cur => R.queueScore(cur, S(100 + n), ID(500 + n++))); return Promise.resolve(reply(200)); }));
+  assert.equal(await R.syncRecords(mem, io, NO_MIGRATION, makeId), true);
+  assert.equal(io.calls.length, 3);
+  const broken = { get: () => { throw new Error('storage'); }, set: () => { throw new Error('storage'); } };
+  assert.equal(await R.syncRecords(broken, fakeIo([reply(200)]), NO_MIGRATION, makeId), false);
+});
+
+test('records.js: one fetch call (io.fetch), no console, no randomUUID, no global I/O', () => {
+  const js = fs.readFileSync('.compiled/records.js', 'utf8');
+  assert.equal((js.match(/fetch\(/g) ?? []).length, 1);
+  assert.match(js, /io\.fetch\(/);
+  assert.doesNotMatch(js, /\b(document|window|localStorage|location|console|randomUUID)\b/);
+});
