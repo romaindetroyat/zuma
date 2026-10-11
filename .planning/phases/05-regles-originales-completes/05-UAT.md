@@ -137,9 +137,40 @@ Standalone R2.0.18 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
-| U34 | Tir sur une pièce : « la boule disparaît et ne s'insère pas dans la ligne après avoir touché la pièce » | Le moteur consomme le projectile quand il ramasse la pièce | Spike 04 (collision projectile / pièce dans l'exécutable) puis plan 05-12 : le projectile poursuit sa course et s'insère ou sort de l'écran (D-31) |
-| U35 | « Il y a un son particulier quand une boule devient un bonus, ce n'est pas celui de l'apparition de la pièce » | `power-spawn` → `powerup` ; à confronter au son réellement joué par l'original à l'apparition d'un power-up | Spike 04 (son joué à la création d'un power-up sur une bille) puis plan 05-12 (D-32) |
-| U36 | Vies : « quand il y en a plus de 3, on a un système x4, x5 qui remplace le compte en grenouilles » | `lifeIcons` dessine 3 grenouilles puis « +N » | Spike 04 (dessin du compteur de vies dans le HUD) puis plan 05-12 : au-delà du seuil original, une grenouille suivie de « xN » dans la police du HUD (D-33) |
-| U37 | « Le recul des lignes est trop lent, ça doit être plus dynamique, surtout pour les comblages de brèches » | `recoilSpeed` 90 px/s sur 8 ticks, `attractSpeed` 240 px/s : valeurs de la baseline, jamais lues dans l'exécutable | Spike 04 (vitesse de recul et d'attraction, accélération éventuelle) puis plan 05-12 (D-34) |
-| U38 | Fin de niveau (ZUMA) : les billes « ne doivent pas reculer trop loin », « certaines disparaissent dans la version originale », recul plus rapide | Recul `zumaback` en ticks à vitesse constante quand la tête couvre > 50 % ; aucune bille retirée | Spike 04 (recul ZUMA : distance, vitesse, sort des billes qui repassent l'entrée) puis plan 05-12 : même comportement (D-35) |
+| U34 | Tir sur une pièce : « la boule disparaît et ne s'insère pas dans la ligne après avoir touché la pièce » | Le moteur consomme le projectile quand il ramasse la pièce | Spike 04 (collision projectile / pièce dans l'exécutable) puis plan 05-12 : le projectile poursuit sa course et s'insère ou sort de l'écran (D-31) → livré en 05-12 (prise à **36 px** au lieu de 18 ; le tir est **consommé** comme dans l'original, 0x4236a9 : la décision initiale « poursuit sa course » est remplacée par D-31 révisée après le spike 04 ; en R2.0.18 le tir continuait déjà, mais sur 44 des 61 emplacements de pièces aucune piste n'est derrière la pièce et la bille sortait du plateau comme un tir raté ; drapeau `coinConsumesShot: false` disponible pour l'autre comportement) |
+| U35 | « Il y a un son particulier quand une boule devient un bonus, ce n'est pas celui de l'apparition de la pièce » | `power-spawn` → `powerup` ; à confronter au son réellement joué par l'original à l'apparition d'un power-up | Spike 04 (son joué à la création d'un power-up sur une bille) puis plan 05-12 (D-32) → livré en 05-12 (**aucun son** à l'apparition ni à l'expiration d'un power-up, comme l'original : l'ancien son `powerup` était `jewelappear`, celui des pièces ; les sons restent à l'activation ; repli `choral1` non implémenté) |
+| U36 | Vies : « quand il y en a plus de 3, on a un système x4, x5 qui remplace le compte en grenouilles » | `lifeIcons` dessine 3 grenouilles puis « +N » | Spike 04 (dessin du compteur de vies dans le HUD) puis plan 05-12 : au-delà du seuil original, une grenouille suivie de « xN » dans la police du HUD (D-33) → livré en 05-12 (réserve = **vies − 1** dans l'ovale vert de gauche : jusqu'à trois icônes à taille d'origine, au-delà une icône et « x4 », « x5 » jaunes en CancunFloat14 ; clignotement 1,5 s après une vie gagnée ; barre recalée sur l'original : niveau dans l'ovale rouge de gauche, score dans le noir, jauge dans le rouge de droite, MENU dans le vert de droite ; **trois grenouilles par partie** au lieu de quatre, 0x428383) |
+| U37 | « Le recul des lignes est trop lent, ça doit être plus dynamique, surtout pour les comblages de brèches » | `recoilSpeed` 90 px/s sur 8 ticks, `attractSpeed` 240 px/s : valeurs de la baseline, jamais lues dans l'exécutable | Spike 04 (vitesse de recul et d'attraction, accélération éventuelle) puis plan 05-12 (D-34) → livré en 05-12 (destruction **0,4 s** au lieu de 0,67 s ; attraction à **100 px/s** au départ, accélérée sans plafond, après la destruction quand les deux bords ont la même couleur — une brèche de trois billes se referme en 0,34 s ; **rebond de 15 / 45 px** de toute la chaîne au contact (sans / avec enchaînement) ; **plus de recul à l'alignement** ; contact `ballclick1`, impact `ballclick2`) |
+| U38 | Fin de niveau (ZUMA) : les billes « ne doivent pas reculer trop loin », « certaines disparaissent dans la version originale », recul plus rapide | Recul `zumaback` en ticks à vitesse constante quand la tête couvre > 50 % ; aucune bille retirée | Spike 04 (recul ZUMA : distance, vitesse, sort des billes qui repassent l'entrée) puis plan 05-12 : même comportement (D-35) → livré en 05-12 (recul de la **tête** à **100 px/s** pendant **3 s au plus** (300 px), seulement pour les chaînes au-delà de **50 %**, brèches refermées par l'avant ; arrêt quand la tête est à **50 px** du départ ; billes repassées par l'entrée **supprimées** ; la sensation « plus rapide » n'est pas confirmée par l'exécutable : à revoir en UAT 8) |
 
+## Huitième session (à remplir)
+
+Standalone R2.0.19 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, écran Retina). Notes de version : `R219_RELEASE_NOTES.md`. Le standalone livré embarque le pack réimporté (sons du contact et de l'impact remis à leur place, plus de `powerup`) ; pour le build local, relancer `npm run import`.
+
+### Points à vérifier (U34–U38)
+
+- U34 — un tir qui touche une pièce **disparaît** avec la pièce (ni insertion ni tir raté) : c'est le comportement de l'exécutable original (D-31), contraire au souvenir de la septième session — à confirmer ; les pièces sont **plus faciles à toucher** (36 px au lieu de 18).
+- U35 — **plus aucun son** quand une bille devient power-up ; les sons du power-up restent à son activation (explosion, ralenti, recul, visée).
+- U36 — au départ, **deux grenouilles** dans l'ovale vert de gauche (trois par partie, celle en jeu non comptée) ; au-delà de trois en réserve, une grenouille et « x4 », « x5 » en jaune ; les grenouilles **clignotent** 1,5 s après une vie gagnée (50 000 points) ; MENU dans l'ovale vert de droite, niveau dans l'ovale rouge de gauche, score dans l'ovale noir, jauge dans l'ovale rouge de droite ; la partie est perdue à la troisième grenouille ; « Perdu… » ne s'affiche qu'une fois.
+- U37 — après un alignement, **aucune secousse** : les billes explosent sur place 0,4 s ; si les deux bords de la brèche ont la même couleur, elle se referme **vite et de plus en plus vite**, puis **toute la chaîne rebondit** un peu au contact (nettement plus lors d'un enchaînement) ; une bille posée contre une brèche de sa couleur l'attire aussi.
+- U38 — en fin de niveau (ZUMA), seules les chaînes avancées reculent, **depuis la tête**, moins loin (3 s au plus, arrêt près de l'entrée) ; des billes **disparaissent par l'entrée** ; aucune explosion.
+- Sons : clic du tir sur la chaîne (`ballclick2`) et clic plus discret au contact d'une brèche qui se referme (`ballclick1`, pas de rafale).
+
+### Hypothèses à confirmer au ressenti
+
+- D-31 — tir consommé par la pièce (exécutable) contre le souvenir de l'utilisateur ; drapeau `coinConsumesShot` pour revenir au tir qui poursuit sa course.
+- D-32 — aucun son à l'apparition d'un power-up ; `choral1` en repli seulement sur demande.
+- Trois grenouilles par partie (0x428383), au lieu de quatre en R2.0.18.
+- Vitesse du recul ZUMA : 100 px/s dans l'exécutable, plus lent que la sensation décrite en UAT 7.
+- Billes en destruction poussées par le rebond ; grenouille en jeu comptée avec la réserve pendant la perte d'une vie (A4 du spike 04, levée par 0x428391).
+- Mot « MENU » pris sur l'image du bouton du pack ; police système pour le score et le niveau (l'original : `FONT_MONODIGIT` / `FONT_DIALOG`) ; « xN » en CancunFloat14 qui se lit « X4 ».
+- Reportées de la septième session (non tranchées) : C1, Espace = menu, C2, C3, C4, tête de divinité et marges du menu, moitiés de l'image des cases, D-30, gain 0,35 et canal unique du roulement, curseur Musique inerte, « Retour au menu principal » → nouvelle partie, boutons du HUD au toucher seulement ; B1, B3, D-21, bille en attente sans enchaînement, B4, couleur du « +N », EPX, canvas enfant du STATS, A1–A5, A7, arrêt du pousseur à chaque insertion arrière, interligne 18 px, couvercle du crâne à 600 px, `levelwin` / pops.
+
+### Observation reportée (cosmétique, 05-04)
+
+- Le score du HUD est dessiné sous la tête du STATS natif (et sous celle du menu) — toujours cosmétique.
+
+### Constats
+
+| # | Constat | Analyse | Décision |
+|---|---------|---------|----------|

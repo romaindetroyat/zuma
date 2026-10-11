@@ -27,3 +27,13 @@
 ## Relevés en 05-11 (vérification finale R2.0.18)
 
 - **README, « Fournir ses propres graphismes »** (laissé intact sur instruction du plan 05-11) : la phrase « `flags` bit 1 = la bille passe sous une découpe, bit 2 = bille cachée » décrit l'ancien décodage ; depuis R2.0.18 le bit 0 (valeur 1) = tunnel et les bits 1–2 = priorité de dessin 0..3 (voir « Tunnels et calques » plus haut dans le README). À corriger lors d'une prochaine passe de documentation.
+
+## Relevés en 05-12 (cinématique de la chaîne, recul ZUMA, pièce, vies, sons — R2.0.19)
+
+- **Modèle d'apparition des power-ups de l'original** (`src/core.ts` `maybeSpawnPower`, spike 04 constat annexe, 0x40ae70 / 0x408e90) : l'original tire indépendamment chaque type (`1 / powerfreq` par maj, au plus une apparition de ce type tous les `powerfreq` maj), autorise plusieurs power-ups simultanés (un par bille), les rend actifs après 1 s d'attente et leur donne 20 s de vie ; le moteur garde une garde de 150 ticks, un seul power-up à la fois et 8 s de visibilité. Non fait (hors périmètre de l'UAT 7).
+- **Effet de la seconde d'attente d'un power-up** (`Ball+0x58`, 100 maj, 0x401430 / 0x401500) : le dessin de la bille pendant l'attente n'a pas été analysé ; notre apparition est immédiate. Non fait.
+- **Polices de la barre du haut** : l'original dessine le score en `FONT_MONODIGIT` et le niveau en `FONT_DIALOG` ; la barre utilise la police système. Le « x » de « xN » en CancunFloat14 se lit comme une capitale (« X4 »). Cosmétique.
+- **Power-up RECUL** (`backwardsSpeed`, `backwardsTicks`) : toujours un recul à vitesse constante de toute la chaîne d'un bloc ; le recul ZUMA passe depuis R2.0.19 par la tête (0x40ab60), mais le chemin du power-up dans l'original n'a pas été relu. Hors ZUMA, les billes repassées sous l'entrée restent (équivalent de la file d'attente de l'original), sans y être replacées. Non fait.
+- **Rebonds pendant le recul ZUMA** : seulement décomptés (l'original réécrit le recul de la tête à chaque maj ; les rebonds des autres billes n'ont pas été modélisés).
+- **Jauge vide** : l'image `gauge` se lit comme une pilule jaune pleine à 0 point (inchangé depuis R2.0.18). Cosmétique.
+- **`lost` émis deux fois par perte** (« Perdu… » affiché deux fois) : — **Corrigé en 05-13** (`checkEnd` n'émet plus que `gameover` à la fin de la vidange ; verrou `r219` « one `lost` event per loss »).
