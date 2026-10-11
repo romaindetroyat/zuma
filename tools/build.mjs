@@ -4,6 +4,13 @@
  *   node tools/build.mjs              → compile TypeScript to .compiled/ and assemble dist/
  *   node tools/build.mjs --local      → also bundle private_assets/pack into dist/assets/
  *   node tools/build.mjs --standalone → additionally emit standalone/zuma-standalone.html
+ *   node tools/build.mjs --deploy     → --local, refused without the pack, plus dist/version.json: the PWA artefact,
+ *                                       i.e. exactly the local game (R2.0.20, D-42). It embeds the original assets: it
+ *                                       is hosted privately only, never published by this repository or its CI (this
+ *                                       tool deploys nothing; private hosting is planned separately).
+ *
+ * dist/sw.js is generated from public/sw.js (tools/swgen.mjs): build stamp, shell list (MODULES + the files of
+ * dist/public) and the list / fingerprint of dist/assets.
  *
  * dist/, .compiled/, standalone/ and private_assets/ are ignored by Git.
  */
@@ -11,13 +18,23 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deployError, packFiles, packHash, swSource } from './swgen.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = new Set(process.argv.slice(2));
-const local = args.has('--local') || args.has('--standalone');
+const deploy = args.has('--deploy');
+const local = args.has('--local') || args.has('--standalone') || deploy;
 const standalone = args.has('--standalone');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const build = `${pkg.version}+${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}`;
+
+if (deploy) {
+  const refusal = deployError(path.join(root, 'private_assets', 'pack'));
+  if (refusal) {
+    console.error(refusal);
+    process.exit(1);
+  }
+}
 
 const compiled = path.join(root, '.compiled');
 const dist = path.join(root, 'dist');
@@ -29,7 +46,7 @@ fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(path.join(dist, 'js'), { recursive: true });
 fs.mkdirSync(path.join(dist, 'public'), { recursive: true });
 
-const MODULES = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'];
+const MODULES = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'];
 for (const name of MODULES) {
   const src = fs.readFileSync(path.join(compiled, `${name}.js`), 'utf8').replace(/__BUILD__/g, JSON.stringify(build));
   fs.writeFileSync(path.join(dist, 'js', `${name}.js`), src);
@@ -39,7 +56,6 @@ for (const f of fs.readdirSync(path.join(root, 'public'))) {
   if (f === 'sw.js') continue;
   fs.copyFileSync(path.join(root, 'public', f), path.join(dist, 'public', f));
 }
-fs.writeFileSync(path.join(dist, 'sw.js'), fs.readFileSync(path.join(root, 'public', 'sw.js'), 'utf8').replace('__BUILD__', build));
 
 let packed = false;
 if (local) {
@@ -50,6 +66,19 @@ if (local) {
   } else {
     console.warn('--local: no private_assets/pack found (run tools/import-original.mjs); building without original assets');
   }
+}
+
+// Service worker: the shell of this build (never a URL missing from dist/, or addAll fails) and the whole pack.
+const shell = ['./', './index.html', ...packFiles(path.join(dist, 'public')).map(f => `./public/${f}`), ...MODULES.map(m => `./js/${m}.js`)];
+const assets = packed ? packFiles(path.join(dist, 'assets')) : [];
+const assetsHash = packed ? packHash(path.join(dist, 'assets')) : null;
+fs.writeFileSync(path.join(dist, 'sw.js'), swSource(fs.readFileSync(path.join(root, 'public', 'sw.js'), 'utf8'), { build, shell, assets, assetsHash }));
+
+if (deploy) {
+  fs.writeFileSync(path.join(dist, 'version.json'), JSON.stringify({ version: pkg.version, build, assetsHash, assets: assets.length }, null, 2) + '\n');
+  const files = packFiles(dist);
+  const bytes = files.reduce((n, f) => n + fs.statSync(path.join(dist, ...f.split('/'))).size, 0);
+  console.log(`artefact de déploiement : dist/ (${files.length} fichiers, ${(bytes / 1024 / 1024).toFixed(1)} Mio, empreinte du pack ${assetsHash}) — à héberger uniquement en privé`);
 }
 
 if (standalone) {

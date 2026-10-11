@@ -183,8 +183,10 @@ test('fetch routing: navigations from the shell (ignoreSearch, index.html offlin
   assert.equal(nav.response.url, SCOPE, 'navigation served from the shell, query ignored');
   const deep = await h.respond(SCOPE + 'unknown/page', 'navigate');
   assert.equal(deep.response.url, SCOPE + 'index.html', 'offline navigation → cached index.html');
+  const before = h.log.fetched.length;
   const asset = await h.respond(SCOPE + 'assets/images/a.png');
-  assert.equal(asset.response.from, 'zuma-assets-abcdef012345', 'asset from the pack cache offline');
+  assert.equal(asset.response.url, SCOPE + 'assets/images/a.png', 'asset from the pack cache offline');
+  assert.equal(h.log.fetched.length, before, 'no network attempt for a cached asset');
   const missing = await h.respond(SCOPE + 'assets/images/zzz.png');
   assert.ok(missing.error, 'a missing asset fails like the network, never index.html');
   const js = await h.respond(SCOPE + 'js/nope.js');

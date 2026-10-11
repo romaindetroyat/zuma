@@ -230,7 +230,8 @@ test('shell and bundle: no DOM menu panel, .menu-picture without url(, menudialo
   assert.doesNotMatch(rule[0], /url\(/);
   assert.match(rule[0], /position:\s*absolute/);
   const build = read('tools/build.mjs');
-  assert.match(build, /const MODULES = \['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'\]/);
+  // R2.0.20: pwa after original (plan 05-14).
+  assert.match(build, /const MODULES = \['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'main'\]/);
   assert.match(read('public/sw.js'), /\.\/js\/menudialog\.js/);
   const main = read('.compiled/main.js');
   assert.match(main, /composeMenuDialog\(/);

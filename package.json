@@ -13,6 +13,7 @@
     "dev": "node tools/build.mjs --local && node tools/serve.mjs",
     "check": "tsc --noEmit",
     "standalone": "node tools/build.mjs --standalone",
+    "deploy": "node tools/build.mjs --deploy",
     "guard": "node tools/guard.mjs",
     "import": "node tools/import-original.mjs"
   },

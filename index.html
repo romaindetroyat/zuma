@@ -20,6 +20,12 @@
     <p class="hint">Si ce message reste affiché, ouvrez ce fichier dans un navigateur avec JavaScript activé (Chrome, Firefox, Safari ou Edge), pas dans un aperçu de fichier.</p>
   </div>
   <section id="menu" class="overlay" aria-label="Menu"></section>
+  <!-- R2.0.20 (plan 05-14, D-42): a new version is applied only on « Mettre à jour ». -->
+  <div id="update-toast" class="update-toast" role="status" hidden>
+    <span>Nouvelle version disponible</span>
+    <button id="update-apply" type="button">Mettre à jour</button>
+    <button id="update-later" type="button">Plus tard</button>
+  </div>
   <section id="stats" class="overlay" aria-label="Statistiques">
     <section class="panel zuma-stats" aria-labelledby="results-title">
       <div class="stats-idol" aria-hidden="true">☼</div>

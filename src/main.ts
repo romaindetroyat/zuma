@@ -6,6 +6,7 @@ import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
+import { applyUpdate, formatSize, offlineStatus, registerServiceWorker } from './pwa.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuState, type MenuWidgetId } from './menudialog.js';
@@ -192,6 +193,12 @@ class Game {
       });
     }
     this.badge = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
+    // R2.0.20 (D-38 §2): storage kept for offline play, its size shown in the help view.
+    void offlineStatus().then(status => {
+      if (!status) return;
+      this.badge += ` · hors ligne : ${formatSize(status.bytes)}`;
+      if (this.menuOpen) this.renderMenu();
+    });
     this.loading = false;
     await this.newGame();
     document.getElementById('boot')?.classList.add('hidden');
@@ -1191,9 +1198,16 @@ if (typeof document !== 'undefined' && document.getElementById('game')) {
   } catch (error) {
     reportBootError(error);
   }
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    window.addEventListener('load', () => { void navigator.serviceWorker.register('./sw.js'); });
-  }
+  // R2.0.20 (D-42, PWA-02): a new version waits for « Mettre à jour »; « Plus tard » hides the toast until the next launch.
+  registerServiceWorker(registration => {
+    const toast = document.getElementById('update-toast');
+    if (!toast) return;
+    toast.hidden = false;
+    const apply = document.getElementById('update-apply');
+    const later = document.getElementById('update-later');
+    if (apply) apply.onclick = () => { apply.setAttribute('disabled', ''); applyUpdate(registration); };
+    if (later) later.onclick = () => { toast.hidden = true; };
+  });
 }
 
 export { LEVELS };
