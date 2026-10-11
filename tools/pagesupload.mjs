@@ -201,15 +201,23 @@ export async function uploadAndDeploy(api, { accountId, project, dir, branch, me
   form.append('commit_message', message ?? '');
   form.append('commit_dirty', 'true');
   const created = await api('POST', `${base}/deployments`, { form });
+  const { dep, ready } = await pollDeployment(api, base, created, { sleep, log });
+  return { id: created.id, url: dep.url ?? created.url, environment: dep.environment ?? created.environment, files: files.length, uploaded: toSend.length, ready };
+}
+
+/**
+ * Reads a new deployment back until its `deploy` stage succeeds (5 reads, 3 s apart): { dep, ready }. A failed or
+ * canceled stage throws; still running after the last read → ready: false (logged).
+ */
+export async function pollDeployment(api, base, created, { sleep = ms => new Promise(r => setTimeout(r, ms)), log = () => {} } = {}) {
   let dep = created;
-  let ready = false;
   for (let i = 0; i < STATUS_ATTEMPTS; i++) {
     if (i > 0) await sleep(STATUS_WAIT_MS);
     dep = await api('GET', `${base}/deployments/${created.id}`);
     const stage = dep.latest_stage ?? {};
     if (stage.status === 'failure' || stage.status === 'canceled') throw new Error(`déploiement ${created.id} : échec de l'étape ${stage.name}.`);
-    if (stage.name === 'deploy' && stage.status === 'success') { ready = true; break; }
+    if (stage.name === 'deploy' && stage.status === 'success') return { dep, ready: true };
   }
-  if (!ready) log(`déploiement ${created.id} encore en cours après ${STATUS_ATTEMPTS} relectures.`);
-  return { id: created.id, url: dep.url ?? created.url, environment: dep.environment ?? created.environment, files: files.length, uploaded: toSend.length, ready };
+  log(`déploiement ${created.id} encore en cours après ${STATUS_ATTEMPTS} relectures.`);
+  return { dep, ready: false };
 }
