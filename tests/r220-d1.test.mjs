@@ -557,6 +557,9 @@ const {
 
 const A = '/accounts/acc';
 const UUID = '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0';
+// R2.0.22: shared records database (plan 06.1-03).
+const S_UUID = '1c2d3e4f-5061-7283-94a5-b6c7d8e9f0a1';
+const SCORES = { database: { uuid: S_UUID, name: 'zuma-scores' }, tables: new Set(['scores', 'times']) };
 const noSleep = async () => undefined;
 
 /**
@@ -654,14 +657,15 @@ test('planD1: absent database → everything planned; complete rows skipped; an 
     const kept = f.path === 'assets/music/zuma.mo3' ? parts.slice(0, -1) : parts;
     present.set(f.key, { parts: kept.length, chars: kept.join('').length });
   }
-  const project = { deployment_configs: bindingBody(UUID).deployment_configs, canonical_deployment: { latest_stage: { name: 'deploy', status: 'success' }, deployment_trigger: { metadata: { commit_message: 'R2.0.20 x worker:abc' } } } };
-  const p = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:abc' });
+  // R2.0.22: shared records database (plan 06.1-03) — both bindings and the records database are part of the plan.
+  const project = { deployment_configs: bindingBody(UUID, S_UUID).deployment_configs, canonical_deployment: { latest_stage: { name: 'deploy', status: 'success' }, deployment_trigger: { metadata: { commit_message: 'R2.0.20 x worker:abc' } } } };
+  const p = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:abc', scores: SCORES });
   assert.deepEqual(p.missing.map(f => f.path), ['assets/music/zuma.mo3']);
   assert.equal(p.createDatabase || p.createTable || p.bind || p.deploy, false);
-  const done = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present: new Map([...present, [files.find(f => f.path === 'assets/music/zuma.mo3').key, { parts: 3, chars: noise(100000).toString('base64').length }]]) }, project, marker: 'worker:abc' });
+  const done = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present: new Map([...present, [files.find(f => f.path === 'assets/music/zuma.mo3').key, { parts: 3, chars: noise(100000).toString('base64').length }]]) }, project, marker: 'worker:abc', scores: SCORES });
   assert.equal(done.missing.length, 0);
   assert.equal(done.rows, 0);
-  assert.equal(planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:new' }).deploy, true, 'another worker → deploy');
+  assert.equal(planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:new', scores: SCORES }).deploy, true, 'another worker → deploy');
 });
 
 test('insertBatches: every statement exactly once, each request body under 900 KB', () => {
@@ -718,22 +722,24 @@ test('uploadBlobs: over the row budget → refused before any call; 400 on batch
   assert.equal(denied.calls.length, 1, 'stops at the refused write');
 });
 
-test('bindingBody / bindingOk: ASSETS_DB → { id } on production and preview with the fixed compatibility date', () => {
-  const body = bindingBody(UUID);
+test('bindingBody / bindingOk: ASSETS_DB and SCORES_DB → { id } on production and preview with the fixed compatibility date', () => {
+  // R2.0.22: shared records database (plan 06.1-03) — one PATCH carries both bindings.
+  const body = bindingBody(UUID, S_UUID);
   assert.match(COMPATIBILITY_DATE, /^\d{4}-\d{2}-\d{2}$/);
   for (const env of ['production', 'preview']) {
-    assert.deepEqual(body.deployment_configs[env], { d1_databases: { ASSETS_DB: { id: UUID } }, compatibility_date: COMPATIBILITY_DATE });
+    assert.deepEqual(body.deployment_configs[env], { d1_databases: { ASSETS_DB: { id: UUID }, SCORES_DB: { id: S_UUID } }, compatibility_date: COMPATIBILITY_DATE });
   }
   assert.deepEqual(Object.keys(body), ['deployment_configs']);
-  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, UUID), true);
-  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, 'other'), false);
+  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, UUID, S_UUID), true);
+  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, 'other', S_UUID), false);
+  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, UUID, 'other'), false);
   const prodOnly = structuredClone(body);
   delete prodOnly.deployment_configs.preview.d1_databases;
-  assert.equal(bindingOk(prodOnly, UUID), false);
+  assert.equal(bindingOk(prodOnly, UUID, S_UUID), false);
   const oldDate = structuredClone(body);
   oldDate.deployment_configs.production.compatibility_date = '2021-01-01';
-  assert.equal(bindingOk(oldDate, UUID), false);
-  assert.equal(bindingOk(null, UUID), false);
+  assert.equal(bindingOk(oldDate, UUID, S_UUID), false);
+  assert.equal(bindingOk(null, UUID, S_UUID), false);
 });
 
 test('deployWorker: main only; multipart manifest {} + branch + commit message with the worker marker + _worker.js file', async () => {
