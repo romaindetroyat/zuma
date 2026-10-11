@@ -9,18 +9,27 @@
  * The worker validates the Access JWT of every request but the public files: its issuer (https://<auth_domain>) and
  * the AUD of the « Zuma » application are read from the account (GET only) and inlined at generation, never committed.
  *
+ * Shared records (R2.0.22, plan 06.1-03, D-05 / D-10): a second D1 database `zuma-scores`, bound as SCORES_DB next to
+ * ASSETS_DB, holds the records written by the worker (`/api/records`). This tool only creates it (read back), applies
+ * its idempotent schema (`CREATE TABLE IF NOT EXISTS scores / times`, read back through sqlite_master) and binds it:
+ * it never writes a row there. The worker receives the level ids of dist/assets/pack.json (recordLevelIds) to bound
+ * the times; only their count is logged.
+ *
  * Modes:
  *   node tools/deploy.mjs                  provision Access (idempotent), then D1 database / table / missing rows,
- *                                          project binding, worker deployment on `main`, then verify
+ *                                          records database / schema, project binding (ASSETS_DB + SCORES_DB),
+ *                                          worker deployment on `main`, then verify
  *   node tools/deploy.mjs --plan           GET (and D1 SELECT) only: « actions prévues : N », one « - <action> » each
  *   node tools/deploy.mjs --dry-run        the whole default pipeline against a simulated account (tools/cfsim.mjs,
  *                                          state left by 05-16), no network; lists the writes in order and writes
  *                                          dist/_d1/_worker.js + dist/_d1/manifest.json for inspection
  *   node tools/deploy.mjs --direct         former method: Pages direct upload (needs the upload JWT: from the Mac)
- *   node tools/deploy.mjs --verify         Access configuration through the API, then HTTP: 0 protected, 1 exposed,
- *                                          2 hosts unreachable from here (the HTTP proof is then done in a browser)
- *   node tools/deploy.mjs --rollback-plan  GET only: prints the removal steps (deployments, D1 binding and database,
- *                                          Pages project, then Access); nothing is ever deleted by this tool
+ *   node tools/deploy.mjs --verify         Access configuration through the API (and the D1 databases / bindings),
+ *                                          then HTTP: 0 protected, 1 exposed, 2 hosts unreachable from here (the HTTP
+ *                                          proof is then done in a browser)
+ *   node tools/deploy.mjs --rollback-plan  GET only: prints the removal steps (deployments, D1 bindings and databases
+ *                                          — the records are lost with `zuma-scores` —, Pages project, then Access);
+ *                                          nothing is ever deleted by this tool
  *
  * Authentication: in the cloud session the egress proxy injects the API token on api.cloudflare.com (no header is
  * sent); elsewhere CLOUDFLARE_API_TOKEN (and CLOUDFLARE_ACCOUNT_ID with several accounts) is read from the environment.
@@ -31,7 +40,8 @@
  * Guarantees: every step reads before writing and reads back after; an existing object that differs is reported as a
  * conflict and never rewritten; the Access applications exist and are read back before any content is uploaded; the
  * deployment always targets `main` (never a preview); the upload JWT, the token and the account id never reach the
- * log (`redact`). The only change ever made to an existing object is D-43: existing Access apps listed in
+ * log (`redact`); no DELETE is ever sent; SQL is limited to SELECT, the three `CREATE TABLE IF NOT EXISTS` (blobs,
+ * scores, times) and `INSERT OR IGNORE INTO blobs`. The only change ever made to an existing object is D-43: existing Access apps listed in
  * `pinIdpApps`, whose `allowed_idps` is empty, are pinned to the current identity providers before the One-time PIN
  * provider is added, so they keep exactly their current login method (reversible: put `[]` back).
  */
@@ -42,9 +52,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkArtifact, uploadAndDeploy } from './pagesupload.mjs';
 import { blobFiles, D1_BINDING, generateWorker, playerNames, workerManifest } from './d1worker.mjs';
 import {
-  bindingBody, bindingOk, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
-  productionDeployment, queryPath, readBlobs, ROW_BUDGET, SCHEMA, uploadBlobs, workerMarker,
+  bindingBody, bindingOk, boundTo, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
+  productionDeployment, queryPath, readBlobs, readScoresTables, ROW_BUDGET, SCHEMA, uploadBlobs, workerMarker,
 } from './d1deploy.mjs';
+import { recordLevelIds, SCORES_BINDING, SCORES_DATABASE_NAME, SCORES_SCHEMA, SCORES_TABLES } from './recordsapi.mjs';
 import { simulatedCloudflare } from './cfsim.mjs';
 
 const API = 'https://api.cloudflare.com/client/v4';
@@ -304,12 +315,32 @@ function d1Actions(p) {
   if (p.createDatabase) out.push('create-d1-database');
   if (p.createTable) out.push('create-table');
   if (p.chunks > 0) out.push(`d1-insert ${p.chunks} morceau(x), ${p.missing.length} fichier(s), ${p.rows} lignes écrites estimées`);
+  if (p.createScoresDatabase) out.push('create-d1-scores-database');
+  if (p.createScoresTables) out.push('create-scores-tables');
   if (p.bind) out.push('bind-d1');
   if (p.deploy) out.push('deploy-worker');
   return out;
 }
 
 const budgetRefusal = (rows, budget) => `D1 : ${rows} lignes écrites estimées, au-delà du budget de ${budget} par passage (plan gratuit : 100 000 par jour) ; rien n'est écrit.`;
+
+/**
+ * Level ids of dist/assets/pack.json for the worker (D-10: times are bounded to the pack's levels). An unreadable pack
+ * gives no level (every time refused, scores still accepted); only the count is logged, never a level name.
+ */
+function packLevels(dist, log) {
+  let pack;
+  try { pack = JSON.parse(fs.readFileSync(path.join(dist, 'assets', 'pack.json'), 'utf8')); } catch {
+    log('records : niveaux du pack illisibles, temps refusés');
+    return [];
+  }
+  const levels = recordLevelIds(pack);
+  log(`records : ${levels.length} niveaux`);
+  return levels;
+}
+
+/** Text of the binding lines (both databases). */
+const BOUND = `« ${D1_BINDING} » → « ${DATABASE_NAME} », « ${SCORES_BINDING} » → « ${SCORES_DATABASE_NAME} »`;
 
 /** One line per write of a simulated run (account and database ids replaced by placeholders, bodies summarised). */
 function describeWrites(calls, accountId, dbIds) {
@@ -389,6 +420,7 @@ export async function run(argv, deps = {}) {
   const info = artefactError ? null : JSON.parse(fs.readFileSync(path.join(dist, 'version.json'), 'utf8'));
   const files = artefactError || direct ? null : blobFiles(dist);
   const manifest = files ? workerManifest(files) : null;
+  const levels = files && (mode === 'deploy' || mode === 'dry' || mode === 'plan') ? packLevels(dist, log) : [];
 
   try {
     // Preflight: token, account, Zero Trust organisation.
@@ -423,7 +455,7 @@ export async function run(argv, deps = {}) {
       if (!files) return null;
       const app = mainApp(state, hostOf(state.project, cfg.project));
       if (!app) return null;
-      const source = generateWorker(manifest, { build: info.build, access: { team, aud: mode === 'dry' ? DRY_RUN_AUD : app.aud }, players: cfg.players });
+      const source = generateWorker(manifest, { build: info.build, access: { team, aud: mode === 'dry' ? DRY_RUN_AUD : app.aud }, players: cfg.players, levels });
       if (Buffer.byteLength(source) > WORKER_MAX_BYTES) throw new Error(`_worker.js de ${Buffer.byteLength(source)} octets : au-delà de ${WORKER_MAX_BYTES} octets.`);
       return { source, marker: workerMarker(source) };
     };
@@ -441,12 +473,14 @@ export async function run(argv, deps = {}) {
       log(`conflits : ${conflict.length} (rien n'est réécrit)`);
       for (const c of conflict) log(`! ${c}`);
     };
-    /** D1 state and plan (GET + SELECT only); a refused read names the permission. */
+    /** D1 state and plan of both databases (GET + SELECT only); a refused read names the permission. */
     const readD1 = async (project, marker) => {
       try {
         const database = await findDatabase(api, A, DATABASE_NAME);
         const blobs = database ? await readBlobs(api, A, database.uuid) : null;
-        return { database, blobs, plan: planD1({ files, database, blobs, project, marker }) };
+        const scoresDb = await findDatabase(api, A, SCORES_DATABASE_NAME);
+        const scores = { database: scoresDb, tables: scoresDb ? await readScoresTables(api, A, scoresDb.uuid) : new Set() };
+        return { database, blobs, scores, plan: planD1({ files, database, blobs, project, marker, scores }) };
       } catch (e) {
         if (e && (e.status === 401 || e.status === 403)) throw new Error(`${e.message} — lecture D1 refusée : permission du jeton probablement manquante « ${permissionFor('/d1/')} ».`);
         throw e;
@@ -470,6 +504,7 @@ export async function run(argv, deps = {}) {
           const d1 = await readD1(state.project, built?.marker ?? null);
           extra = d1Actions(d1.plan);
           log(`D1 : base « ${DATABASE_NAME} » ${d1.database ? 'présente' : 'absente'} ; ${new Set(files.map(f => f.key)).size} contenus pour ${files.length} fichiers ; worker ${built ? built.marker : `non calculé (application « ${APP_NAME} » absente)`}`);
+          log(`records : base « ${SCORES_DATABASE_NAME} » ${d1.scores.database ? 'présente' : 'absente'} ; tables : ${SCORES_TABLES.filter(t => d1.scores.tables.has(t)).join(', ') || 'aucune'}`);
           if (d1.plan.rows > rowBudget) { log(budgetRefusal(d1.plan.rows, rowBudget)); code = 1; }
         }
       }
@@ -533,7 +568,7 @@ export async function run(argv, deps = {}) {
     if (!built) { log(`application « ${APP_NAME} » non relue : worker non généré, aucun contenu envoyé.`); return 1; }
     const { source: worker, marker } = built;
 
-    // D1: database, table, rows, binding, worker — each step read back.
+    // D1: database, table, rows, records database and schema, binding, worker — each step read back.
     let database = await findDatabase(api, A, DATABASE_NAME);
     if (!database) {
       await write('POST', `${A}/d1/database`, { name: DATABASE_NAME });
@@ -557,14 +592,33 @@ export async function run(argv, deps = {}) {
     p = planD1({ files, database, blobs, project, marker });
     if (p.missing.length) { log(`D1 relue : ${p.missing.length} fichier(s) encore absents ou incomplets ; arrêt (relancer reprend où il s'est arrêté).`); return 1; }
     log(`D1 relue : ${new Set(files.map(f => f.key)).size} contenus complets`);
-    if (!bindingOk(project, database.uuid)) {
-      await write('PATCH', `${A}/pages/projects/${cfg.project}`, bindingBody(database.uuid));
+    // Records database (D-05): created and read back, then its idempotent schema, read back through sqlite_master.
+    // Nothing else is ever sent to it: no row is written by the deployment.
+    let scoresDb = await findDatabase(api, A, SCORES_DATABASE_NAME);
+    if (!scoresDb) {
+      await write('POST', `${A}/d1/database`, { name: SCORES_DATABASE_NAME });
+      scoresDb = await findDatabase(api, A, SCORES_DATABASE_NAME);
+      if (!scoresDb) { log(`base D1 « ${SCORES_DATABASE_NAME} » non relue après sa création ; arrêt.`); return 1; }
+      log(`créé : base D1 « ${SCORES_DATABASE_NAME} » (${scoresDb.uuid})`);
+    } else log(`déjà présente : base D1 « ${SCORES_DATABASE_NAME} » (${scoresDb.uuid})`);
+    let tables = await readScoresTables(api, A, scoresDb.uuid);
+    if (!SCORES_TABLES.every(t => tables.has(t))) {
+      await write('POST', queryPath(A, scoresDb.uuid), { batch: SCORES_SCHEMA.map(sql => ({ sql })) });
+      tables = await readScoresTables(api, A, scoresDb.uuid);
+      if (!SCORES_TABLES.every(t => tables.has(t))) { log(`tables ${SCORES_TABLES.join(', ')} non relues après leur création ; arrêt.`); return 1; }
+      log(`créé : tables ${SCORES_TABLES.join(', ')}`);
+    } else log(`déjà présentes : tables ${SCORES_TABLES.join(', ')}`);
+    // One PATCH binds both databases (production and preview); a new binding only applies to a new deployment.
+    let rebound = false;
+    if (!bindingOk(project, database.uuid, scoresDb.uuid)) {
+      await write('PATCH', `${A}/pages/projects/${cfg.project}`, bindingBody(database.uuid, scoresDb.uuid));
       project = await api('GET', `${A}/pages/projects/${cfg.project}`);
-      if (!bindingOk(project, database.uuid)) { log(`liaison « ${D1_BINDING} » non relue sur le projet ; arrêt.`); return 1; }
-      log(`lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} » (production et aperçu, compatibilité ${COMPATIBILITY_DATE})`);
-    } else log(`déjà lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} »`);
+      if (!bindingOk(project, database.uuid, scoresDb.uuid)) { log(`liaisons « ${D1_BINDING} » / « ${SCORES_BINDING} » non relues sur le projet ; arrêt.`); return 1; }
+      rebound = true;
+      log(`lié : ${BOUND} (production et aperçu, compatibilité ${COMPATIBILITY_DATE})`);
+    } else log(`déjà lié : ${BOUND}`);
     let deploymentUrl = productionDeployment(project)?.url ?? null;
-    if (!deployedOk(project, marker)) {
+    if (rebound || !deployedOk(project, marker)) {
       const res = await deployWorker(guarded, { A, project: cfg.project, worker, branch: 'main', message: `R${version} ${info.build}`, log, sleep });
       if (res.environment !== 'production') {
         log(`ALERTE : déploiement ${res.id} en environnement « ${res.environment} » au lieu de « production » : vérifiez le projet avant toute autre action.`);
@@ -652,7 +706,9 @@ async function verify({ api, A, readState, plan, cfg, team, fetch, log }) {
     const db = await findDatabase(api, A, DATABASE_NAME);
     const msg = productionDeployment(state.project)?.deployment_trigger?.metadata?.commit_message ?? '';
     const worker = msg.split(/\s+/).find(w => w.startsWith('worker:'));
-    log(`D1 : base « ${DATABASE_NAME} » ${db ? 'présente' : 'absente'} ; liaison « ${D1_BINDING} » ${db && bindingOk(state.project, db.uuid) ? 'en place (production et aperçu)' : 'absente'} ; worker en production : ${worker ?? 'aucun'}`);
+    log(`D1 : base « ${DATABASE_NAME} » ${db ? 'présente' : 'absente'} ; liaison « ${D1_BINDING} » ${db && boundTo(state.project, D1_BINDING, db.uuid) ? 'en place (production et aperçu)' : 'absente'} ; worker en production : ${worker ?? 'aucun'}`);
+    const sdb = await findDatabase(api, A, SCORES_DATABASE_NAME);
+    log(`records : base « ${SCORES_DATABASE_NAME} » ${sdb ? 'présente' : 'absente'} ; liaison « ${SCORES_BINDING} » ${sdb && boundTo(state.project, SCORES_BINDING, sdb.uuid) ? 'en place' : 'absente'}`);
   } catch (e) {
     log(`D1 : état illisible (${e.message})`);
   }
@@ -709,8 +765,9 @@ async function verify({ api, A, readState, plan, cfg, team, fetch, log }) {
 }
 
 /**
- * Prints the removal steps (nothing is called but GET): content first (deployments, D1 binding, D1 database, then the
- * Pages project) so the pack is never left without Access protection, then Access.
+ * Prints the removal steps (nothing is called but GET): content first (deployments, D1 bindings, D1 databases — the
+ * records are lost with `zuma-scores`, exported first —, then the Pages project) so the pack is never left without
+ * Access protection, then Access.
  */
 async function rollbackPlan({ api, A, readState, cfg, log }) {
   const state = await readState();
@@ -725,18 +782,24 @@ async function rollbackPlan({ api, A, readState, cfg, log }) {
     try { deployments = (await api('GET', `${A}/pages/projects/${cfg.project}/deployments`)) ?? []; } catch (e) { log(`déploiements illisibles (${e.message})`); }
   }
   let db = null;
-  try { db = await findDatabase(api, A, DATABASE_NAME); } catch (e) { log(`bases D1 illisibles (${e.message})`); }
+  let sdb = null;
+  try {
+    db = await findDatabase(api, A, DATABASE_NAME);
+    sdb = await findDatabase(api, A, SCORES_DATABASE_NAME);
+  } catch (e) { log(`bases D1 illisibles (${e.message})`); }
   const P = `/accounts/{compte}/pages/projects/${cfg.project}`;
-  const unbind = JSON.stringify({ deployment_configs: { production: { d1_databases: { [D1_BINDING]: null } }, preview: { d1_databases: { [D1_BINDING]: null } } } });
+  const unbindOf = name => JSON.stringify({ deployment_configs: { production: { d1_databases: { [name]: null } }, preview: { d1_databases: { [name]: null } } } });
   log("plan de retrait (rien n'est exécuté ; ordre : contenu d'abord, Access ensuite, pour qu'aucun instant ne laisse le pack sans protection) :");
-  log(`1. supprimer les déploiements du projet Pages (contenu retiré d'abord) : ${deployments.map(d => `DELETE ${P}/deployments/${d.id}?force=true`).join(' ; ') || 'aucun relu'} — le déploiement de production en cours ne part qu'avec le projet (étape 4)`);
-  log(`2. retirer la liaison D1 « ${D1_BINDING} » : PATCH ${P} ${unbind}`);
-  log(`3. supprimer la base D1 « ${DATABASE_NAME} » : ${db ? 'DELETE /accounts/{compte}/d1/database/{base}' : 'absente'} — tableau de bord : Storage & Databases › D1 › ${DATABASE_NAME} › Settings › Delete`);
-  log(`4. supprimer le projet Pages : DELETE ${P} ${state.project ? '' : '(déjà absent) '}— tableau de bord : Workers & Pages › ${cfg.project} › Settings › Delete project`);
-  log(`5. supprimer l'application principale et l'application Bypass : ${zuma.map(a => `DELETE /accounts/{compte}/access/apps/${a.id} (« ${a.name} »)`).join(' ; ') || 'aucune trouvée'} — tableau de bord : Zero Trust › Access › Applications › ${APP_NAME} › Delete, puis « ${BYPASS_NAME} »`);
-  log(`6. supprimer les politiques « ${ALLOW_POLICY} » / « ${BYPASS_NAME} » si app_count = 0 : ${pols.map(p => `DELETE /accounts/{compte}/access/policies/${p.id} (« ${p.name} », app_count actuel ${p.app_count ?? '?'})`).join(' ; ') || 'aucune trouvée'}`);
-  log(`7. garder la méthode « One-time PIN » (facultatif : la retirer) : ${otp ? `DELETE /accounts/{compte}/access/identity_providers/${otp.id}` : 'absente'} — Zero Trust › Integrations › Identity providers`);
-  log(`8. D-43, seulement après le retrait de la méthode One-time PIN (facultatif) : remettre allowed_idps = [] sur ${pinned} : PUT /accounts/{compte}/access/apps/<id> avec le corps relu par GET, seul allowed_idps changeant`);
+  log(`1. supprimer les déploiements du projet Pages (contenu retiré d'abord) : ${deployments.map(d => `DELETE ${P}/deployments/${d.id}?force=true`).join(' ; ') || 'aucun relu'} — le déploiement de production en cours ne part qu'avec le projet (étape 6)`);
+  log(`2. retirer la liaison D1 « ${D1_BINDING} » : PATCH ${P} ${unbindOf(D1_BINDING)}`);
+  log(`3. retirer la liaison D1 « ${SCORES_BINDING} » : PATCH ${P} ${unbindOf(SCORES_BINDING)}`);
+  log(`4. supprimer la base D1 « ${DATABASE_NAME} » : ${db ? 'DELETE /accounts/{compte}/d1/database/{base}' : 'absente'} — tableau de bord : Storage & Databases › D1 › ${DATABASE_NAME} › Settings › Delete`);
+  log(`5. supprimer la base D1 « ${SCORES_DATABASE_NAME} » (les records communs et personnels sont perdus ; exporter d'abord depuis le tableau de bord : Storage & Databases › D1 › ${SCORES_DATABASE_NAME}) : ${sdb ? 'DELETE /accounts/{compte}/d1/database/{base}' : 'absente'} — tableau de bord : Storage & Databases › D1 › ${SCORES_DATABASE_NAME} › Settings › Delete`);
+  log(`6. supprimer le projet Pages : DELETE ${P} ${state.project ? '' : '(déjà absent) '}— tableau de bord : Workers & Pages › ${cfg.project} › Settings › Delete project`);
+  log(`7. supprimer l'application principale et l'application Bypass : ${zuma.map(a => `DELETE /accounts/{compte}/access/apps/${a.id} (« ${a.name} »)`).join(' ; ') || 'aucune trouvée'} — tableau de bord : Zero Trust › Access › Applications › ${APP_NAME} › Delete, puis « ${BYPASS_NAME} »`);
+  log(`8. supprimer les politiques « ${ALLOW_POLICY} » / « ${BYPASS_NAME} » si app_count = 0 : ${pols.map(p => `DELETE /accounts/{compte}/access/policies/${p.id} (« ${p.name} », app_count actuel ${p.app_count ?? '?'})`).join(' ; ') || 'aucune trouvée'}`);
+  log(`9. garder la méthode « One-time PIN » (facultatif : la retirer) : ${otp ? `DELETE /accounts/{compte}/access/identity_providers/${otp.id}` : 'absente'} — Zero Trust › Integrations › Identity providers`);
+  log(`10. D-43, seulement après le retrait de la méthode One-time PIN (facultatif) : remettre allowed_idps = [] sur ${pinned} : PUT /accounts/{compte}/access/apps/<id> avec le corps relu par GET, seul allowed_idps changeant`);
   return 0;
 }
 

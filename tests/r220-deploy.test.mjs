@@ -287,6 +287,10 @@ const HOST = 'zuma-x.pages.dev';
 const ALLOW = 'Zuma — joueurs';
 const BYPASS = 'Zuma — fichiers publics';
 const DB_UUID = '9f8e7d6c-5b4a-4321-8fed-cba987654321';
+// R2.0.22: shared records database (plan 06.1-03) — zuma-scores, bound as SCORES_DB next to ASSETS_DB.
+const SCORES_UUID = '8e7d6c5b-4a39-4210-9fed-cba987654322';
+const { SCORES_SCHEMA } = await import('../tools/recordsapi.mjs');
+const { SCORES_TABLES_SQL } = await import('../tools/d1deploy.mjs');
 
 /** An existing app of the account (shape of GET /access/apps), with the shared reusable policy expanded. */
 const otherApp = (name, uri, extra = {}) => ({
@@ -302,7 +306,8 @@ const otherApp = (name, uri, extra = {}) => ({
  * Shapes follow the real GET responses (ids, expanded policies with precedence, app_count on reusable policies).
  */
 function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type: 'cloudflare', name: '' }], policies = [], apps = [], environment = 'production', errorWith = null } = {}) {
-  const s = { project, idps: structuredClone(idps), policies: structuredClone(policies), apps: structuredClone(apps), n: 0, db: null, deployments: [] };
+  // R2.0.22: shared records database (plan 06.1-03) — several named databases (`db` = zuma-assets, `dbs` = all).
+  const s = { project, idps: structuredClone(idps), policies: structuredClone(policies), apps: structuredClone(apps), n: 0, db: null, dbs: [], deployments: [] };
   const calls = [];
   const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
   const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -361,21 +366,42 @@ function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type:
       return s.project;
     }
     if (p === `${A}/pages/projects/zuma/deployments` && method === 'GET') return s.deployments.map(d => ({ ...d }));
-    if (method === 'GET' && p.startsWith(`${A}/d1/database?`)) return s.db ? [{ uuid: s.db.uuid, name: s.db.name }] : [];
-    if (method === 'POST' && p === `${A}/d1/database`) { s.db = { uuid: DB_UUID, name: o.body.name, table: false, rows: [] }; return { uuid: DB_UUID, name: o.body.name }; }
-    if (method === 'POST' && s.db && p === `${A}/d1/database/${s.db.uuid}/query`) {
+    if (method === 'GET' && p.startsWith(`${A}/d1/database?`)) {
+      const name = new URL(`https://x${p}`).searchParams.get('name') ?? '';
+      return s.dbs.filter(d => d.name.includes(name)).map(d => ({ uuid: d.uuid, name: d.name }));
+    }
+    if (method === 'POST' && p === `${A}/d1/database`) {
+      if (s.dbs.some(d => d.name === o.body.name)) throw fail(400, 'A database with that name already exists');
+      const uuid = { 'zuma-assets': DB_UUID, 'zuma-scores': SCORES_UUID }[o.body.name] ?? `00000000-0000-4000-8000-${String(++s.n).padStart(12, '0')}`;
+      const db = { uuid, name: o.body.name, table: false, tables: new Set(), rows: [] };
+      s.dbs.push(db);
+      if (db.name === 'zuma-assets') s.db = db;
+      return { uuid, name: o.body.name };
+    }
+    const queried = method === 'POST' && s.dbs.find(d => p === `${A}/d1/database/${d.uuid}/query`);
+    if (queried && queried.name === 'zuma-scores') {
+      // Records database: its idempotent schema and the sqlite_master read only.
+      const one = sql => {
+        if (SCORES_SCHEMA.includes(sql)) { queried.tables.add(sql.split(' ')[5]); return { results: [], success: true }; }
+        if (sql === SCORES_TABLES_SQL) return { results: [...queried.tables].map(name => ({ name })), success: true };
+        throw fail(400, `unsupported SQL on zuma-scores ${sql}`);
+      };
+      return o.body.batch ? o.body.batch.map(q => one(q.sql)) : [one(o.body.sql)];
+    }
+    if (queried) {
+      const db = queried;
       const one = (sql, params = []) => {
-        if (sql.startsWith('CREATE TABLE IF NOT EXISTS blobs')) { s.db.table = true; return { results: [], success: true }; }
-        if (sql.startsWith('SELECT name FROM sqlite_master')) return { results: s.db.table ? [{ name: 'blobs' }] : [], success: true };
-        if (!s.db.table) throw fail(400, 'no such table: blobs');
+        if (sql.startsWith('CREATE TABLE IF NOT EXISTS blobs')) { db.table = true; return { results: [], success: true }; }
+        if (sql.startsWith("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blobs'")) return { results: db.table ? [{ name: 'blobs' }] : [], success: true };
+        if (!db.table) throw fail(400, 'no such table: blobs');
         if (sql.startsWith('SELECT key, COUNT(*)')) {
           const by = new Map();
-          for (const r of s.db.rows) { const e = by.get(r.key) ?? { key: r.key, parts: 0, chars: 0 }; e.parts++; e.chars += r.data.length; by.set(r.key, e); }
+          for (const r of db.rows) { const e = by.get(r.key) ?? { key: r.key, parts: 0, chars: 0 }; e.parts++; e.chars += r.data.length; by.set(r.key, e); }
           return { results: [...by.values()], success: true };
         }
         if (sql.startsWith('INSERT OR IGNORE INTO blobs')) {
           const [key, part, data] = params;
-          if (!s.db.rows.some(r => r.key === key && r.part === part)) s.db.rows.push({ key, part, data });
+          if (!db.rows.some(r => r.key === key && r.part === part)) db.rows.push({ key, part, data });
           return { results: [], success: true };
         }
         throw fail(400, `unsupported SQL ${sql}`);
@@ -500,12 +526,13 @@ test('run --plan: GET only, « actions prévues : N » then one « - <action> »
   const { code, lines } = await exec(['--plan'], cloud);
   assert.equal(code, 0);
   assert.ok(cloud.calls.every(c => c.method === 'GET'), 'GET only (no database yet: nothing to SELECT)');
-  const i = lines.indexOf('actions prévues : 11');
+  // R2.0.22: shared records database (plan 06.1-03) — two more D1 actions.
+  const i = lines.indexOf('actions prévues : 13');
   assert.ok(i >= 0, lines.join('\n'));
   assert.deepEqual(lines.slice(i + 1, i + 7), ['- create-project', '- add-otp', '- create-allow-policy', '- create-allow-app', '- create-bypass-policy', '- create-bypass-app']);
   assert.deepEqual(lines.slice(i + 7, i + 9), ['- create-d1-database', '- create-table']);
   assert.match(lines[i + 9], /^- d1-insert \d+ morceau\(x\), \d+ fichier\(s\), \d+ lignes écrites estimées$/);
-  assert.deepEqual(lines.slice(i + 10, i + 12), ['- bind-d1', '- deploy-worker']);
+  assert.deepEqual(lines.slice(i + 10, i + 14), ['- create-d1-scores-database', '- create-scores-tables', '- bind-d1', '- deploy-worker']);
   // --direct --plan: the former provisioning-only plan.
   const direct = await exec(['--direct', '--plan'], fakeCloud());
   assert.ok(direct.lines.includes('actions prévues : 6'), direct.out);
@@ -573,17 +600,21 @@ test('run (D1, default) on an empty account: Access read back → database → t
   assert.ok(mainApp >= 0 && readBack > bypassApp && firstD1Write > readBack, 'D1 written only after the Access apps are created and read back');
   assert.ok(!cloud.calls.some(c => c.path.startsWith('/pages/assets/') || c.path.endsWith('/upload-token')), 'no Pages upload JWT ever');
   const w = allWrites(cloud.calls).slice(allWrites(cloud.calls).findIndex(c => c.path.includes('/d1/')));
-  const kinds = w.map(c => (c.path.endsWith('/query') ? (c.body.batch ? 'batch' : c.body.sql.split(' ')[0]) : `${c.method} ${c.path.replace(A, '').replace(DB_UUID, '{base}')}`));
+  // R2.0.22: shared records database (plan 06.1-03) — the records schema batch is told apart from the insert batches.
+  const kinds = w.map(c => (c.path.endsWith('/query') ? (c.body.batch ? (c.body.batch.every(q => q.sql.startsWith('INSERT')) ? 'batch' : 'schema') : c.body.sql.split(' ')[0]) : `${c.method} ${c.path.replace(A, '').replace(DB_UUID, '{base}')}`));
   assert.equal(kinds[0], 'POST /d1/database');
   assert.equal(kinds[1], 'CREATE');
   const lastBatch = kinds.lastIndexOf('batch');
   assert.ok(lastBatch >= 2 && kinds.slice(2, lastBatch + 1).every(k => k === 'batch'));
-  assert.deepEqual(kinds.slice(lastBatch + 1), ['PATCH /pages/projects/zuma', 'POST /pages/projects/zuma/deployments']);
+  assert.deepEqual(kinds.slice(lastBatch + 1), ['POST /d1/database', 'schema', 'PATCH /pages/projects/zuma', 'POST /pages/projects/zuma/deployments']);
+  assert.deepEqual(w[lastBatch + 1].body, { name: 'zuma-scores' });
+  assert.deepEqual(w[lastBatch + 2].body.batch.map(q => q.sql), [...SCORES_SCHEMA]);
+  assert.ok(w[lastBatch + 2].path.endsWith(`/d1/database/${SCORES_UUID}/query`), 'schema sent to zuma-scores');
   assert.deepEqual(w[0].body, { name: 'zuma-assets' });
   assert.equal(w[1].body.sql, 'CREATE TABLE IF NOT EXISTS blobs (key TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (key, part))');
-  const patch = w[lastBatch + 1].body;
-  for (const env of ['production', 'preview']) assert.deepEqual(patch.deployment_configs[env].d1_databases, { ASSETS_DB: { id: DB_UUID } });
-  const form = w[lastBatch + 2].form;
+  const patch = w[lastBatch + 3].body;
+  for (const env of ['production', 'preview']) assert.deepEqual(patch.deployment_configs[env].d1_databases, { ASSETS_DB: { id: DB_UUID }, SCORES_DB: { id: SCORES_UUID } });
+  const form = w[lastBatch + 4].form;
   assert.equal(form.get('branch'), 'main');
   assert.equal(form.get('manifest'), '{}');
   assert.match(form.get('commit_message'), /^R2\.0\.20 .* worker:[0-9a-f]{16}$/);
@@ -604,6 +635,7 @@ test('run (D1, default) on an empty account: Access read back → database → t
   assert.match(out, new RegExp(`https://${HOST.replace(/\./g, '\\.')}`), 'production URL in the log');
   assert.match(out, /abc12345\.zuma-x\.pages\.dev/, 'deployment URL in the log');
   assert.ok(!out.includes(DB_UUID), 'database id masked');
+  assert.ok(!out.includes(SCORES_UUID), 'records database id masked');
   // Second run: not a single write; --plan announces nothing.
   const before = cloud.calls.length;
   const again = await exec([], cloud, { dir });
@@ -735,7 +767,10 @@ test('no mode ever sends DELETE; PATCH only on the Pages project; PUT only on li
   const puts = cloud.calls.filter(c => c.method === 'PUT');
   assert.deepEqual(puts.map(c => c.path), [`${A}/access/apps/app-Prisme`], 'one PUT, on the listed app only');
   const sql = cloud.calls.filter(c => c.path.endsWith('/query')).flatMap(c => (c.body.batch ?? [c.body]).map(q => q.sql));
-  assert.ok(sql.length > 0 && sql.every(q => /^(SELECT |CREATE TABLE IF NOT EXISTS blobs |INSERT OR IGNORE INTO blobs )/.test(q)), 'no UPDATE / DELETE / DROP');
+  // R2.0.22: shared records database (plan 06.1-03) — the whitelist is extended explicitly to the records schema.
+  assert.ok(sql.length > 0 && sql.every(q => /^(SELECT |CREATE TABLE IF NOT EXISTS (blobs|scores|times) |INSERT OR IGNORE INTO blobs )/.test(q)), 'no UPDATE / DELETE / DROP');
+  const records = cloud.calls.filter(c => c.path.endsWith(`/d1/database/${SCORES_UUID}/query`)).flatMap(c => (c.body.batch ?? [c.body]).map(q => q.sql));
+  assert.ok(records.length > 0 && records.every(q => q === SCORES_TABLES_SQL || SCORES_SCHEMA.includes(q)), 'records database: a SELECT or one of the two CREATE only');
 });
 
 test('run --rollback-plan: GET only, prints the ordered removal (project first) with DELETE endpoints and dashboard paths', async () => {
@@ -748,11 +783,14 @@ test('run --rollback-plan: GET only, prints the ordered removal (project first) 
   const at = prefix => lines.findIndex(l => l.startsWith(prefix));
   assert.ok(at('1. supprimer les déploiements du projet Pages (contenu retiré d\'abord)') >= 0, out);
   assert.ok(at('2. retirer la liaison D1 « ASSETS_DB »') > at('1. '));
-  assert.ok(at('3. supprimer la base D1 « zuma-assets »') > at('2. '));
-  assert.ok(at('4. supprimer le projet Pages') > at('3. '));
-  assert.ok(at('5. supprimer l\'application principale et l\'application Bypass') > at('4. '));
-  assert.ok(at(`6. supprimer les politiques « ${ALLOW} » / « ${BYPASS} » si app_count = 0`) > at('5. '));
-  assert.ok(at('7. garder la méthode « One-time PIN » (facultatif : la retirer)') > at('6. '));
+  // R2.0.22: shared records database (plan 06.1-03) — SCORES_DB and zuma-scores steps inserted, steps renumbered.
+  assert.ok(at('3. retirer la liaison D1 « SCORES_DB »') > at('2. '));
+  assert.ok(at('4. supprimer la base D1 « zuma-assets »') > at('3. '));
+  assert.ok(at('5. supprimer la base D1 « zuma-scores »') > at('4. '));
+  assert.ok(at('6. supprimer le projet Pages') > at('5. '));
+  assert.ok(at('7. supprimer l\'application principale et l\'application Bypass') > at('6. '));
+  assert.ok(at(`8. supprimer les politiques « ${ALLOW} » / « ${BYPASS} » si app_count = 0`) > at('7. '));
+  assert.ok(at('9. garder la méthode « One-time PIN » (facultatif : la retirer)') > at('8. '));
   assert.match(out, /DELETE \/accounts\/\{compte\}\/pages\/projects\/zuma\/deployments\/dep-1\?force=true/);
   assert.match(out, /PATCH \/accounts\/\{compte\}\/pages\/projects\/zuma .*"ASSETS_DB":null/);
   assert.match(out, /DELETE \/accounts\/\{compte\}\/d1\/database\/\{base\}/);
@@ -809,6 +847,7 @@ test('the whole output of a run never contains the upload JWT, the token or the 
   assert.ok(!all.includes(ACC), 'no account id');
   assert.ok(!all.includes(ME), 'no e-mail address (the account name embeds it)');
   assert.ok(!all.includes(DB_UUID), 'no database id');
+  assert.ok(!all.includes(SCORES_UUID), 'no records database id');
 });
 
 test('redact masks JWTs, Authorization values and 32+ hex identifiers, keeping the last 4 characters', () => {
