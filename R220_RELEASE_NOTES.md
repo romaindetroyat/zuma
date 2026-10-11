@@ -133,6 +133,26 @@ Une régression de l'astuce du STATS, relevée sur les captures de R2.0.20, est 
   - `r217-presentation` (05-15) : le bloc de l'astuce appelle `layoutTipBlock`, qui retombe sur `layoutTip`.
 - **Total : 284 tests** + garde de publication. R2.0.19 en comptait 247 ; s'y ajoutent 9 `r220-presentation`, 17 `r220-pwa`, 7 `r220-ios` et 4 `r220-tip`.
 
+## Build
+
+- **Suite** : `npm test` → **284 tests** verts + `publication guard: 529 tracked files, none proprietary`. Fichiers : r206, r211, r213, r214, r214-import, r214-presentation, r215, r215-font, r215-import, r215-presentation, r216, r216-presentation, r217, r217-presentation, r218, r218-presentation, r219, r219-presentation, r220-ios, r220-presentation, r220-pwa, r220-tip. `npm run check` propre, `node tools/guard.mjs` vert.
+- **Build public** (`node tools/build.mjs`) : code seul, identique à ce que construit la CI.
+- **Standalone** (`node tools/build.mjs --standalone`) : `standalone/zuma-standalone.html`, **7 809 949 octets** (7,4 Mio ; +2 839 depuis le build de 05-14, mise en page de l'astuce). Douze modules concaténés (`pwa` compris), sans service worker, sans manifeste ni liens PNG ; `R2.0.20` apparaît 22 fois, commentaires de code compris, et le badge est composé à l'exécution. Verrous de fichier unique (`r215-presentation`, 15 tests) verts.
+  - **Démarrage sur `file://`** (Chromium headless, 1 280 × 960 CSS, `?level=3-3&debug=1`), à DPR 2 comme à DPR 1 : « Codex de Mixtec » en ≈ 3 s, badge `R2.0.20 · 2.0.20+20261011T081049 · ressources originales`, kit STATS 2 × avec `arial12bold` comme police d'astuce. STATS ouvert par Tab : astuce tirée au hasard complète ; l'astuce la plus longue, forcée, tient sur trois lignes complètes en minuscules. Aucune carte d'installation, **console propre**.
+- **Artefact privé** (`node tools/build.mjs --deploy`) : « artefact de déploiement : dist/ (**291 fichiers, 5.7 Mio**, empreinte du pack **db5c071e6a40**) — à héberger uniquement en privé » ; 5 969 088 octets. `dist/version.json` : version 2.0.20, build `2.0.20+20261011T081116`, `assets` 269.
+  - **Hors ligne** (relevé de 05-15 sur l'artefact final, Chromium) : la première visite installe le worker, avec 291 requêtes dont 269 sous `assets/`. Caches : `zuma-shell-<build>` 21 entrées, `zuma-assets-db5c071e6a40` **269 / 269** ; 6 077 289 octets stockés.
+  - Après `setOffline(true)` et rechargement : pack original chargé, niveau « Spirale du destin », 40 billes, badge « … ressources originales · hors ligne : 6,0 Mo », console propre.
+  - **Installabilité** : `Page.getInstallabilityErrors` → `[]`, manifeste sans erreur (`id` `./`, `display_override` fullscreen / standalone), icônes 192 / 512 / maskable 512 servies en PNG à leur taille.
+- **Relevés de 05-14, non refaits** :
+  - mise à jour sans retéléchargement du pack : 22 requêtes du worker, toutes du shell, 0 sous `assets/` ; « Mettre à jour » recharge la nouvelle version et garde le cache du pack ;
+  - invite d'installation synthétique : « Installer Zuma », un seul `prompt()` ;
+  - OK du STATS : contrôle DOM égal au rectangle dessiné à 0,05 px près ;
+  - iPhone 15 et iPad Pro 11 émulés : rotation, échange au toucher, curseurs au doigt, bandes ;
+  - captures et journaux dans le dossier de travail de la session, **jamais dans le dépôt**.
+- **Correctif de l'astuce** (05-15), captures avant / après aux DPR 1 et 2 : les sept astuces du pack, forcées l'une après l'autre dans le STATS du 3-3. Avant : 5 sur 7 en Cancun10 majuscule tronquée. Après : 7 sur 7 complètes en Arial12Bold, deux en colonne sur deux lignes et cinq sur trois lignes.
+- **Rien n'est déployé.** L'hébergement privé (Cloudflare Pages derrière Access) et la synchronisation des scores relèvent du plan 05-16. `dist/`, `standalone/` et `private_assets/` restent hors de Git (`git status` propre).
+- Hypothèses à valider en UAT 9 : voir la section suivante et `05-UAT.md`, « Neuvième session ».
+
 ## Hypothèses à confirmer en UAT
 
 Elles sont listées pour la neuvième session (`05-UAT.md`). L'installation réelle sur iPhone et iPad attend l'hébergement privé en HTTPS (plan 05-16) : un iPhone ne peut pas installer une PWA servie en `http://<IP locale>`.
