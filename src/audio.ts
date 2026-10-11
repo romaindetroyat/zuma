@@ -161,17 +161,111 @@ function parseManifest(raw: unknown): Record<string, string[]> {
 }
 
 /**
- * Safari's Audio Session API (iOS / iPadOS 16.4+): `ambient` mixes with other audio and follows the silent switch, as
- * games usually do (hypothesis to confirm in UAT 9 against `playback`). Absent elsewhere: nothing happens.
+ * Safari's Audio Session API (iOS / iPadOS 16.4+). UAT 9 (quick 261011-ios-sound-menu): `ambient` (05-14) follows the
+ * silent switch and the user heard nothing, so the game now asks for `playback` — it sounds with the switch on, as
+ * D-38 §6 first required, and interrupts other audio like a media player.
  */
-function setAudioSession(): void {
+export const AUDIO_SESSION_TYPE = 'playback';
+
+/** Sets `navigator.audioSession.type` to AUDIO_SESSION_TYPE; false when absent or not settable (never throws). */
+export function setAudioSession(nav: unknown): boolean {
   try {
-    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-    if (session) session.type = 'ambient';
+    const session = (nav as { audioSession?: { type: string } } | null | undefined)?.audioSession;
+    if (!session) return false;
+    session.type = AUDIO_SESSION_TYPE;
+    return session.type === AUDIO_SESSION_TYPE;
   } catch {
-    /* not settable */
+    return false;
   }
 }
+
+/**
+ * Starts a one-sample silent buffer on the destination: WebKit only unlocks Web Audio for good when a source starts
+ * inside the gesture handler, `resume()` alone is not always enough. Returns false without the API (never throws).
+ */
+export function primeContext(ctx: Pick<AudioContext, 'createBuffer' | 'createBufferSource' | 'destination' | 'sampleRate'> | null | undefined): boolean {
+  if (!ctx) return false;
+  try {
+    const buffer = ctx.createBuffer(1, 1, ctx.sampleRate || 44100);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 10 ms of 8-bit 8 kHz silence (124 bytes): the clip played by primeMediaChannel. */
+export const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+
+/** The part of `document` the audio unlock uses. */
+export interface AudioDocument {
+  createElement(tag: 'audio'): HTMLAudioElement;
+  readonly visibilityState?: DocumentVisibilityState;
+  addEventListener?(type: string, listener: () => void): void;
+}
+
+/**
+ * Plays a silent inline `<audio>` (muted when `play()` starts, unmuted at once, volume 0) from the gesture: on iOS
+ * before 16.4 (no Audio Session API) a playing media element moves the page to the media channel, so Web Audio no
+ * longer follows the silent switch. Returns false when it could not be started (never throws, rejection swallowed).
+ */
+export function primeMediaChannel(doc: Pick<AudioDocument, 'createElement'> | null | undefined): boolean {
+  if (!doc) return false;
+  try {
+    const el = doc.createElement('audio');
+    el.setAttribute('playsinline', '');
+    el.setAttribute('webkit-playsinline', '');
+    el.setAttribute('x-webkit-airplay', 'deny');
+    el.preload = 'auto';
+    el.src = SILENT_WAV;
+    el.volume = 0;
+    el.muted = true;
+    const played = el.play() as Promise<void> | undefined;
+    el.muted = false;
+    if (played && typeof played.catch === 'function') played.catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** WebKit (Safari, every iOS browser) by feature detection on WebKit-only globals, not the user agent. */
+export function isWebKit(win: unknown): boolean {
+  const w = win as { GestureEvent?: unknown; webkitAudioContext?: unknown } | null | undefined;
+  return !!w && (typeof w.GestureEvent !== 'undefined' || typeof w.webkitAudioContext !== 'undefined');
+}
+
+type AudioContextCtor = new () => AudioContext;
+
+/** Browser objects the AudioManager touches, injectable for the Node tests; every field may be missing. */
+export interface AudioEnv {
+  AudioContext?: AudioContextCtor | null;
+  navigator?: unknown;
+  document?: AudioDocument | null;
+  /** Default target of the gesture listeners and source of `pageshow`. */
+  window?: EventTarget | null;
+  /** Play the silent `<audio>` on unlock (isWebKit). */
+  webkit?: boolean;
+}
+
+/** The live browser environment; empty fields under Node. */
+export function browserAudioEnv(): AudioEnv {
+  const w = typeof window !== 'undefined' ? window : undefined;
+  const Ctor = w ? (w.AudioContext ?? (w as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext) : undefined;
+  return {
+    AudioContext: Ctor ?? null,
+    navigator: typeof navigator !== 'undefined' ? navigator : undefined,
+    document: typeof document !== 'undefined' ? document : null,
+    window: w ?? null,
+    webkit: isWebKit(w),
+  };
+}
+
+/** Gesture events that may unlock the audio on iOS (touchstart / pointerdown are not always activations, D-38 §6). */
+const UNLOCK_EVENTS = ['touchend', 'pointerup', 'click'] as const;
 
 export class AudioManager {
   enabled = true;
@@ -188,7 +282,20 @@ export class AudioManager {
   private loops = new Map<LoopKey, Loop>();
   private pulses = new Map<PulseKey, Pulse>();
 
-  constructor(private readonly assetBase = 'assets/') {}
+  /** Silent `<audio>` already played (once per page). */
+  private mediaPrimed = false;
+  /** Gesture listeners: their target while bound, null when detached (context running). */
+  private unlockTarget: EventTarget | null = null;
+  /** Target given to bindUnlock (null before): the listeners are re-armed on it after an interruption. */
+  private bound: EventTarget | null = null;
+  private readonly onGesture = (): void => this.unlock();
+
+  constructor(private readonly assetBase = 'assets/', private readonly env: AudioEnv = browserAudioEnv()) {}
+
+  /** State of the context: `none` before the first gesture, else suspended / running / interrupted / closed. */
+  get state(): string {
+    return this.ctx?.state ?? 'none';
+  }
 
   get volume(): number {
     return this.sfxVolume;
@@ -229,37 +336,88 @@ export class AudioManager {
     return mime => (mime.startsWith('audio/ogg') ? 'maybe' : '');
   }
 
-  /** Must be called from a user gesture so the context can start; decodes every pack sound in parallel (D-07). */
+  /**
+   * Must be called from a user gesture. Creates the context (session type set first), decodes every pack sound in
+   * parallel (D-07), resumes a suspended / interrupted context and, while the context is not running, starts a
+   * one-sample silent source inside the gesture (primeContext); on WebKit the silent `<audio>` is played once
+   * (primeMediaChannel). Never throws.
+   */
   unlock(): void {
     if (!this.ctx) {
-      const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+      const Ctor = this.env.AudioContext;
       if (!Ctor) return;
-      setAudioSession();
-      this.ctx = new Ctor();
+      setAudioSession(this.env.navigator);
+      try {
+        this.ctx = new Ctor();
+      } catch {
+        return;
+      }
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.8 * this.volume;
       this.master.connect(this.ctx.destination);
+      this.watchState(this.ctx);
       void this.preload();
     }
+    if (this.ctx.state !== 'running') primeContext(this.ctx);
+    if (this.env.webkit && !this.mediaPrimed) this.mediaPrimed = primeMediaChannel(this.env.document);
     this.resume();
   }
 
   /** Resumes a context the browser suspended, or that iOS `interrupted` (call, other app, lock). */
   private resume(): void {
-    const state: string = this.ctx?.state ?? 'closed';
-    if (state === 'suspended' || state === 'interrupted') void this.ctx?.resume().catch(() => undefined);
+    const ctx = this.ctx;
+    const state: string = ctx?.state ?? 'closed';
+    if (!ctx || (state !== 'suspended' && state !== 'interrupted')) return;
+    try {
+      void ctx.resume().then(() => this.syncListeners(), () => undefined);
+    } catch {
+      /* resume refused outside a gesture */
+    }
+  }
+
+  /** Gesture listeners follow the context: detached once it runs, re-armed when it is suspended or interrupted again. */
+  private watchState(ctx: AudioContext): void {
+    try {
+      ctx.addEventListener('statechange', () => this.syncListeners());
+    } catch {
+      /* old WebKit: resume().then still syncs */
+    }
+  }
+
+  private syncListeners(): void {
+    const running = this.ctx?.state === 'running';
+    if (running && this.unlockTarget) {
+      for (const type of UNLOCK_EVENTS) this.unlockTarget.removeEventListener(type, this.onGesture);
+      this.unlockTarget = null;
+    } else if (!running && !this.unlockTarget && this.bound) {
+      this.attach(this.bound);
+    }
+  }
+
+  private attach(target: EventTarget): void {
+    for (const type of UNLOCK_EVENTS) target.addEventListener(type, this.onGesture, { passive: true });
+    this.unlockTarget = target;
   }
 
   /**
-   * R2.0.20 (D-38 §6): iOS does not always take `touchstart` / `pointerdown` as an activation gesture, so the context
-   * is also unlocked on `touchend`, `pointerup` and `click`; it is resumed when the page becomes visible again.
+   * R2.0.20 (D-38 §6) and UAT 9: iOS does not always take `touchstart` / `pointerdown` as an activation gesture, so the
+   * context is also unlocked on `touchend`, `pointerup` and `click`; these listeners stay until the context runs and
+   * come back if it is suspended or interrupted. The context is resumed when the page is visible again
+   * (`visibilitychange`) or restored from the back-forward cache (`pageshow`).
    */
-  bindUnlock(target: EventTarget = window): void {
-    const unlock = (): void => this.unlock();
-    for (const type of ['touchend', 'pointerup', 'click']) target.addEventListener(type, unlock, { passive: true });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') this.resume();
-    });
+  bindUnlock(target: EventTarget | null | undefined = this.env.window): void {
+    if (!target || this.bound) return;
+    this.bound = target;
+    if (this.ctx?.state !== 'running') this.attach(target);
+    const doc = this.env.document;
+    try {
+      doc?.addEventListener?.('visibilitychange', () => {
+        if (doc.visibilityState === 'visible') this.resume();
+      });
+      this.env.window?.addEventListener('pageshow', () => this.resume());
+    } catch {
+      /* no events */
+    }
   }
 
   /** Fetches and decodes every available key at once; each failure only disables that key. */
