@@ -391,3 +391,58 @@ test('loadAdventureKit: null without advback; missing pieces and fonts are null,
   assert.equal(kit.fonts.brown, null);
   assert.equal(kit.pixelScale, 1);
 });
+
+// ---------------------------------------------------------------- main.js: the adventure screen driven (Task 3)
+/** Body of a compiled method, up to the closing brace at its indentation. */
+const method = (src, signature) => {
+  const start = src.indexOf(signature);
+  assert.ok(start >= 0, `${signature.trim()} compiled`);
+  const end = src.indexOf('\n    }', start);
+  return src.slice(start, end > 0 ? end : undefined);
+};
+
+test('main.js: the loop paints the adventure screen through drawScene + drawAdventure; the 06-03 pass-through is gone from dispatch', () => {
+  const main = read('.compiled/main.js');
+  const loop = method(main, '    loop(time) {');
+  assert.match(loop, /drawAdventureFrame\(time\)/);
+  assert.match(loop, /drawWelcomeFrame\(time\)/);
+  assert.match(method(main, '    drawAdventureFrame(time) {'), /drawScene\([\s\S]*drawAdventure\(/);
+  const dispatch = method(main, '    dispatch(event) {');
+  assert.doesNotMatch(dispatch, /kind: 'play'|kind: 'temple-done'|kind: 'ending-done'|kind: 'main-menu'/, 'no transitional pass-through');
+  assert.doesNotMatch(main, /Transitional until plan 06-04/);
+});
+
+test('main.js: doors select (kind: select, stage), the selected door again = Jouer, buttons « Jouer » / « Menu principal », click sound on the buttons only', () => {
+  const main = read('.compiled/main.js');
+  assert.match(main, /kind: 'select', stage/);
+  assert.match(main, /doorAt\(/);
+  assert.match(main, /advButtonAt\(/);
+  const activate = method(main, '    adventureButton(id) {');
+  assert.match(activate, /key: 'button', gain: 1, rate: 1/);
+  assert.match(activate, /kind: 'play'/);
+  assert.match(activate, /kind: 'main-menu'/);
+  const down = method(main, '    adventureDown(p, button) {');
+  assert.match(down, /this\.adventureButton\('play'\)|adventureButton\('play'\)/, 'a press on the selected door plays (0x440e06)');
+  assert.doesNotMatch(down, /key: 'button'/, 'selecting a door is silent (0x440db0)');
+});
+
+test('main.js: 2 × adventure kit above HD_MIN_SCALE, loaded after the STATS kit; arrival reveal (revealTemple / revealProgress), earthquake once, doors locked meanwhile', () => {
+  const main = read('.compiled/main.js');
+  assert.match(method(main, '    applyHd() {'), /upscaleAdventureKit\(/);
+  const start = method(main, '    async start() {');
+  assert.ok(start.indexOf('loadStatsKit(') < start.indexOf('loadAdventureKit('), 'after the STATS kit');
+  assert.match(main, /revealTemple\(/);
+  assert.match(main, /revealProgress\(/);
+  assert.match(main, /advArrivalMaj\(/);
+  assert.match(main, /advShakeStep\(/);
+  assert.match(main, /key: 'earthquake'/);
+});
+
+test('main.js: keyboard on the adventure screen — Left / Right walk the open doors, Enter / Space = Jouer, Escape = Menu principal; touch press / release', () => {
+  const main = read('.compiled/main.js');
+  const keys = method(main, '    adventureKey(code) {');
+  for (const k of ['ArrowLeft', 'ArrowRight', 'Enter', 'Space', 'Escape']) assert.match(keys, new RegExp(`'${k}'`), k);
+  assert.match(keys, /kind: 'select'/);
+  assert.match(main, /adventureUp\(/);
+  assert.match(main, /adventureMove\(/);
+});
