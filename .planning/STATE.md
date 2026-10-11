@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 5 of 7 (Règles originales complètes)
-Plan: 13 of 13 executed (01-13)
-Status: Awaiting UAT 8 verdict (R2.0.19 standalone sent)
-Last activity: 2026-10-11 - Plans 05-12/05-13 exécutés (R2.0.19, 247 tests) : comblement des brèches et rebond au contact de l'original, recul ZUMA par chaîne avec billes retirées à l'entrée, pièce qui consomme le tir (rayon 36), 3 grenouilles, HUD recalé (réserve, « xN », clignotement), apparition des power-ups silencieuse, clics de billes corrigés, « Perdu… » unique ; standalone envoyé. Avant : plans 05-10/05-11 exécutés (R2.0.18, 212 tests) : tunnels (octets CURV tunnel/priorité, dessin en passes), menu natif, entrées sur toute la fenêtre, taille de fenêtre, vies tous les 50 000, cadence des pièces, roulement, décompte sur toutes les chaînes ; standalone envoyé. Avant : plans 05-08/05-09 exécutés (R2.0.17, 176 tests) : barème original (brèches, combos, enchaînements), STATS sur grille, décompte borné, netteté EPX 2× ; standalone envoyé. Avant : plans 05-05..05-07 exécutés (R2.0.16, 142 tests) : règles lues dans Zuma.exe (vitesse, pousseur, zone lente, arrivée, repeat/single, munitions, décompte, ACE TIME, pièces), alerte 600 px, roulement, bannière ZUMA, STATS couleurs/décompte ; standalone envoyé ; UAT 5 : flou, alignement STATS, décompte trop long, bonus de brèche
+Plan: 15 of 16 executed (01-15) ; 05-16 (hébergement privé Cloudflare) à exécuter
+Status: R2.0.20 standalone sent ; UAT 9 (Mac local) possible ; 05-16 next
+Last activity: 2026-10-11 - Plans 05-14/05-15 exécutés (R2.0.20, 284 tests) : OK du STATS en bouton de pied d'origine, PWA hors ligne (shell + pack), icônes, installation Mac/PC/iPhone/iPad, toucher la grenouille, rotation, astuce complète sur trois lignes ; décisions D-42/D-43 (hébergement privé Cloudflare, standalone maintenu). Avant : plans 05-12/05-13 exécutés (R2.0.19, 247 tests) : comblement des brèches et rebond au contact de l'original, recul ZUMA par chaîne avec billes retirées à l'entrée, pièce qui consomme le tir (rayon 36), 3 grenouilles, HUD recalé (réserve, « xN », clignotement), apparition des power-ups silencieuse, clics de billes corrigés, « Perdu… » unique ; standalone envoyé. Avant : plans 05-10/05-11 exécutés (R2.0.18, 212 tests) : tunnels (octets CURV tunnel/priorité, dessin en passes), menu natif, entrées sur toute la fenêtre, taille de fenêtre, vies tous les 50 000, cadence des pièces, roulement, décompte sur toutes les chaînes ; standalone envoyé. Avant : plans 05-08/05-09 exécutés (R2.0.17, 176 tests) : barème original (brèches, combos, enchaînements), STATS sur grille, décompte borné, netteté EPX 2× ; standalone envoyé. Avant : plans 05-05..05-07 exécutés (R2.0.16, 142 tests) : règles lues dans Zuma.exe (vitesse, pousseur, zone lente, arrivée, repeat/single, munitions, décompte, ACE TIME, pièces), alerte 600 px, roulement, bannière ZUMA, STATS couleurs/décompte ; standalone envoyé ; UAT 5 : flou, alignement STATS, décompte trop long, bonus de brèche
 
 Progress: [█████░░░░░] 57% (4/7 phases)
 
@@ -67,6 +67,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-11 07:00
-Stopped at: phase 5 (13 plans) exécutée, standalone R2.0.19 envoyé, en attente de l'UAT 8 ; ensuite `/gsd:verify-work 5` puis `/gsd:plan-phase 6`
+Last session: 2026-10-11 08:20
+Stopped at: 05-15 au point de contrôle humain (UAT 9) ; 05-16 (hébergement privé Cloudflare + Access) lancé
 Resume file: None
