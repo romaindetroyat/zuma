@@ -550,11 +550,11 @@ export function welcomePromptLayout(kind: PromptView['kind'], strings: Record<st
   return { title, lines: wrapText(body, MENU_LAYOUT.content.w, measure) };
 }
 
-type MmButtonState = 'normal' | 'hover' | 'pressed';
+export type MmButtonState = 'normal' | 'hover' | 'pressed';
 const mmButtonState = (id: string, view: PromptView): MmButtonState => (view.pressed === id ? 'pressed' : view.hover === id || view.focus === id ? 'hover' : 'normal');
 
-/** Frame, head, title and rule shared by both dialogs; returns the text measure of the body font. */
-function mmDialogFrame(ctx: CanvasRenderingContext2D, kit: StatsKit | null, title: string): void {
+/** Frame, head, title and rule shared by the welcome dialogs and the god dialogue (adventure.ts). */
+export function mmDialogFrame(ctx: CanvasRenderingContext2D, kit: StatsKit | null, title: string): void {
   const L = MENU_LAYOUT;
   if (kit) {
     const k = kit.pixelScale;
@@ -581,7 +581,7 @@ function mmDialogFrame(ctx: CanvasRenderingContext2D, kit: StatsKit | null, titl
 }
 
 /** A dialog button: DialogButton in three slices with its label, or a vector stand-in. */
-function mmDialogButton(ctx: CanvasRenderingContext2D, kit: StatsKit | null, rect: Rect, label: string, state: MmButtonState): void {
+export function mmDialogButton(ctx: CanvasRenderingContext2D, kit: StatsKit | null, rect: Rect, label: string, state: MmButtonState): void {
   const nudge = state === 'pressed' ? 1 : 0;
   if (kit) {
     drawDialogButton(ctx, kit.button, state, rect, kit.pixelScale, MENU_LAYOUT.button.edge);
@@ -601,7 +601,7 @@ function mmDialogButton(ctx: CanvasRenderingContext2D, kit: StatsKit | null, rec
 }
 
 /** Body lines: left-aligned for the name dialog, centred on the frame for the continue question. */
-function mmDialogBody(ctx: CanvasRenderingContext2D, kit: StatsKit | null, lines: string[], first: number, centred: boolean): void {
+export function mmDialogBody(ctx: CanvasRenderingContext2D, kit: StatsKit | null, lines: string[], first: number, centred: boolean): void {
   const L = MENU_LAYOUT;
   const x = centred ? L.title.x : L.content.x;
   lines.forEach((line, i) => {

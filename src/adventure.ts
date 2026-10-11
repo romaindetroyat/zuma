@@ -10,7 +10,13 @@
  * touches the DOM at module level. Top-level names carry an `adv` / `ADV` prefix (the standalone concatenates every
  * module into one scope).
  */
-import { DOOR_COUNT, DOOR_MESSAGES, TEMPLE_NAMES, type HighScore } from './progress.js';
+import { DOOR_COUNT, DOOR_MESSAGES, GOD_LINES, TEMPLE_NAMES, type HighScore } from './progress.js';
+import { canvasOf, type Bitmap, type OriginalPack } from './original.js';
+import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
+import { upscaleBitmap } from './upscale.js';
+import { STATS_LAYOUT, drawNineSlice, wrapText, type Rect, type StatsKit } from './statsdialog.js';
+import { MENU_LAYOUT } from './menudialog.js';
+import { WELCOME_DIALOG, mmDialogBody, mmDialogButton, mmDialogFrame, type MmButtonState } from './welcome.js';
 
 export interface AdvRect { x: number; y: number; w: number; h: number }
 export interface AdvDoor { x: number; y: number; anchor: { x: number; y: number } }
@@ -211,4 +217,430 @@ export function advLines(selected: number, strings: Record<string, string> | nul
 /** Hint box text: CLICK_ON_A_DOORWAY while a door other than the selected one is hovered, else UNCOVER_THE_SECRET_TEMPLES. */
 export function advHint(hover: number | null, selected: number, strings: Record<string, string> | null): string {
   return advString(strings, hover !== null && hover !== selected ? 'CLICK_ON_A_DOORWAY' : 'UNCOVER_THE_SECRET_TEMPLES');
+}
+
+// ------------------------------------------------------------------ kit
+
+/** Alpha of cel 0 of a door at 1 × (the hit test of 0x440c90 reads it), row-major, width × height. */
+export interface AdvAlpha { w: number; h: number; alpha: Uint8Array }
+
+/**
+ * Pieces of the adventure and ending screens. `back` (advback holed by `_advback`) is required; any other piece may be
+ * missing and is then skipped. Doors keep their four horizontal cels; `doorMasks` = cel 0 alpha at 1 × for the hit
+ * test (null when the pixels cannot be read: the cel rectangle is used). Fonts: `brown` NativeAlienExtended16
+ * (FONT_BROWNTITLE), `message` Cancun10 and `score` Cancun8 (outlined stand-ins of the « !program » fonts
+ * MAIN10OUTLINE2 / MAIN8OUTLINE(SCORE)), `number` the STATS text font (FONT_DIALOG stand-in), `huge` NativeAlien48,
+ * `title` NativeAlienExtended18. `pixelScale` 2 when every picture and font are the 2 × EPX copies.
+ */
+export interface AdventureKit {
+  sky: Bitmap | null;
+  back: Bitmap;
+  title: Bitmap | null;
+  plaque: Bitmap | null;
+  stage: Bitmap | null;
+  temples: Record<string, Bitmap | null>;
+  doors: Array<Bitmap | null>;
+  doorMasks: Array<AdvAlpha | null> | null;
+  play: Bitmap | null;
+  mainMenu: Bitmap | null;
+  happyEnding: Bitmap | null;
+  fonts: { brown: BitmapFont | null; message: BitmapFont | null; score: BitmapFont | null; number: BitmapFont | null; huge: BitmapFont | null; title: BitmapFont | null };
+  dialog: StatsKit | null;
+  pixelScale: 1 | 2;
+}
+
+const ADV_TEMPLE_KEYS = ['advtemple1', 'advtemple2', 'advtemple2v', 'advtemple3', 'advtemple3v', 'advtemple4', 'advmiddle'] as const;
+/** Pack key of door i: advdoor{temple}{a,b,c}. */
+const advDoorKey = (i: number): string => `advdoor${Math.floor(i / 3) + 1}${'abc'[i % 3]}`;
+
+/** Cel 0 alpha of each door (1 ×), or null when a canvas cannot be read (Node, tainted picture). */
+function advDoorMasks(doors: Array<Bitmap | null>): Array<AdvAlpha | null> | null {
+  try {
+    return doors.map(door => {
+      if (!door) return null;
+      const w = Math.floor(door.width / 4);
+      const h = door.height;
+      if (!(w > 0) || !(h > 0)) return null;
+      const cut = canvasOf(w, h);
+      const ctx = cut.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(door, 0, 0, w, h, 0, 0, w, h);
+      const data = ctx.getImageData(0, 0, w, h).data;
+      const alpha = new Uint8Array(w * h);
+      for (let i = 0; i < alpha.length; i++) alpha[i] = data[i * 4 + 3];
+      return { w, h, alpha };
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Loads the adventure / ending pieces; null without `advback` (→ vector adventure screen). Never throws. */
+export async function loadAdventureKit(pack: OriginalPack, dialog: StatsKit | null): Promise<AdventureKit | null> {
+  const safe = (p: Promise<Bitmap | null>): Promise<Bitmap | null> => p.catch(() => null);
+  const font = (key: string): Promise<BitmapFont | null> => loadBitmapFont(pack, key).catch(() => null);
+  try {
+    const backP = safe(pack.masked('advback'));
+    const pieces = Promise.all([
+      safe(pack.image('advsky')), safe(pack.masked('advtitle')), safe(pack.masked('advhighscore')), safe(pack.masked('advstage')),
+      safe(pack.masked('advplaybutton')), safe(pack.masked('advmainmenubutton')), safe(pack.image('happyending')),
+    ]);
+    const templeP = Promise.all(ADV_TEMPLE_KEYS.map(key => safe(pack.masked(key))));
+    const doorP = Promise.all(Array.from({ length: DOOR_COUNT }, (_, i) => safe(pack.masked(advDoorKey(i)))));
+    const fontP = Promise.all(['nativealienextended16', 'cancun10', 'cancun8', 'nativealien48', 'nativealienextended18'].map(font));
+    const back = await backP;
+    if (!back) return null;
+    const [[sky, title, plaque, stage, play, mainMenu, happyEnding], templeList, doors, [brown, message, score, huge, titleFont]] = await Promise.all([pieces, templeP, doorP, fontP]);
+    const temples: Record<string, Bitmap | null> = {};
+    ADV_TEMPLE_KEYS.forEach((key, i) => { temples[key] = templeList[i]; });
+    return {
+      sky, back, title, plaque, stage, temples, doors, doorMasks: advDoorMasks(doors), play, mainMenu, happyEnding,
+      fonts: { brown, message, score, number: dialog?.fonts.text ?? null, huge, title: titleFont }, dialog, pixelScale: 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The kit over 2 × EPX pictures and fonts (D-19), with the 2 × dialog kit when given. All or nothing, like
+ * buildHdAssets / upscaleWelcomeKit: when any picture or font cannot be upscaled, the 1 × kit is returned.
+ */
+export function upscaleAdventureKit(kit: AdventureKit, dialogHd: StatsKit | null): AdventureKit {
+  if (kit.pixelScale !== 1) return kit;
+  let complete = true;
+  const big = (image: Bitmap | null): Bitmap | null => {
+    if (!image) return null;
+    const out = upscaleBitmap(image);
+    if (!out) complete = false;
+    return out;
+  };
+  const font = (f: BitmapFont | null): BitmapFont | null => {
+    if (!f) return null;
+    const out = f.upscaled();
+    if (out.pixelScale !== 2) complete = false;
+    return out;
+  };
+  const back = big(kit.back);
+  const temples: Record<string, Bitmap | null> = {};
+  for (const key of Object.keys(kit.temples)) temples[key] = big(kit.temples[key]);
+  const f = kit.fonts;
+  const dialog = dialogHd ?? kit.dialog;
+  const out: AdventureKit = {
+    sky: big(kit.sky), back: back ?? kit.back, title: big(kit.title), plaque: big(kit.plaque), stage: big(kit.stage), temples,
+    doors: kit.doors.map(big), doorMasks: kit.doorMasks, play: big(kit.play), mainMenu: big(kit.mainMenu), happyEnding: big(kit.happyEnding),
+    fonts: { brown: font(f.brown), message: font(f.message), score: font(f.score), number: dialogHd?.fonts.text ?? font(f.number), huge: font(f.huge), title: font(f.title) },
+    dialog, pixelScale: 2,
+  };
+  return complete && back ? out : kit;
+}
+
+/** Cel 0 alpha test of door `i` at a cel-local logical point (true when the kit has no mask for it). */
+export function advDoorOpaque(kit: AdventureKit | null, i: number, lx: number, ly: number): boolean {
+  const m = kit?.doorMasks?.[i];
+  if (!m) return true;
+  const x = Math.floor(lx);
+  const y = Math.floor(ly);
+  if (x < 0 || y < 0 || x >= m.w || y >= m.h) return false;
+  return m.alpha[y * m.w + x] !== 0;
+}
+
+/** Logical cel widths and heights of the twelve doors (0 for a missing picture). */
+export function advDoorSizes(kit: AdventureKit | null): { widths: number[]; heights: number[] } {
+  const k = kit?.pixelScale ?? 1;
+  const doors = kit?.doors ?? [];
+  return {
+    widths: Array.from({ length: DOOR_COUNT }, (_, i) => (doors[i] ? Math.floor(doors[i]!.width / k / 4) : ADV_VECTOR_DOOR.w)),
+    heights: Array.from({ length: DOOR_COUNT }, (_, i) => (doors[i] ? Math.floor(doors[i]!.height / k) : ADV_VECTOR_DOOR.h)),
+  };
+}
+
+// ------------------------------------------------------------------ drawing: adventure screen
+
+export interface AdventureView {
+  /** Counter in maj (10 ms) since the screen was entered. */
+  c: number;
+  maxStage: number;
+  selected: number;
+  hover: number | null;
+  button: { hover: AdvButtonId | null; pressed: AdvButtonId | null };
+  reveal: AdvReveal | null;
+  shake: readonly number[];
+  scores: readonly HighScore[];
+  strings: Record<string, string> | null;
+}
+
+const ADV_W = 640;
+const ADV_H = 480;
+const ADV_VECTOR_FONT = '"Trebuchet MS", Verdana, sans-serif';
+/** Door size of the vector screen (no pack picture). */
+const ADV_VECTOR_DOOR = { w: 48, h: 40 };
+/** 1 px black outline of the « OUTLINE » program fonts: the eight neighbours, then the text. */
+const ADV_OUTLINE: ReadonlyArray<readonly [number, number]> = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+
+function advText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string, px: number, align: CanvasTextAlign = 'left'): void {
+  ctx.font = `bold ${px}px ${ADV_VECTOR_FONT}`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+/** Text in a bitmap font (tinted) or the vector stand-in; `outline` adds the 1 px black outline. */
+function advWrite(ctx: CanvasRenderingContext2D, font: BitmapFont | null, text: string, x: number, y: number, color: string, align: 'left' | 'center' | 'right', px: number, outline = false): void {
+  if (font) {
+    if (outline) for (const [dx, dy] of ADV_OUTLINE) font.draw(ctx, text, x + dx, y + dy, { tint: '#000000', align });
+    font.draw(ctx, text, x, y, { tint: color, align });
+    return;
+  }
+  if (outline) {
+    ctx.font = `bold ${px}px ${ADV_VECTOR_FONT}`;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#000000';
+    ctx.strokeText(text, x, y);
+  }
+  advText(ctx, text, x, y, color, px, align);
+}
+
+/** Picture at its logical size (a 2 × kit picture is drawn at half its pixel size). */
+function advImage(ctx: CanvasRenderingContext2D, image: Bitmap | null, x: number, y: number, k: number): void {
+  if (!image) return;
+  ctx.drawImage(image, x, y, image.width / k, image.height / k);
+}
+
+/** Cel `cel` of a picture cut in `cels` horizontal cels, drawn at its logical size. */
+function advCel(ctx: CanvasRenderingContext2D, image: Bitmap | null, cel: number, cels: number, x: number, y: number, k: number): void {
+  if (!image) return;
+  const w = Math.floor(image.width / k / cels);
+  const h = image.height / k;
+  ctx.drawImage(image, cel * w * k, 0, w * k, h * k, x, y, w, h);
+}
+
+const advButtonCel = (id: AdvButtonId, view: AdventureView): number => (view.button.pressed === id ? 2 : view.button.hover === id ? 1 : 0);
+
+/**
+ * Draws the adventure screen in logical units (the caller sets the backing-store transform, Renderer.drawScene), in
+ * the order of 0x441b50: sky ×3 (before the holed back), advback, advTitle, the plaque, the temples back to front with
+ * their doors (cels from doorCel), the STAGE plaque and number, the temple name and the door message, the three
+ * scores, the hint box; then the two buttons (child widgets). `kit` null → a vector adventure screen with the same
+ * zones (never a DOM panel).
+ */
+export function drawAdventure(ctx: CanvasRenderingContext2D, kit: AdventureKit | null, view: AdventureView): void {
+  const c = Number.isFinite(view.c) ? Math.max(0, view.c) : 0;
+  if (!kit) {
+    advDrawVector(ctx, view);
+    return;
+  }
+  const k = kit.pixelScale;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, ADV_W, ADV_H);
+  if (kit.sky) {
+    const o = advSkyOffset(c);
+    for (const x of [o - ADV.sky.w, o, o + ADV.sky.w]) ctx.drawImage(kit.sky, x, 0, ADV.sky.w, kit.sky.height / k);
+  }
+  ctx.drawImage(kit.back, 0, 0, ADV_W, kit.back.height / k);
+  advImage(ctx, kit.title, ADV.title.x, ADV.title.y, k);
+  advImage(ctx, kit.plaque, ADV.plaque.x, ADV.plaque.y, k);
+  const saved = ctx.globalAlpha;
+  for (const piece of advTemples(view.maxStage, view.reveal, view.shake)) {
+    const image = kit.temples[piece.image] ?? null;
+    if (piece.alpha <= 0) continue;
+    ctx.globalAlpha = saved * piece.alpha;
+    advImage(ctx, image, piece.x, piece.y, k);
+    for (let i = piece.doors[0]; i < piece.doors[1]; i++) {
+      const d = ADV.doors[i];
+      advCel(ctx, kit.doors[i] ?? null, doorCel(i, view.maxStage, view.selected, view.hover), 4, d.x + piece.dx, d.y + piece.dy, k);
+    }
+    ctx.globalAlpha = saved;
+  }
+  advTexts(ctx, kit, view);
+  advCel(ctx, kit.mainMenu, advButtonCel('main-menu', view), 3, ADV.buttons.mainMenu.x, ADV.buttons.mainMenu.y, k);
+  advCel(ctx, kit.play, advButtonCel('play', view), 3, ADV.buttons.play.x, ADV.buttons.play.y, k);
+}
+
+/** STAGE plaque and number, the two lines, the plaque scores (names clipped at x 567) and the hint box. */
+function advTexts(ctx: CanvasRenderingContext2D, kit: AdventureKit | null, view: AdventureView): void {
+  const k = kit?.pixelScale ?? 1;
+  const f = kit?.fonts;
+  const S = ADV.stage;
+  if (view.selected >= 0) {
+    if (kit) advImage(ctx, kit.stage, S.x, S.y, k);
+    else advText(ctx, 'STAGE', S.x + 4, S.numberBaseline, '#d9c48a', 12);
+    advWrite(ctx, f?.number ?? null, String(Math.floor(view.selected) + 1), S.numberX, S.numberBaseline, S.color, 'left', 13);
+  }
+  const lines = advLines(view.selected, view.strings);
+  const M = ADV.message;
+  advWrite(ctx, f?.brown ?? null, lines.title, M.cx, M.baseline, '#ffffff', 'center', 16);
+  advWrite(ctx, f?.message ?? null, lines.message, M.cx, M.second, M.secondColor, 'center', 12, true);
+  const C = ADV.scores;
+  const lineHeight = f?.score ? f.score.height : 12;
+  const rows = scoreRows(view.scores, lineHeight);
+  for (const row of rows) advWrite(ctx, f?.score ?? null, row.score, C.scoreX, row.baseline, C.color, 'left', 10, true);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, C.nameClip, ADV_H);
+  ctx.clip();
+  for (const row of rows) advWrite(ctx, f?.score ?? null, row.name, C.nameX, row.baseline, C.color, 'left', 10, true);
+  ctx.restore();
+  const H = ADV.hint;
+  const hint = advHint(view.hover, view.selected, view.strings);
+  const font = f?.score ?? null;
+  const measure = font ? (s: string): number => font.measure(s) : (s: string): number => { ctx.font = `bold 10px ${ADV_VECTOR_FONT}`; return ctx.measureText(s).width; };
+  const first = H.y + (font ? font.ascent : 10);
+  wrapText(hint, H.w, measure).forEach((line, i) => {
+    const y = first + i * H.lineHeight;
+    if (y <= H.y + H.h) advWrite(ctx, font, line, H.x, y, H.color, 'left', 10, true);
+  });
+}
+
+/** Vector adventure screen (pack without its adventure pictures): the same zones, doors as boxes, texts, buttons. */
+function advDrawVector(ctx: CanvasRenderingContext2D, view: AdventureView): void {
+  const sky = ctx.createLinearGradient(0, 0, 0, ADV_H);
+  sky.addColorStop(0, '#2c5a7a');
+  sky.addColorStop(0.3, '#2f5a2a');
+  sky.addColorStop(1, '#14260f');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, ADV_W, ADV_H);
+  advText(ctx, 'AVENTURE', 92, 46, '#f0c040', 26, 'center');
+  advText(ctx, 'RECORDS', 548, 36, '#f0c040', 20, 'center');
+  ADV.doors.forEach((d, i) => {
+    const cel = doorCel(i, view.maxStage, view.selected, view.hover);
+    ctx.fillStyle = cel === 3 ? '#ff9a2a' : cel === 2 ? '#b07a3a' : cel === 1 ? '#3a2a18' : '#6a6a5a';
+    ctx.fillRect(d.x + 4, d.y + 4, ADV_VECTOR_DOOR.w, ADV_VECTOR_DOOR.h);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#d8c08a';
+    ctx.strokeRect(d.x + 4, d.y + 4, ADV_VECTOR_DOOR.w, ADV_VECTOR_DOOR.h);
+  });
+  advTexts(ctx, null, view);
+  for (const [id, label] of [['main-menu', 'MENU PRINCIPAL'], ['play', 'JOUER']] as const) {
+    const r = id === 'play' ? ADV.buttons.play : ADV.buttons.mainMenu;
+    const cel = advButtonCel(id, view);
+    ctx.fillStyle = cel === 2 ? '#5a4a30' : cel === 1 ? '#a08a5a' : '#7a6a48';
+    ctx.fillRect(r.x + 2, r.y + 2, r.w - 4, r.h - 4);
+    advText(ctx, label, r.x + r.w / 2, r.y + r.h / 2 + 5, '#fff2c0', 13, 'center');
+  }
+}
+
+// ------------------------------------------------------------------ god dialogue (TransitionMgr 0x430320–0x431b10)
+
+export type GodTemple = 1 | 2 | 3 | 4 | 5;
+
+/** Fallbacks of the frog's replies (strings.json values); the god texts fall back to their readable keys. */
+const ADV_REPLY_STRINGS: Record<string, string> = {
+  RIBBIT: 'Coâ-coâ.', 'RIBBIT_?': 'Coâ-coâ ?', 'RIBBIT_!': 'Coâ-coâ !', I_BEG_TO_DIFFER: '(Je proteste).', NEVER_GIVE_UP: '(Abandonner ? Jamais).',
+  FULFILL_THE_PROPHECY: "(J'accomplirai la prophétie).", IN_SPACE: "(Dans l'espace) ?", WERD: '(Bizarre) !',
+};
+
+const advReply = (strings: Record<string, string> | null, key: string): string => strings?.[key] ?? ADV_REPLY_STRINGS[key] ?? key;
+
+/** Pages of the god's speech: one per text key (temple 4 speaks twice). */
+export function godPages(temple: GodTemple): number {
+  return GOD_LINES[temple]?.god.length ?? 1;
+}
+
+/**
+ * The dialogue's single footer button: the frog's reply « <RIBBIT…> <translation> » (0x430320–0x431b10 joins the two
+ * strings with a space), the same on every page; it turns the page, then ends the dialogue.
+ */
+export function godDialogWidgets(strings: Record<string, string> | null, temple: GodTemple): Array<{ id: 'god-next'; rect: Rect; label: string }> {
+  const L = MENU_LAYOUT;
+  const [ribbit, reply] = (GOD_LINES[temple] ?? GOD_LINES[1]).reply;
+  return [{ id: 'god-next', rect: { x: L.content.x, y: L.button.footer, w: L.content.w, h: L.button.h }, label: `${advReply(strings, ribbit)} ${advReply(strings, reply)}` }];
+}
+
+/**
+ * God dialogue over the frozen board: the OPTIONS frame of the dialogs with the GodHead, the temple name as title (none
+ * for the final « Espace » dialogue), the page's text wrapped on the content width, the reply button.
+ */
+export function drawGodDialog(ctx: CanvasRenderingContext2D, kit: StatsKit | null, view: { temple: GodTemple; page: number; hover: boolean; pressed: boolean }, strings: Record<string, string> | null): void {
+  const table = kit?.strings ?? strings;
+  const lines = GOD_LINES[view.temple] ?? GOD_LINES[1];
+  const page = Math.max(0, Math.min(lines.god.length - 1, Number.isFinite(view.page) ? Math.floor(view.page) : 0));
+  const title = view.temple <= 4 ? advTempleName(table, view.temple - 1) : '';
+  mmDialogFrame(ctx, kit, title);
+  const key = lines.god[page];
+  const text = (table?.[key] ?? key.replace(/_/g, ' ')).replace(/&cr;/g, ' ');
+  const font = kit?.fonts.text ?? null;
+  const measure = font ? (s: string): number => font.measure(s) : (s: string): number => { ctx.font = `bold 14px ${ADV_VECTOR_FONT}`; return ctx.measureText(s).width; };
+  mmDialogBody(ctx, kit, wrapText(text, MENU_LAYOUT.content.w, measure), WELCOME_DIALOG.bodyFirst, false);
+  const [button] = godDialogWidgets(table, view.temple);
+  const state: MmButtonState = view.pressed ? 'pressed' : view.hover ? 'hover' : 'normal';
+  mmDialogButton(ctx, kit, button.rect, button.label, state);
+}
+
+// ------------------------------------------------------------------ ending (D-03, D-10)
+
+/**
+ * Ending screen layout (D-10, no original counterpart beyond `happyending`: the original scrolls the credits over it,
+ * not reproduced): the title, the final score, the advHighscore plaque heading the dialogbox table of the ten best
+ * scores (rank, name, score; the run's row highlighted), one OK.
+ */
+export const ADV_ENDING = {
+  title: { cx: 320, baseline: 60, maxWidth: 600 },
+  score: { cx: 320, baseline: 100 },
+  plaque: { x: 228, y: 110 },
+  frame: { x: 150, y: 146, w: 340, h: 326 } as Rect,
+  rows: { first: 210, lineHeight: 18, rankRight: 196, nameX: 206, nameClip: 380, scoreRight: 446 },
+  ok: { x: 260, y: 406, w: 120, h: 48 } as Rect,
+  highlight: '#ffff4c',
+  text: '#ffffff',
+};
+
+export function endingWidgets(): Array<{ id: 'ending-ok'; rect: Rect; label: string }> {
+  return [{ id: 'ending-ok', rect: { ...ADV_ENDING.ok }, label: 'OK' }];
+}
+
+export interface EndingView { score: number; rank: number | null; scores: readonly HighScore[]; hover: boolean; pressed: boolean; strings: Record<string, string> | null }
+
+/**
+ * Ending screen: `happyending` full screen at (0, 0), CONGRATULATIONS (« FÉLICITATIONS ! ») in NativeAlien48 when it
+ * fits 600 px (else NativeAlienExtended18), « Score : N », the plaque over the dialogbox table of the ten best scores
+ * with the run's row in 0xffff4c (rank null: the run is out of the table, the score line says it), OK. `kit` null →
+ * the same layout in vector form.
+ */
+export function drawEnding(ctx: CanvasRenderingContext2D, kit: AdventureKit | null, view: EndingView): void {
+  const E = ADV_ENDING;
+  const k = kit?.pixelScale ?? 1;
+  const dialog = kit?.dialog ?? null;
+  const table = view.strings ?? dialog?.strings ?? null;
+  if (kit?.happyEnding) ctx.drawImage(kit.happyEnding, 0, 0, ADV_W, ADV_H);
+  else {
+    ctx.fillStyle = '#3a3428';
+    ctx.fillRect(0, 0, ADV_W, ADV_H);
+  }
+  const title = table?.CONGRATULATIONS ?? 'FÉLICITATIONS !';
+  const huge = kit?.fonts.huge ?? null;
+  if (huge && huge.measure(title) <= E.title.maxWidth) huge.draw(ctx, title, E.title.cx, E.title.baseline, { align: 'center' });
+  else if (kit?.fonts.title) kit.fonts.title.draw(ctx, title, E.title.cx, E.title.baseline, { align: 'center', multiply: '#f0c040' });
+  else advWrite(ctx, null, title, E.title.cx, E.title.baseline, '#ffd84a', 'center', 40, true);
+  const score = Math.max(0, Math.floor(advFinite(view.score)));
+  advWrite(ctx, kit?.fonts.brown ?? null, `${table?.SCORE ?? 'Score :'} ${score}`, E.score.cx, E.score.baseline, '#ffffff', 'center', 18, !kit?.fonts.brown);
+  if (dialog) drawNineSlice(ctx, dialog.frame, STATS_LAYOUT.source, STATS_LAYOUT.inset, E.frame, dialog.pixelScale);
+  else {
+    ctx.fillStyle = 'rgba(28,18,7,.88)';
+    ctx.fillRect(E.frame.x, E.frame.y, E.frame.w, E.frame.h);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#c9a85a';
+    ctx.strokeRect(E.frame.x, E.frame.y, E.frame.w, E.frame.h);
+  }
+  if (kit?.plaque) advImage(ctx, kit.plaque, E.plaque.x, E.plaque.y, k);
+  else advText(ctx, 'RECORDS', 320, E.plaque.y + 40, '#f0c040', 22, 'center');
+  const R = E.rows;
+  const font = dialog?.fonts.text ?? null;
+  view.scores.slice(0, 10).forEach((entry, i) => {
+    const y = R.first + i * R.lineHeight;
+    const color = i === view.rank ? E.highlight : E.text;
+    advWrite(ctx, font, `${i + 1}.`, R.rankRight, y, color, 'right', 14);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, R.nameClip, ADV_H);
+    ctx.clip();
+    advWrite(ctx, font, entry.name, R.nameX, y, color, 'left', 14);
+    ctx.restore();
+    advWrite(ctx, font, String(Math.max(0, Math.floor(advFinite(entry.score)))), R.scoreRight, y, color, 'right', 14);
+  });
+  const [ok] = endingWidgets();
+  mmDialogButton(ctx, dialog, ok.rect, table?.DIALOG_BUTTON_OK ?? ok.label, view.pressed ? 'pressed' : view.hover ? 'hover' : 'normal');
 }
