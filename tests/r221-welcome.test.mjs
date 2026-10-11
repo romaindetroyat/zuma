@@ -411,3 +411,84 @@ test('source locks: welcome.js glow additive, no innerHTML; render.js drawScene 
   assert.ok(set > 0 && scene.indexOf('paint(') > set, 'setTransform(storeScale) then paint(ctx)');
   assert.match(scene, /restore\(\)/);
 });
+
+// ---------------------------------------------------------------- wiring in main.js / audio.js (D-01, D-11, D-12)
+/** Body of a compiled method, up to the closing brace at its indentation. */
+const method = (src, signature) => {
+  const start = src.indexOf(signature);
+  assert.ok(start >= 0, `${signature.trim()} compiled`);
+  const end = src.indexOf('\n    }', start);
+  return src.slice(start, end > 0 ? end : undefined);
+};
+
+test('main.js: boot through initialApp, every transition through reduceApp, the welcome screen first (R2.0.21, D-01: the app opens on the main menu)', () => {
+  const main = read('.compiled/main.js');
+  assert.match(main, /initialApp\(/);
+  assert.match(main, /reduceApp\(/);
+  const start = method(main, '    async start() {');
+  assert.doesNotMatch(start, /newGame\(\)/, 'no unconditional new game at boot');
+  assert.match(main, /parseProfile\(readJson\(/);
+  assert.match(main, /parseSave\(readJson\(/);
+  assert.match(main, /parseScores\(readJson\(/);
+  assert.match(main, /levels\.length\)/, 'stage sizes from the pack');
+  const loop = method(main, '    loop(time) {');
+  assert.match(loop, /drawScene\(/);
+  assert.match(main, /drawWelcome\(/);
+  const branch = loop.indexOf("screen !== 'level'");
+  const engineExit = loop.indexOf('!engine');
+  assert.ok(branch > 0 && engineExit > branch, 'the welcome is drawn before the engine early exit');
+  // Effects: storage only through writeJson; scores stored as { adventure: scores }.
+  assert.match(main, /writeJson\([^)]*SAVE_KEY/);
+  assert.match(main, /writeJson\([^)]*PROFILE_KEY/);
+  assert.match(main, /writeJson\([^)]*HIGHSCORE_KEY, \{ adventure: /);
+  // Transitional pass-through until plan 06-04 draws the adventure, temple and ending screens.
+  assert.match(main, /kind: 'temple-done'/);
+  assert.match(main, /kind: 'ending-done'/);
+  assert.match(main, /kind: 'play'/);
+  // The end of a level goes through the machine (saved run kept in step): won / retry / gameover / leave.
+  for (const kind of ['won', 'retry', 'gameover', 'leave']) assert.match(main, new RegExp(`kind: '${kind}'`), kind);
+  assert.doesNotMatch(main, /progress = \{ stage: 0, level: 0 \};\n/, 'no wrap-around from 13-1 to 1-1');
+});
+
+test('main.js: OPTIONS out of game from the welcome, hover sounds choral at 0.2 transposed, click button1, UFO loop, keyboard on the stones', () => {
+  const main = read('.compiled/main.js');
+  assert.match(main, /inGame: false/);
+  assert.match(main, /key: 'choral', gain: 0\.2, rate: 2 \*\* \(/);
+  assert.match(main, /key: 'button', gain: 1, rate: 1/);
+  assert.match(main, /setLoop\('ufo'/);
+  assert.match(main, /mmHoverSequence\(/);
+  assert.match(main, /welcomeHit\(/);
+  assert.match(main, /mmUfo\(/);
+  const keys = method(main, '    welcomeKey(code) {');
+  for (const k of ['ArrowUp', 'ArrowDown', 'Tab', 'Enter', 'Space', 'Escape']) assert.match(keys, new RegExp(`'${k}'`), k);
+  assert.match(main, /enabled\)/, 'disabled stones are filtered');
+});
+
+test('main.js: the profile name is never injected into the DOM — hidden input read through sanitizeName only, canvas rendering', () => {
+  const main = read('.compiled/main.js');
+  assert.doesNotMatch(main, /innerHTML/);
+  assert.doesNotMatch(main, /textContent\s*=[^;\n]*(profile|name|prompt)/i);
+  assert.match(main, /maxLength = 16/);
+  assert.match(main, /sanitizeName\([^)]*\.value\)/);
+  assert.match(main, /drawNameDialog\(/);
+  assert.match(main, /drawContinueDialog\(/);
+});
+
+test('main.js: platform first name (D-12) — api/me same-origin with a short timeout, never on file://, late answers → profile-detected', () => {
+  const main = read('.compiled/main.js');
+  assert.match(main, /fetch\('api\/me', \{[^}]*credentials: 'same-origin'/);
+  assert.match(main, /PLATFORM_NAME_TIMEOUT = 1500/);
+  assert.match(main, /protocol !== 'http:' && [^;]*protocol !== 'https:'/);
+  assert.match(main, /kind: 'profile-detected'/);
+  assert.match(main, /platformName/);
+});
+
+test('audio.js: the ufo loop has its own gain and is cut by stopLoops like rolling', async () => {
+  const audio = read('.compiled/audio.js');
+  assert.match(audio, /ufo: UFO_GAIN/);
+  const { rampPlan, UFO_GAIN, ROLLING_GAIN } = await import('../.compiled/audio.js');
+  assert.equal(UFO_GAIN, 0.8);
+  assert.deepEqual(rampPlan(0, 1), { to: ROLLING_GAIN, seconds: 0.05 }, 'rolling unchanged');
+  assert.deepEqual(rampPlan(0, 1, UFO_GAIN), { to: 0.8, seconds: 0.05 });
+  assert.match(method(audio, '    stopLoops() {'), /this\.loops/);
+});
