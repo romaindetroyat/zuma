@@ -76,11 +76,13 @@ test('main.js: frog tap swaps instead of shooting, no pinch / double-tap zoom, r
   assert.match(main, /fullscreenEnabled/);
 });
 
-test('audio.js: audioSession ambient (respects the silent switch), unlock on touchend / pointerup / click, resume when visible', () => {
+// UAT 9 (quick 261011-ios-sound-menu): `ambient` followed the silent switch and the user heard nothing → `playback`
+// (behaviour locked in r220-ios-audio.test.mjs).
+test('audio.js: audioSession playback (sounds with the silent switch on), unlock on touchend / pointerup / click, resume when visible', () => {
   const audio = read('.compiled/audio.js');
   assert.match(audio, /audioSession/);
-  assert.match(audio, /'ambient'/);
-  assert.doesNotMatch(audio, /'playback'/);
+  assert.match(audio, /'playback'/);
+  assert.doesNotMatch(audio, /'ambient'/);
   for (const ev of ['touchend', 'pointerup', 'click', 'visibilitychange']) assert.match(audio, new RegExp(`'${ev}'`), ev);
   assert.match(audio, /'interrupted'/);
   assert.match(read('.compiled/main.js'), /bindUnlock\(/);
