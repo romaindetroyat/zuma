@@ -259,3 +259,288 @@ test('readJson / writeJson: injected storage, null or throwing storage tolerated
   P.writeJson(s, P.PROFILE_KEY, { name: 'Romain', maxStage: 4 });
   assert.deepEqual(P.parseProfile(P.readJson(s, P.PROFILE_KEY)), { name: 'Romain', maxStage: 4 });
 });
+
+// ------------------------------------------------------------ machine d'états (D-01..D-04, D-10, D-11, PROG-01..03)
+
+const ROMAIN = { name: 'Romain', maxStage: 4 };
+const boot = (o = {}) => P.initialApp({ profile: ROMAIN, save: null, scores: P.defaultScores(), sizes: SIZES, startLives: 3, review: null, ...o });
+const kinds = effects => effects.map(e => e.kind);
+const effect = (effects, kind) => effects.find(e => e.kind === kind);
+const WRITES = ['save-run', 'save-profile', 'save-scores'];
+/** Applies events in order; returns the last { state, effects } and every effect seen. */
+const play = (state, events) => {
+  let r = { state, effects: [] };
+  const all = [];
+  for (const ev of events) { r = P.reduceApp(r.state, ev); all.push(...r.effects); }
+  return { ...r, all };
+};
+/** State on a level of `run`, entered through the adventure screen. */
+const onLevel = (run, profile = ROMAIN, extra = {}) => {
+  const { state } = boot({ profile, save: run, ...extra });
+  return P.reduceApp(P.reduceApp(state, { kind: 'adventure' }).state, { kind: 'continue' }).state;
+};
+
+test('boot: welcome screen, no level before the player chooses (D-01); name prompt without profile; ?level= review starts the level', () => {
+  const first = P.initialApp({ profile: null, save: null, scores: P.defaultScores(), sizes: SIZES, startLives: 3, review: null });
+  assert.equal(first.state.screen, 'welcome');
+  assert.equal(first.state.prompt, 'name');
+  assert.deepEqual(first.effects, []);
+  assert.equal(first.state.review, false);
+  const known = boot();
+  assert.equal(known.state.prompt, null);
+  assert.equal(known.state.screen, 'welcome');
+  assert.deepEqual(known.effects, []);
+  const review = boot({ review: run(2, 1) });
+  assert.equal(review.state.screen, 'level');
+  assert.equal(review.state.review, true);
+  assert.deepEqual(review.effects, [{ kind: 'start-level', run: run(2, 1) }]);
+});
+
+test('name dialog: saved profile, empty name → « Joueur », renaming keeps maxStage', () => {
+  const first = P.initialApp({ profile: null, save: null, scores: [], sizes: SIZES, startLives: 3, review: null }).state;
+  const named = P.reduceApp(first, { kind: 'name', name: '  Romain ' });
+  assert.equal(named.state.prompt, null);
+  assert.deepEqual(named.effects, [{ kind: 'save-profile', profile: { name: 'Romain', maxStage: 0 } }]);
+  const empty = P.reduceApp(first, { kind: 'name', name: '   ' });
+  assert.equal(empty.state.profile.name, 'Joueur');
+  assert.equal(empty.state.profile.source, 'default', 'a fallback name, replaceable by the platform name');
+  const renamed = P.reduceApp(boot().state, { kind: 'name', name: 'Zoé' });
+  assert.deepEqual(effect(renamed.effects, 'save-profile').profile, { name: 'Zoé', maxStage: 4 });
+  assert.equal(P.reduceApp(first, { kind: 'adventure' }).state, first, 'Aventure waits for the name');
+});
+
+test('Aventure: adventure screen on maxStage without a save; continue prompt with one; Continuer / Rejouer', () => {
+  const none = P.reduceApp(boot().state, { kind: 'adventure' });
+  assert.equal(none.state.screen, 'adventure');
+  assert.equal(none.state.selected, 4);
+  assert.deepEqual(none.effects, []);
+  const saved = boot({ save: run(3, 2, 15000, 2) }).state;
+  const ask = P.reduceApp(saved, { kind: 'adventure' });
+  assert.equal(ask.state.prompt, 'continue');
+  assert.equal(ask.state.screen, 'welcome');
+  const cont = P.reduceApp(ask.state, { kind: 'continue' });
+  assert.equal(cont.state.screen, 'level');
+  assert.equal(cont.state.prompt, null);
+  assert.deepEqual(effect(cont.effects, 'start-level').run, run(3, 2, 15000, 2), 'score and lives kept');
+  assert.deepEqual(effect(cont.effects, 'save-run').run, run(3, 2, 15000, 2));
+  const fresh = P.reduceApp(ask.state, { kind: 'new-game' });
+  assert.equal(fresh.state.run, null);
+  assert.equal(fresh.state.screen, 'adventure');
+  assert.equal(fresh.state.selected, 4);
+  assert.deepEqual(fresh.effects, [{ kind: 'save-run', run: null }]);
+});
+
+test('without stages (procedural): Aventure starts 0-0, wins chain levels endlessly, leave returns to the welcome screen', () => {
+  const s0 = P.initialApp({ profile: ROMAIN, save: null, scores: [], sizes: [], startLives: 3, review: null }).state;
+  const go = P.reduceApp(s0, { kind: 'adventure' });
+  assert.equal(go.state.screen, 'level');
+  assert.deepEqual(effect(go.effects, 'start-level').run, run(0, 0, 0, 3));
+  const screens = new Set([s0.screen, go.state.screen]);
+  let st = go.state;
+  for (let i = 1; i <= 15; i++) {
+    const w = P.reduceApp(st, { kind: 'won', score: i * 1000, lives: 3, date: '2026-10-11' });
+    assert.deepEqual(effect(w.effects, 'start-level').run, run(0, i, i * 1000, 3));
+    st = w.state;
+    screens.add(st.screen);
+  }
+  const left = P.reduceApp(st, { kind: 'leave' });
+  assert.equal(left.state.screen, 'welcome');
+  const over = play(P.reduceApp(left.state, { kind: 'adventure' }).state, [{ kind: 'gameover', score: 500, date: '' }, { kind: 'leave' }]);
+  for (const s of [left.state.screen, over.state.screen]) screens.add(s);
+  assert.deepEqual([...screens].sort(), ['level', 'welcome'], 'never adventure, temple nor ending');
+});
+
+test('doors and buttons: unlocked doors only, Jouer resumes the run of that stage or starts a new one, Menu principal', () => {
+  const adv = P.reduceApp(boot({ save: run(2, 3, 9000, 2) }).state, { kind: 'adventure' });
+  const screen = P.reduceApp(adv.state, { kind: 'new-game' }).state;
+  const withRun = { ...screen, run: run(2, 3, 9000, 2) };
+  const sel = P.reduceApp(withRun, { kind: 'select', stage: 2 });
+  assert.equal(sel.state.selected, 2);
+  assert.deepEqual(sel.effects, []);
+  for (const bad of [5, 12, -1, NaN, 1.5, Infinity]) assert.equal(P.reduceApp(withRun, { kind: 'select', stage: bad }).state, withRun, `door ${bad} ignored`);
+  const resume = P.reduceApp(sel.state, { kind: 'play' });
+  assert.equal(resume.state.screen, 'level');
+  assert.deepEqual(effect(resume.effects, 'start-level').run, run(2, 3, 9000, 2));
+  assert.deepEqual(effect(resume.effects, 'save-run').run, run(2, 3, 9000, 2));
+  const other = P.reduceApp(P.reduceApp(withRun, { kind: 'select', stage: 1 }).state, { kind: 'play' });
+  assert.deepEqual(effect(other.effects, 'start-level').run, run(1, 0, 0, 3), 'new game at the chosen stage');
+  assert.deepEqual(effect(other.effects, 'save-run').run, run(1, 0, 0, 3));
+  const menu = P.reduceApp(withRun, { kind: 'main-menu' });
+  assert.equal(menu.state.screen, 'welcome');
+  assert.deepEqual(menu.effects, []);
+});
+
+test('victory: next level, stage done (door opening, maxStage raised), temple dialogue, final, ending, back to welcome', () => {
+  const mid = P.reduceApp(onLevel(run(0, 1, 1000, 3)), { kind: 'won', score: 2500, lives: 3, date: '2026-10-11' });
+  assert.equal(mid.state.screen, 'level');
+  assert.deepEqual(effect(mid.effects, 'start-level').run, run(0, 2, 2500, 3));
+  assert.deepEqual(effect(mid.effects, 'save-run').run, run(0, 2, 2500, 3));
+  const first = { name: 'Romain', maxStage: 0 };
+  const end = P.reduceApp(onLevel(run(0, 4, 8000, 2), first), { kind: 'won', score: 9000, lives: 2, date: '2026-10-11' });
+  assert.equal(end.state.screen, 'adventure');
+  assert.equal(end.state.opening, 1);
+  assert.equal(end.state.selected, 1);
+  assert.deepEqual(effect(end.effects, 'save-run').run, run(1, 0, 9000, 2));
+  assert.deepEqual(effect(end.effects, 'save-profile').profile, { name: 'Romain', maxStage: 1 });
+  assert.equal(effect(end.effects, 'start-level'), undefined, 'the player presses Jouer');
+  const temple = P.reduceApp(onLevel(run(2, 4, 30000, 3), { name: 'Romain', maxStage: 2 }), { kind: 'won', score: 31000, lives: 3, date: '' });
+  assert.equal(temple.state.screen, 'temple');
+  assert.equal(temple.state.temple, 1);
+  assert.deepEqual(effect(temple.effects, 'sound'), { kind: 'sound', key: 'templecomplete' });
+  assert.deepEqual(effect(temple.effects, 'save-run').run, run(3, 0, 31000, 3));
+  assert.equal(effect(temple.effects, 'save-profile').profile.maxStage, 3);
+  const after = P.reduceApp(temple.state, { kind: 'temple-done' });
+  assert.equal(after.state.screen, 'adventure');
+  assert.equal(after.state.opening, 3);
+  assert.equal(after.state.selected, 3);
+  assert.equal(after.state.temple, null);
+  const t4 = P.reduceApp(onLevel(run(11, 6, 150000, 3), { name: 'Romain', maxStage: 11 }), { kind: 'won', score: 160000, lives: 3, date: '' });
+  assert.equal(t4.state.temple, 4);
+  assert.equal(P.reduceApp(t4.state, { kind: 'temple-done' }).state.selected, 12, 'the last stage follows temple 4');
+  const final = P.reduceApp(onLevel(run(12, 0, 200000, 2), { name: 'Romain', maxStage: 12 }), { kind: 'won', score: 23000 * 10, lives: 2, date: '2026-10-11' });
+  assert.equal(final.state.screen, 'temple');
+  assert.equal(final.state.temple, 5);
+  assert.deepEqual(effect(final.effects, 'sound'), { kind: 'sound', key: 'templecomplete' });
+  assert.deepEqual(effect(final.effects, 'save-run'), { kind: 'save-run', run: null });
+  const scores = effect(final.effects, 'save-scores').scores;
+  assert.deepEqual(scores[0], { name: 'Romain', score: 230000, stage: 12, level: 0, date: '2026-10-11' });
+  assert.deepEqual(final.state.ending, { score: 230000, rank: 0 });
+  assert.equal(final.state.run, null);
+  assert.equal(effect(final.effects, 'start-level'), undefined, 'never back to 1-1');
+  const ending = P.reduceApp(final.state, { kind: 'temple-done' });
+  assert.equal(ending.state.screen, 'ending');
+  const back = P.reduceApp(ending.state, { kind: 'ending-done' });
+  assert.equal(back.state.screen, 'welcome');
+  assert.equal(back.state.run, null);
+  assert.equal(back.state.ending, null);
+});
+
+test('defeat: retry the same level with the level-start score; game over submits the score, clears the save, then the adventure screen', () => {
+  const lv = onLevel(run(3, 2, 15000, 3));
+  const retry = P.reduceApp(lv, { kind: 'retry', lives: 2 });
+  assert.equal(retry.state.screen, 'level');
+  assert.deepEqual(effect(retry.effects, 'start-level').run, run(3, 2, 15000, 2));
+  assert.deepEqual(effect(retry.effects, 'save-run').run, run(3, 2, 15000, 2));
+  for (const bad of [0, -1, NaN, 100]) assert.equal(P.reduceApp(lv, { kind: 'retry', lives: bad }).state, lv, `lives ${bad}`);
+  const over = P.reduceApp(retry.state, { kind: 'gameover', score: 23000, date: '2026-10-11' });
+  assert.equal(over.state.screen, 'level', 'the game-over STATS is still shown');
+  assert.equal(over.state.run, null);
+  assert.deepEqual(effect(over.effects, 'save-run'), { kind: 'save-run', run: null });
+  const list = effect(over.effects, 'save-scores').scores;
+  assert.deepEqual(list[0], { name: 'Romain', score: 23000, stage: 3, level: 2, date: '2026-10-11' });
+  const left = P.reduceApp(over.state, { kind: 'leave' });
+  assert.equal(left.state.screen, 'adventure');
+  assert.equal(left.state.selected, 4);
+  const anon = { ...onLevel(run(0, 0)), profile: null }; // no profile at submission time (D-04 fallback)
+  const anonOver = P.reduceApp(anon, { kind: 'gameover', score: 1500, date: '' });
+  assert.equal(effect(anonOver.effects, 'save-scores').scores.find(e => e.score === 1500).name, 'Joueur');
+});
+
+test('leaving a level: adventure screen on its stage, the level start saved; Aventure later offers to continue', () => {
+  const lv = onLevel(run(5, 3, 40000, 2));
+  const left = P.reduceApp(lv, { kind: 'leave' });
+  assert.equal(left.state.screen, 'adventure');
+  assert.equal(left.state.selected, 5);
+  assert.deepEqual(left.effects, [{ kind: 'save-run', run: run(5, 3, 40000, 2) }]);
+  const again = play(left.state, [{ kind: 'main-menu' }, { kind: 'adventure' }]);
+  assert.equal(again.state.prompt, 'continue');
+});
+
+test('review (?level=): no save-run, save-profile nor save-scores on any transition; start-level and sounds stay', () => {
+  const r1 = boot({ review: run(0, 4, 8000, 3), profile: { name: 'Romain', maxStage: 0 } }).state;
+  const end = P.reduceApp(r1, { kind: 'won', score: 9000, lives: 3, date: '' });
+  assert.equal(end.state.screen, 'adventure');
+  assert.deepEqual(end.effects.filter(e => WRITES.includes(e.kind)), []);
+  const r2 = boot({ review: run(2, 4, 8000, 3) }).state;
+  const temple = P.reduceApp(r2, { kind: 'won', score: 9000, lives: 3, date: '' });
+  assert.deepEqual(kinds(temple.effects), ['sound']);
+  const over = P.reduceApp(boot({ review: run(1, 1) }).state, { kind: 'gameover', score: 99999, date: '' });
+  assert.deepEqual(over.effects, []);
+  const fin = P.reduceApp(boot({ review: run(12, 0, 1, 3) }).state, { kind: 'won', score: 300000, lives: 3, date: '' });
+  assert.deepEqual(kinds(fin.effects), ['sound']);
+  const next = P.reduceApp(boot({ review: run(0, 0) }).state, { kind: 'won', score: 100, lives: 3, date: '' });
+  assert.deepEqual(kinds(next.effects), ['start-level']);
+  const retry = P.reduceApp(boot({ review: run(0, 0) }).state, { kind: 'retry', lives: 2 });
+  assert.deepEqual(kinds(retry.effects), ['start-level']);
+});
+
+test('out-of-place events change nothing; reduceApp never mutates the state it receives', () => {
+  const welcome = boot().state;
+  for (const ev of [{ kind: 'play' }, { kind: 'won', score: 1, lives: 1, date: '' }, { kind: 'continue' }, { kind: 'temple-done' }, { kind: 'ending-done' }, { kind: 'leave' }, { kind: 'select', stage: 1 }, { kind: 'bogus' }]) {
+    const r = P.reduceApp(welcome, ev);
+    assert.equal(r.state, welcome, ev.kind);
+    assert.deepEqual(r.effects, []);
+  }
+  const adv = P.reduceApp(welcome, { kind: 'adventure' }).state;
+  for (const ev of [{ kind: 'won', score: 1, lives: 1, date: '' }, { kind: 'adventure' }, { kind: 'gameover', score: 1, date: '' }, { kind: 'name', name: 'X' }]) {
+    assert.equal(P.reduceApp(adv, ev).state, adv, ev.kind);
+  }
+  const script = [
+    { kind: 'adventure' }, { kind: 'select', stage: 2 }, { kind: 'play' }, { kind: 'won', score: 100, lives: 3, date: '' },
+    { kind: 'retry', lives: 2 }, { kind: 'leave' }, { kind: 'main-menu' }, { kind: 'adventure' }, { kind: 'continue' },
+    { kind: 'gameover', score: 300, date: '' }, { kind: 'leave' }, { kind: 'profile-detected', name: 'Ana' },
+  ];
+  let st = boot({ profile: { name: 'Romain', maxStage: 12 } }).state;
+  for (const ev of script) {
+    const before = structuredClone(st);
+    const next = P.reduceApp(st, ev).state;
+    assert.deepEqual(st, before, `${ev.kind} did not mutate its input`);
+    st = next;
+  }
+});
+
+// ------------------------------------------------------------ prénom fourni par la plateforme (demande de l'utilisateur, hébergement privé)
+
+test('platform name at boot: used (sanitised) and persisted, no name prompt; absent → planned behaviour', () => {
+  const r = P.initialApp({ profile: null, save: null, scores: [], sizes: SIZES, startLives: 3, review: null, platformName: '  Romain\u0000 ' });
+  assert.equal(r.state.prompt, null, 'no name dialog');
+  assert.deepEqual(r.state.profile, { name: 'Romain', maxStage: 0, source: 'platform' });
+  assert.deepEqual(r.effects, [{ kind: 'save-profile', profile: { name: 'Romain', maxStage: 0, source: 'platform' } }]);
+  for (const absent of [undefined, null, '', '   ', 42]) {
+    const a = P.initialApp({ profile: null, save: null, scores: [], sizes: SIZES, startLives: 3, review: null, platformName: absent });
+    assert.equal(a.state.prompt, 'name', `platformName ${String(absent)}: prompt as planned`);
+    assert.deepEqual(a.effects, []);
+  }
+});
+
+test('platform name never replaces a name typed on this device, replaces the « Joueur » fallback and an older platform name', () => {
+  const typed = boot({ platformName: 'Ana' });
+  assert.deepEqual(typed.state.profile, ROMAIN, 'typed name kept');
+  assert.deepEqual(typed.effects, []);
+  const fallback = boot({ profile: { name: 'Joueur', maxStage: 6, source: 'default' }, platformName: 'Ana' });
+  assert.deepEqual(fallback.state.profile, { name: 'Ana', maxStage: 6, source: 'platform' }, 'progress kept');
+  assert.deepEqual(kinds(fallback.effects), ['save-profile']);
+  const older = boot({ profile: { name: 'Ana', maxStage: 2, source: 'platform' }, platformName: 'Anabelle' });
+  assert.deepEqual(older.state.profile, { name: 'Anabelle', maxStage: 2, source: 'platform' });
+  const same = boot({ profile: { name: 'Ana', maxStage: 2, source: 'platform' }, platformName: 'Ana' });
+  assert.deepEqual(same.effects, [], 'unchanged: nothing written');
+  const review = boot({ profile: null, review: run(0, 0), platformName: 'Ana' });
+  assert.equal(review.state.profile.name, 'Ana');
+  assert.deepEqual(kinds(review.effects), ['start-level'], 'review: nothing written');
+});
+
+test('profile-detected event (identity answered after boot): closes the name prompt, same replacement rules', () => {
+  const first = P.initialApp({ profile: null, save: null, scores: [], sizes: SIZES, startLives: 3, review: null }).state;
+  const got = P.reduceApp(first, { kind: 'profile-detected', name: 'Romain' });
+  assert.equal(got.state.prompt, null);
+  assert.deepEqual(got.effects, [{ kind: 'save-profile', profile: { name: 'Romain', maxStage: 0, source: 'platform' } }]);
+  const typed = boot().state;
+  const kept = P.reduceApp(typed, { kind: 'profile-detected', name: 'Ana' });
+  assert.equal(kept.state, typed, 'a typed name wins');
+  assert.deepEqual(kept.effects, []);
+  const lv = onLevel(run(4, 1, 20000, 3), { name: 'Joueur', maxStage: 4, source: 'default' });
+  const swap = P.reduceApp(lv, { kind: 'profile-detected', name: 'Ana' });
+  assert.equal(swap.state.screen, 'level', 'any screen');
+  assert.deepEqual(swap.state.profile, { name: 'Ana', maxStage: 4, source: 'platform' });
+  const over = P.reduceApp(swap.state, { kind: 'gameover', score: 21000, date: '' });
+  assert.equal(effect(over.effects, 'save-scores').scores[0].name, 'Ana', 'scores carry the platform name');
+  assert.equal(P.reduceApp(first, { kind: 'profile-detected', name: '  ' }).state, first, 'empty name ignored');
+  const renamed = P.reduceApp(P.reduceApp(first, { kind: 'profile-detected', name: 'Ana' }).state, { kind: 'name', name: 'Zoé' });
+  assert.deepEqual(renamed.state.profile, { name: 'Zoé', maxStage: 0 }, 'renaming by hand makes it a typed name');
+});
+
+test('parseProfile keeps the profile source (platform / default), absent or unknown = typed', () => {
+  assert.deepEqual(P.parseProfile('{"name":"Ana","maxStage":3,"source":"platform"}'), { name: 'Ana', maxStage: 3, source: 'platform' });
+  assert.deepEqual(P.parseProfile('{"name":"Joueur","maxStage":0,"source":"default"}'), { name: 'Joueur', maxStage: 0, source: 'default' });
+  assert.deepEqual(P.parseProfile('{"name":"Ana","maxStage":3,"source":"hacker"}'), { name: 'Ana', maxStage: 3 });
+});
