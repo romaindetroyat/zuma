@@ -108,6 +108,8 @@ export interface InstallEnv {
   displayMode: string;
   /** A `beforeinstallprompt` event was received and kept. */
   promptAvailable: boolean;
+  /** Served over http(s); false for the `file://` standalone, which cannot be installed (absent → served). */
+  served?: boolean;
 }
 
 /**
@@ -118,6 +120,7 @@ export interface InstallEnv {
  */
 export function installGuidance(env: InstallEnv): InstallGuidance {
   if (env.standalone || env.displayMode === 'standalone' || env.displayMode === 'fullscreen') return 'installed';
+  if (env.served === false) return 'none';
   if (env.promptAvailable) return 'prompt';
   const ua = env.userAgent ?? '';
   const mac = /Macintosh/.test(ua);
@@ -138,6 +141,7 @@ export function readInstallEnv(promptAvailable: boolean): InstallEnv {
     standalone: nav?.standalone === true,
     displayMode: mode('fullscreen') ? 'fullscreen' : mode('standalone') ? 'standalone' : mode('minimal-ui') ? 'minimal-ui' : 'browser',
     promptAvailable,
+    served: /^https?:$/.test(typeof location === 'undefined' ? '' : location.protocol),
   };
 }
 
