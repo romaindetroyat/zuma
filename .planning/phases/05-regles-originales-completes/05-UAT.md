@@ -103,7 +103,7 @@ Standalone R2.0.17 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 Validés implicitement : netteté (plus de remarque), STATS (grille, décompte), barème des brèches.
 
-## Septième session (à remplir)
+## Septième session (2026-10-11, standalone R2.0.18, macOS)
 
 Standalone R2.0.18 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, écran Retina). Notes de version : `R218_RELEASE_NOTES.md`. Le pack doit avoir été réimporté (`npm run import`) pour les tunnels et les images du menu ; le standalone livré l'embarque déjà.
 
@@ -137,3 +137,9 @@ Standalone R2.0.18 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
+| U34 | Tir sur une pièce : « la boule disparaît et ne s'insère pas dans la ligne après avoir touché la pièce » | Le moteur consomme le projectile quand il ramasse la pièce | Spike 04 (collision projectile / pièce dans l'exécutable) puis plan 05-12 : le projectile poursuit sa course et s'insère ou sort de l'écran (D-31) |
+| U35 | « Il y a un son particulier quand une boule devient un bonus, ce n'est pas celui de l'apparition de la pièce » | `power-spawn` → `powerup` ; à confronter au son réellement joué par l'original à l'apparition d'un power-up | Spike 04 (son joué à la création d'un power-up sur une bille) puis plan 05-12 (D-32) |
+| U36 | Vies : « quand il y en a plus de 3, on a un système x4, x5 qui remplace le compte en grenouilles » | `lifeIcons` dessine 3 grenouilles puis « +N » | Spike 04 (dessin du compteur de vies dans le HUD) puis plan 05-12 : au-delà du seuil original, une grenouille suivie de « xN » dans la police du HUD (D-33) |
+| U37 | « Le recul des lignes est trop lent, ça doit être plus dynamique, surtout pour les comblages de brèches » | `recoilSpeed` 90 px/s sur 8 ticks, `attractSpeed` 240 px/s : valeurs de la baseline, jamais lues dans l'exécutable | Spike 04 (vitesse de recul et d'attraction, accélération éventuelle) puis plan 05-12 (D-34) |
+| U38 | Fin de niveau (ZUMA) : les billes « ne doivent pas reculer trop loin », « certaines disparaissent dans la version originale », recul plus rapide | Recul `zumaback` en ticks à vitesse constante quand la tête couvre > 50 % ; aucune bille retirée | Spike 04 (recul ZUMA : distance, vitesse, sort des billes qui repassent l'entrée) puis plan 05-12 : même comportement (D-35) |
+

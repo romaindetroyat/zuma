@@ -55,6 +55,11 @@ L'utilisateur ne peut pas lancer le jeu original (macOS) : les décisions ci-des
 - **D-28:** Pièces (spike 03 §5) : visibles 10 s (600 ticks) ; tentative à chaque tick avec p ≈ 1/180 une fois écoulés 780 ticks depuis la dernière apparition (même ramassée) ; plus aucune pièce une fois la jauge ZUMA atteinte ; `dist` = pourcentage de piste que la tête de chaîne doit avoir dépassé ; `coinappear` à volume 0,40 avec panoramique (x − 320)/320 × 0,3.
 - **D-29:** Roulement (spike 03 §6) : une boucle par chaîne dans l'original (volume 1 puis 0,98, fondu linéaire ≈ 0,5 s) ; à la demande de l'utilisateur, gain 0,35, attaque 50 ms, fondu linéaire 500 ms à l'arrêt, coupé en pause.
 - **D-30:** Décompte de fin de niveau à plusieurs chaînes : un marqueur par chaîne, parti de la dernière destruction de cette chaîne (à défaut du début de sa piste), tous avancés en même temps (pas de 60 px / 4 maj, +100 chacun), pops partagés toutes les 10 maj, `won` 50 maj après le dernier pas du marqueur le plus long ; `lastDestroy` mémorisé par chaîne. Choix de l'utilisateur (simultané) plutôt que le +50 maj séquentiel lu dans la recherche §7.
+- **D-31:** Pièce touchée : le projectile n'est pas consommé ; il continue sa trajectoire (insertion ou sortie) ; règle exacte selon le spike 04.
+- **D-32:** Apparition d'un power-up sur une bille : son original lu dans l'exécutable (spike 04), distinct de `coinappear`.
+- **D-33:** Compteur de vies du HUD : grenouilles jusqu'au seuil original, puis une grenouille et « xN » (spike 04 pour le seuil, la police et la position).
+- **D-34:** Recul et comblement de brèches : vitesses et accélérations originales (spike 04) ; à défaut, recul ×2,5 plus rapide et attraction accélérée (0 → 600 px/s).
+- **D-35:** Recul ZUMA : distance, vitesse et retrait des billes repassant l'entrée selon l'original (spike 04) ; à défaut recul plafonné et billes revenues avant le début de piste retirées.
 
 ### Claude's Discretion
 - Échelle exacte du dialogue, courbes d'animation, volumes.
