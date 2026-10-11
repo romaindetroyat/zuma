@@ -225,3 +225,189 @@ test('bundle: welcome after progress in MODULES, precached by the worker shell, 
   assert.doesNotMatch(src, /localStorage/, 'no storage in the drawing module');
   assert.doesNotMatch(src, /innerHTML/);
 });
+
+// ---------------------------------------------------------------- composition: welcome, dialogs, OPTIONS out of game, drawScene
+/** Canvas 2D stand-in that records every call and property write (Node has no canvas). */
+function recorder() {
+  const calls = [];
+  const state = { globalCompositeOperation: 'source-over', globalAlpha: 1, fillStyle: '#000', strokeStyle: '#000', font: '10px sans-serif', textAlign: 'left', textBaseline: 'alphabetic', lineWidth: 1, imageSmoothingEnabled: true };
+  const stack = [];
+  const ctx = new Proxy({}, {
+    get(_t, prop) {
+      if (prop === 'calls') return calls;
+      if (prop in state) return state[prop];
+      if (prop === 'save') return () => { stack.push({ ...state }); calls.push({ op: 'save' }); };
+      if (prop === 'restore') return () => { Object.assign(state, stack.pop() ?? {}); calls.push({ op: 'restore' }); };
+      if (prop === 'measureText') return s => ({ width: String(s).length * 8 });
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') return () => ({ addColorStop() {} });
+      return (...args) => { calls.push({ op: prop, args, composite: state.globalCompositeOperation, alpha: state.globalAlpha }); };
+    },
+    set(_t, prop, value) {
+      state[prop] = value;
+      calls.push({ op: 'set', prop, value });
+      return true;
+    },
+  });
+  return ctx;
+}
+const pic = (name, width, height) => ({ name, width, height });
+function fakeKit(pixelScale = 1) {
+  const k = pixelScale;
+  return {
+    sky: pic('sky', 520 * k, 161 * k), back: pic('back', 640 * k, 480 * k), eyeLeft: pic('eyeLeft', 21 * k, 21 * k), eyeRight: pic('eyeRight', 14 * k, 17 * k),
+    eyeLids: pic('eyeLids', 105 * k, 54 * k), glow: pic('glow', 229 * k, 227 * k), sun: pic('sun', 87 * k, 92 * k),
+    stones: {
+      adventure: pic('adventure', 489 * k, 92 * k), gauntlet: pic('gauntlet', 540 * k, 83 * k), options: pic('options', 609 * k, 74 * k),
+      moregames: pic('moregames', 627 * k, 83 * k), quit: pic('quit', 660 * k, 100 * k),
+    },
+    ufo: pic('ufo', 175 * k, 504 * k), font: null, dialog: null, pixelScale,
+  };
+}
+const baseView = { c: 0, hover: null, pressed: null, focus: null, eyes: 'rest', target: null, ufo: { phase: 'idle', t0: 0 }, name: 'Romain', strings: null };
+const images = ctx => ctx.calls.filter(c => c.op === 'drawImage');
+
+test('drawWelcome: 0x43d1a0 order — sky ×3, back, pupils, lids, additive glow, sun, stones (column = state; inactive always 0), UFO last', async () => {
+  const { drawWelcome, MM } = await W();
+  const ctx = recorder();
+  drawWelcome(ctx, fakeKit(), { ...baseView, c: 16, hover: 'gauntlet', pressed: 'options', focus: null });
+  const order = images(ctx).map(c => c.args[0].name);
+  assert.deepEqual(order.slice(0, 4), ['sky', 'sky', 'sky', 'back'], 'the sky is drawn before the holed screen');
+  assert.deepEqual(order.slice(4, 9), ['eyeLeft', 'eyeRight', 'eyeLids', 'glow', 'sun']);
+  assert.deepEqual(order.slice(9), ['adventure', 'gauntlet', 'options', 'moregames', 'quit'], 'no UFO while idle');
+  const sky = images(ctx).slice(0, 3).map(c => c.args[1]);
+  assert.deepEqual(sky, [2 - 520, 2, 2 + 520], 'o = (16 >> 3) mod 520 = 2');
+  const glow = images(ctx).find(c => c.args[0].name === 'glow');
+  assert.equal(glow.composite, 'lighter', 'additive glow');
+  assert.ok(Math.abs(glow.alpha - 75 / 255) < 0.01, 'glow alpha from mmGlow');
+  const col = name => images(ctx).find(c => c.args[0].name === name).args[1];
+  const stone = id => MM.stones.find(s => s.id === id);
+  assert.equal(col('gauntlet'), 0, 'a disabled stone ignores the hover');
+  assert.equal(col('options'), 2 * stone('options').w, 'pressed = column 2');
+  assert.equal(col('adventure'), 0);
+  const eyeLeft = images(ctx).find(c => c.args[0].name === 'eyeLeft');
+  assert.deepEqual(eyeLeft.args.slice(1), [219 - 10.5, 368 - 10.5, 21, 21], 'pupil centred on its rest position');
+  const lids = images(ctx).find(c => c.args[0].name === 'eyeLids');
+  assert.deepEqual(lids.args.slice(1, 3), [191, 331]);
+  const sun = images(ctx).find(c => c.args[0].name === 'sun');
+  assert.deepEqual(sun.args.slice(1, 3), [0, 2]);
+});
+
+test('drawWelcome: focus lights an enabled stone (column 1); a 2 × kit is cut at 2 × and drawn at the logical size; the UFO frame follows mmUfo', async () => {
+  const { drawWelcome, mmUfo } = await W();
+  const ctx = recorder();
+  const ufo = { phase: 'in', t0: 0 };
+  drawWelcome(ctx, fakeKit(2), { ...baseView, c: 150, focus: 'adventure', ufo });
+  const adv = images(ctx).find(c => c.args[0].name === 'adventure');
+  assert.deepEqual(adv.args.slice(1), [163 * 2, 0, 163 * 2, 92 * 2, 452, 64, 163, 92]);
+  const u = images(ctx).at(-1);
+  assert.equal(u.args[0].name, 'ufo', 'the UFO is drawn last');
+  const at = mmUfo(ufo, 150);
+  assert.deepEqual(u.args.slice(1), [0, at.frame * 84 * 2, 175 * 2, 84 * 2, at.x, at.y, 175, 84]);
+  const back = images(ctx).find(c => c.args[0].name === 'back');
+  assert.deepEqual(back.args.slice(1), [0, 0, 640, 480]);
+});
+
+test('drawWelcome: kit null → vector welcome with the same zones (title, readable Aventure / Options, others greyed), never throws', async () => {
+  const { drawWelcome } = await W();
+  const ctx = recorder();
+  assert.doesNotThrow(() => drawWelcome(ctx, null, baseView));
+  const texts = ctx.calls.filter(c => c.op === 'fillText').map(c => c.args[0]);
+  assert.ok(texts.includes('Zuma'), 'title');
+  assert.ok(texts.some(t => /AVENTURE/i.test(t)) && texts.some(t => /OPTIONS/i.test(t)), texts.join(' | '));
+  assert.ok(texts.some(t => t === 'Bienvenue dans Zuma, Romain!'), 'welcome line');
+  assert.doesNotThrow(() => drawWelcome(recorder(), null, { ...baseView, c: NaN, name: null }));
+});
+
+test('welcome line: WELCOME_TO_ZUMA + « , » + name + « ! » (original concatenation), without a profile « Bienvenue dans Zuma ! »', async () => {
+  const { welcomeLine } = await W();
+  assert.equal(welcomeLine({ WELCOME_TO_ZUMA: 'Bienvenue dans Zuma' }, 'Romain'), 'Bienvenue dans Zuma, Romain!');
+  assert.equal(welcomeLine(null, 'Romain'), 'Bienvenue dans Zuma, Romain!');
+  assert.equal(welcomeLine(null, null), 'Bienvenue dans Zuma !');
+});
+
+test('menuWidgets: OPTIONS out of game (0x445310, inGame = 0) — no « Retour au menu principal », footer DONE « Terminé », Aide kept; default unchanged', async () => {
+  const { menuWidgets } = await import('../.compiled/menudialog.js');
+  const out = menuWidgets('menu', null, { inGame: false });
+  assert.ok(!out.some(w => w.id === 'main-menu'));
+  const back = out.find(w => w.id === 'back');
+  assert.equal(back.label, 'Terminé');
+  assert.equal(menuWidgets('menu', { DONE: 'Fini' }, { inGame: false }).find(w => w.id === 'back').label, 'Fini', 'pack string DONE');
+  assert.ok(out.some(w => w.id === 'help'));
+  assert.deepEqual(menuWidgets('menu', null), menuWidgets('menu', null, { inGame: true }), 'inGame defaults to true');
+  assert.ok(menuWidgets('menu', null).some(w => w.id === 'main-menu'));
+  assert.equal(menuWidgets('menu', null).find(w => w.id === 'back').label, 'Retour à la partie');
+  const src = read('.compiled/menudialog.js');
+  assert.match(src, /options\?\.inGame === false/, 'composeMenuDialog reads options.inGame for the title');
+  assert.match(src, /'OPTIONS'/);
+});
+
+test('name / continue dialogs: widgets inside the menu frame; Continuer left, Rejouer right with the confirm width', async () => {
+  const { nameDialogWidgets, continueDialogWidgets } = await W();
+  const { MENU_LAYOUT } = await import('../.compiled/menudialog.js');
+  const F = MENU_LAYOUT.frame;
+  const inside = r => r.x >= F.x && r.y >= F.y && r.x + r.w <= F.x + F.w && r.y + r.h <= F.y + F.h;
+  const name = nameDialogWidgets(null);
+  assert.deepEqual(name.map(w => w.id), ['name-field', 'name-ok']);
+  assert.equal(name[1].label, 'OK');
+  for (const w of name) assert.ok(inside(w.rect), `${w.id} inside the frame`);
+  const strings = { SM_CONTINUE: 'Continuer', NEW_GAME: 'Rejouer' };
+  const cont = continueDialogWidgets(strings);
+  assert.deepEqual(cont.map(w => [w.id, w.label]), [['continue', 'Continuer'], ['new-game', 'Rejouer']]);
+  assert.ok(cont[0].rect.x < cont[1].rect.x, 'Continuer on the left');
+  for (const w of cont) {
+    assert.equal(w.rect.w, MENU_LAYOUT.confirm.buttonW);
+    assert.ok(inside(w.rect));
+  }
+  assert.deepEqual(continueDialogWidgets(null).map(w => w.label), ['Continuer', 'Rejouer'], 'fallbacks');
+});
+
+test('prompt texts: &cr; of the continue question removed; the profile text wrapped inside the content width', async () => {
+  const { welcomePromptLayout } = await W();
+  const { MENU_LAYOUT } = await import('../.compiled/menudialog.js');
+  const strings = {
+    'DO_YOU_WANT_TO_CONTINUE_YOUR_LAST_GAME_?': 'Voulez-vous continuer la dernière partie ?&cr;&cr;&cr;&cr;',
+    ENTER_YOUR_NAME_TO_CREATE_A_NEW_USER_PROFILE: "Entrez votre nom pour créer un nouveau profil d'utilisateur, afin de sauvegarder vos records et votre progression.",
+    NEW_USER: 'NOUVEL UTILISATEUR', RENAME_USER: "RENOMMER L'UTILISATEUR", 'CONTINUE_?': 'CONTINUER ?',
+  };
+  const measure = s => s.length * 7;
+  const cont = welcomePromptLayout('continue', strings, measure);
+  assert.equal(cont.title, 'CONTINUER ?');
+  assert.deepEqual(cont.lines, ['Voulez-vous continuer la dernière partie ?']);
+  assert.ok(cont.lines.every(l => !l.includes('&cr;')));
+  const name = welcomePromptLayout('name', strings, measure);
+  assert.equal(name.title, 'NOUVEL UTILISATEUR');
+  assert.ok(name.lines.length >= 3, 'wrapped');
+  assert.ok(name.lines.every(l => measure(l) <= MENU_LAYOUT.content.w), 'inside the content width');
+  assert.equal(welcomePromptLayout('rename', strings, measure).title, "RENOMMER L'UTILISATEUR");
+  assert.equal(welcomePromptLayout('name', null, measure).title, 'NOUVEL UTILISATEUR', 'fallback');
+});
+
+test('drawNameDialog / drawContinueDialog: vector fallback without a kit, the typed name drawn on the canvas, caret only when asked', async () => {
+  const { drawNameDialog, drawContinueDialog } = await W();
+  const ctx = recorder();
+  drawNameDialog(ctx, null, { kind: 'name', text: 'Romain', caret: true, hover: null, pressed: null, focus: 'name-ok' }, null);
+  const texts = ctx.calls.filter(c => c.op === 'fillText').map(c => c.args[0]);
+  assert.ok(texts.includes('Romain'), 'typed name on the canvas');
+  assert.ok(texts.includes('OK'));
+  const noCaret = recorder();
+  drawNameDialog(noCaret, null, { kind: 'name', text: 'Romain', caret: false, hover: null, pressed: null, focus: null }, null);
+  assert.ok(ctx.calls.filter(c => c.op === 'fillRect').length > noCaret.calls.filter(c => c.op === 'fillRect').length, 'the caret is one more fill');
+  const c2 = recorder();
+  drawContinueDialog(c2, null, { kind: 'continue', text: '', caret: false, hover: 'continue', pressed: null, focus: null }, null);
+  const t2 = c2.calls.filter(c => c.op === 'fillText').map(c => c.args[0]);
+  assert.ok(t2.includes('Continuer') && t2.includes('Rejouer'));
+});
+
+test('source locks: welcome.js glow additive, no innerHTML; render.js drawScene sets the store scale then paints', () => {
+  const welcome = read('.compiled/welcome.js');
+  assert.match(welcome, /globalCompositeOperation = 'lighter'/);
+  assert.doesNotMatch(welcome, /innerHTML|textContent/);
+  assert.match(welcome, /export function drawWelcome\(ctx, kit, view\)/);
+  const render = read('.compiled/render.js');
+  const start = render.indexOf('    drawScene(paint) {');
+  assert.ok(start > 0, 'Renderer.drawScene compiled');
+  const scene = render.slice(start, render.indexOf('\n    }', start));
+  const set = scene.indexOf('setTransform(this.storeScale');
+  assert.ok(set > 0 && scene.indexOf('paint(') > set, 'setTransform(storeScale) then paint(ctx)');
+  assert.match(scene, /restore\(\)/);
+});
