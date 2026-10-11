@@ -578,12 +578,14 @@ export function drawGodDialog(ctx: CanvasRenderingContext2D, kit: StatsKit | nul
  * scores (rank, name, score; the run's row highlighted), one OK.
  */
 export const ADV_ENDING = {
-  title: { cx: 320, baseline: 60, maxWidth: 600 },
-  score: { cx: 320, baseline: 100 },
-  plaque: { x: 228, y: 110 },
-  frame: { x: 150, y: 146, w: 340, h: 326 } as Rect,
-  rows: { first: 210, lineHeight: 18, rankRight: 196, nameX: 206, nameClip: 380, scoreRight: 446 },
-  ok: { x: 260, y: 406, w: 120, h: 48 } as Rect,
+  /** NativeAlien48 has an 81 px ascent (accents included): baseline 74 keeps « É » inside the screen. */
+  title: { cx: 320, baseline: 74, maxWidth: 600 },
+  plaque: { x: 228, y: 84 },
+  frame: { x: 150, y: 118, w: 340, h: 354 } as Rect,
+  rows: { first: 178, lineHeight: 18, rankRight: 196, nameX: 206, nameClip: 380, scoreRight: 446 },
+  /** « Score : N » under the table, inside the frame. */
+  score: { cx: 320, baseline: 374, color: '#f5d65b' },
+  ok: { x: 260, y: 400, w: 120, h: 48 } as Rect,
   highlight: '#ffff4c',
   text: '#ffffff',
 };
@@ -615,8 +617,6 @@ export function drawEnding(ctx: CanvasRenderingContext2D, kit: AdventureKit | nu
   if (huge && huge.measure(title) <= E.title.maxWidth) huge.draw(ctx, title, E.title.cx, E.title.baseline, { align: 'center' });
   else if (kit?.fonts.title) kit.fonts.title.draw(ctx, title, E.title.cx, E.title.baseline, { align: 'center', multiply: '#f0c040' });
   else advWrite(ctx, null, title, E.title.cx, E.title.baseline, '#ffd84a', 'center', 40, true);
-  const score = Math.max(0, Math.floor(advFinite(view.score)));
-  advWrite(ctx, kit?.fonts.brown ?? null, `${table?.SCORE ?? 'Score :'} ${score}`, E.score.cx, E.score.baseline, '#ffffff', 'center', 18, !kit?.fonts.brown);
   if (dialog) drawNineSlice(ctx, dialog.frame, STATS_LAYOUT.source, STATS_LAYOUT.inset, E.frame, dialog.pixelScale);
   else {
     ctx.fillStyle = 'rgba(28,18,7,.88)';
@@ -641,6 +641,8 @@ export function drawEnding(ctx: CanvasRenderingContext2D, kit: AdventureKit | nu
     ctx.restore();
     advWrite(ctx, font, String(Math.max(0, Math.floor(advFinite(entry.score)))), R.scoreRight, y, color, 'right', 14);
   });
+  const score = Math.max(0, Math.floor(advFinite(view.score)));
+  advWrite(ctx, font, `${table?.SCORE ?? 'Score :'} ${score}`, E.score.cx, E.score.baseline, E.score.color, 'center', 15);
   const [ok] = endingWidgets();
   mmDialogButton(ctx, dialog, ok.rect, table?.DIALOG_BUTTON_OK ?? ok.label, view.pressed ? 'pressed' : view.hover ? 'hover' : 'normal');
 }
