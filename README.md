@@ -2,7 +2,7 @@
 
 Reconstruction web/PWA d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
-Baseline : **R2.0.20**.
+Baseline : **R2.0.21**.
 
 ## Contenu du dépôt
 
@@ -13,11 +13,14 @@ Baseline : **R2.0.20**.
 | `src/levels.ts` | Niveaux procéduraux utilisés quand aucune ressource originale n'est fournie. |
 | `src/original.ts` | Chargeur du pack de ressources privé (courbes, fonds, sprites, sons). |
 | `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
-| `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu). |
+| `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu ou hors partie). |
+| `src/progress.ts` | Règles pures de la progression : étages, temples, portes, textes du dieu, meilleurs scores, profil, sauvegarde de partie, machine d'états des écrans (accueil, aventure, niveau, temple, fin). |
+| `src/welcome.ts` | Menu principal original (ciel, soleil, yeux, pierres, OVNI), dialogues de nom et de reprise. |
+| `src/adventure.ts` | Écran d'aventure original (temples, portes, plaque des scores, arrivée d'un temple), dialogue du dieu, écran de fin. |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
-| `src/main.ts` | Boucle de jeu, progression, entrées (souris, clavier, toucher), menu de jeu, carte d'installation, bandeau de mise à jour. |
+| `src/main.ts` | Boucle de jeu, écrans (exécution des effets de la machine d'états), entrées (souris, clavier, toucher), menu de jeu, carte d'installation, bandeau de mise à jour. |
 | `src/pwa.ts` | Service worker (enregistrement, mise à jour confirmée), stockage hors ligne, consignes d'installation par plateforme, rotation et marges sûres. |
-| `tools/` | Build (`build.mjs`, service worker généré par `swgen.mjs`, icônes PNG par `icons.mjs`), serveur local, garde-fou de publication, extraction et import des ressources originales. |
+| `tools/` | Build (`build.mjs`, service worker généré par `swgen.mjs`, icônes PNG par `icons.mjs`), serveur local, garde-fou de publication, extraction et import des ressources originales, mesure de la difficulté (`sim-difficulty.mjs`), hébergement privé (`deploy.mjs`, `d1worker.mjs`). |
 | `tests/` | Suite de non-régression (`node --test`). |
 
 ## Démarrage
@@ -28,7 +31,7 @@ npm test        # build + tests de non-régression + garde-fou de publication
 npm run dev     # build local (avec ressources privées si présentes) puis http://localhost:8080
 ```
 
-Commandes (R2.0.20) :
+Commandes en jeu (R2.0.21) :
 
 | Action | Commande |
 | --- | --- |
@@ -43,14 +46,37 @@ Commandes (R2.0.20) :
 
 Dans l'original, Espace met le jeu en pause et l'échange au clic droit n'a pas été localisé (hypothèse C1) ; Entrée, Échap, Tab et P sont des ajouts. L'option de menu « Pixels nets » arrondit l'échelle à un **nombre entier de pixels d'appareil** par pixel du jeu (par exemple 1,5 × en pixels CSS sur un écran Retina, soit 3 pixels physiques), sans lissage, et désactive les copies 2 × (voir « Netteté ») ; sans elle le jeu remplit la fenêtre en 4:3. Le choix est persisté.
 
-Relecture : le paramètre d'URL `?level=1-3` ouvre directement un niveau (temple-niveau, ici le troisième niveau du premier temple) ; il est ignoré sans pack ou si le couple est hors limites. `?debug=1` expose `window.__zuma.game.debugState()` (moteur et niveau en lecture, pour les scripts de capture).
+Revue : le paramètre d'URL `?level=1-3` ouvre directement un niveau (étage-niveau, ici le troisième niveau du premier étage), sans passer par l'accueil ; il est ignoré sans pack ou si le couple est hors limites. **Une revue n'écrit rien** : ni sauvegarde de partie, ni profil, ni meilleur score, ni meilleur temps. Pour tester la reprise ou la fin de l'aventure, passez par « Aventure » et « Continuer ». `?debug=1` expose `window.__zuma.game.debugState()` (moteur, niveau et état des écrans en lecture, pour les scripts de capture).
+
+## Parcours de jeu
+
+Depuis R2.0.21, le jeu suit le parcours de l'aventure de Zuma Deluxe, écran par écran, avec les graphismes du pack (repli vectoriel sans pack).
+
+1. **Accueil** : le menu principal original (ciel qui défile, soleil, idole dont les yeux suivent la souris après un clic sur la grenouille). Aucun niveau ne démarre avant votre choix.
+   - **Aventure** et **Options** sont actives. Gantelet, Plus de jeux et Quitter sont dessinées mais inactives.
+   - **Options** ouvre le dialogue OPTIONS hors partie : volume, plein écran, pixels nets, Aide, « Terminé ».
+   - Au premier lancement, le jeu **demande votre nom une seule fois** (« NOUVEL UTILISATEUR ») ; un clic sur la ligne « Bienvenue dans Zuma, <nom>! » permet de le changer. Sur la version hébergée, votre prénom est connu par votre adresse de connexion et le nom n'est pas demandé.
+   - Clavier : Haut / Bas pour choisir, Entrée ou Espace pour valider.
+2. **Écran d'aventure** : les quatre temples, les douze portes, la plaque RECORDS (trois meilleurs scores), le numéro d'étage.
+   - Une porte ouverte se sélectionne d'un clic ; un second clic sur la porte sélectionnée, ou **Jouer**, lance son étage. **Menu principal** revient à l'accueil.
+   - Clavier : Gauche / Droite parcourent les portes ouvertes, Entrée ou Espace = Jouer, Échap = Menu principal.
+3. **Niveaux** : les niveaux d'un étage s'enchaînent directement. À la fin d'un étage, l'écran d'aventure revient avec la porte suivante sélectionnée. Après les étages 3, 6, 9 et 12, le **dieu** parle d'abord (une réponse de la grenouille pour continuer), puis l'écran d'aventure révèle le temple suivant (le dernier jaillit du sol).
+4. **Fin** : après le dernier niveau (13-1), la partie s'arrête : STATS, dernier dialogue du dieu, puis l'écran de fin (« FÉLICITATIONS ! », score final, tableau des dix meilleurs scores avec la place de la partie). OK ramène à l'accueil. Le jeu ne recommence jamais au 1-1 de lui-même.
+
+**Vies et game over.** Une vie perdue fait rejouer le même niveau, avec le score du début du niveau. À la dernière vie perdue, le score entre au tableau, puis l'écran d'aventure s'affiche.
+
+**Reprise de partie.** La partie est sauvegardée au début de chaque niveau (étage, niveau, score, vies). MENU › « Retour au menu principal » (avec confirmation) mène à l'écran d'aventure sans perdre la partie. Au lancement suivant, « Aventure » propose **« Continuer »** (reprendre au début du niveau sauvegardé) ou **« Rejouer »** (effacer la sauvegarde et choisir une porte).
+
+**Meilleurs scores.** Le tableau garde les **dix meilleurs scores** de l'aventure (nom du profil et score), avec trois valeurs de démonstration au départ. Il est **local à cet appareil et à ce navigateur** : il n'est pas synchronisé entre appareils, et effacer les données du site efface le profil, la sauvegarde et les scores. Clés `localStorage` : `zuma.profile.v1`, `zuma.save.v1`, `zuma.highscores.v1`.
+
+Pas encore de musique sur ces écrans (phase 7).
 
 ## Ouvrir et installer Zuma
 
 Le jeu complet (avec les ressources originales) se joue de deux façons :
 
 - **le fichier unique** `standalone/zuma-standalone.html` (`npm run standalone`), maintenu et livré à chaque version, qui s'ouvre directement dans un navigateur, sans installation ni connexion ;
-- **l'application installée** (PWA), qui se lance comme une app et fonctionne ensuite hors ligne. Elle s'installe depuis une page servie en `http://localhost` (usage local, ci-dessous) ou, plus tard, depuis l'hébergement privé.
+- **l'application installée** (PWA), qui se lance comme une app et fonctionne ensuite hors ligne. Elle s'installe depuis une page servie en `http://localhost` (usage local, ci-dessous) ou depuis l'hébergement privé.
 
 Le standalone ouvert depuis le disque (`file://`) ne peut pas être installé : aucune consigne d'installation ne s'y affiche.
 
@@ -70,7 +96,7 @@ Le standalone ouvert depuis le disque (`file://`) ne peut pas être installé : 
 - L'app s'ouvre en plein écran, en tenant compte de l'encoche et des bords arrondis.
 - Sur iPhone, jouez en **paysage** : en portrait, « Tournez votre appareil » s'affiche et met la partie en pause. Sur iPad, le portrait fonctionne avec des bandes au-dessus et au-dessous du jeu.
 - Les sons démarrent au premier toucher et suivent l'interrupteur silencieux.
-- L'installation sur iPhone et iPad demande une adresse **HTTPS** : elle sera possible avec l'hébergement privé à venir (un iPhone ne peut pas installer depuis `http://<adresse locale>`).
+- L'installation sur iPhone et iPad demande une adresse **HTTPS** : elle passe par l'hébergement privé (ci-dessous) ; un iPhone ne peut pas installer depuis `http://<adresse locale>`.
 
 ### Hors ligne
 
@@ -95,41 +121,51 @@ npm run dev      # build local avec les ressources puis http://localhost:8080/
 npm run deploy   # = node tools/build.mjs --deploy → dist/ avec le pack, dist/version.json
 ```
 
-Cette commande produit le jeu complet, ressources originales comprises, dans `dist/`. Elle refuse de s'exécuter sans pack et journalise « à héberger uniquement en privé ». **Cet artefact ne doit jamais être publié ni commité** : `dist/` est ignoré par Git, la garde et la CI ne publient que le code. Son hébergement privé (accès réservé à vos adresses) fera l'objet d'une prochaine étape ; aucune commande d'hébergement n'est fournie ici.
+Cette commande produit le jeu complet, ressources originales comprises, dans `dist/`. Elle refuse de s'exécuter sans pack et journalise « à héberger uniquement en privé ». **Cet artefact ne doit jamais être publié ni commité** : `dist/` est ignoré par Git, la garde et la CI ne publient que le code. Son hébergement privé (accès réservé aux adresses autorisées) est décrit ci-dessous.
 
 ### Jeu hébergé en privé (Cloudflare Access)
 
 **Principe.** Le jeu complet (artefact `npm run deploy`, ressources originales comprises) est servi par Cloudflare Pages à une adresse `https://<sous-domaine>.pages.dev`, derrière **Cloudflare Access** :
 
 - seules les adresses e-mail autorisées passent : Access demande l'adresse et envoie un **code à usage unique** par e-mail ;
-- la session dure **un mois par appareil** ;
+- la connexion dure **un mois par appareil**. Elle sert seulement à recevoir le jeu et ses mises à jour : **une fois installé, le jeu reste jouable sans limite de durée**, hors ligne, depuis le cache du service worker. Après un mois, il suffit de se reconnecter (nouveau code) pour recevoir les mises à jour ;
 - seul le dossier `/public/` (manifeste, icônes, feuille de style : des fichiers déjà publics dans ce dépôt, aucune ressource originale) est lisible sans connexion, pour permettre l'installation ;
 - rien n'est publié par le dépôt ni par la CI : le déploiement se lance à la main, depuis un poste qui possède le pack.
 
-La liste d'accès ne doit contenir que vos adresses : ouvrir le jeu à d'autres personnes reviendrait à leur distribuer les ressources de PopCap. Pour ajouter une de vos adresses : Zero Trust › Access › Policies › « Zuma — joueurs » › ajouter une règle e-mail. Ajoutez-la aussi dans `private_assets/deploy.json`, sinon le déploiement suivant signale un conflit et s'arrête sans rien modifier. Cette politique sert au jeu seul : vos autres applications Access n'en dépendent pas.
+La liste d'accès doit rester restreinte : ouvrir le jeu au public reviendrait à distribuer les ressources de PopCap. Les adresses autorisées sont celles de `allow` et de `players` dans `private_assets/deploy.json` (voir « Ajouter un joueur »). La politique « Zuma — joueurs » sert au jeu seul : vos autres applications Access n'en dépendent pas.
 
 #### Déployer
 
 ```bash
 npm run deploy           # artefact : dist/ avec le pack (refusé sans pack)
 npm run deploy:private   # Cloudflare : provisionnement (idempotent), envoi sur la production, vérification
+node tools/deploy.mjs --dry-run   # répétition complète sur un compte simulé, sans réseau ni écriture
 ```
+
+Le contenu de `dist/` est rangé dans une base D1 (`zuma-assets`) et servi par un worker Pages généré à chaque déploiement, qui vérifie la connexion Access de chaque requête (sauf `/public/`). Le déploiement fonctionne donc aussi depuis la session cloud ; `--direct` garde l'ancien envoi direct de Pages (depuis le Mac).
 
 - **Configuration privée** `private_assets/deploy.json` (dossier ignoré par Git) :
 
   ```json
-  { "project": "zuma", "allow": ["votre adresse"], "pinIdpApps": ["…"] }
+  {
+    "project": "zuma",
+    "allow": ["vous@example.org"],
+    "players": { "vous@example.org": "Prénom", "joueur@example.org": "Prénom" },
+    "pinIdpApps": ["…"]
+  }
   ```
 
+  `players` associe chaque adresse à un prénom (lettres, espaces, apostrophes ou traits d'union, 20 caractères au plus). Toute adresse de `players` est aussi autorisée ; `allow` peut donc se limiter aux adresses sans prénom.
+
   `pinIdpApps` liste les applications Access déjà présentes sur le compte. Avant d'ajouter la connexion par code, le script leur impose leur fournisseur actuel, pour qu'elles gardent exactement leur mode de connexion. Il refuse de continuer si une application existante sans fournisseur imposé n'est pas listée.
-- **Jeton** : sur le Mac ou le PC, créez un jeton dans le tableau de bord Cloudflare, « Mon profil › Jetons d'API ». Permissions du compte : *Cloudflare Pages : Edit*, *Access: Apps and Policies : Edit*, *Access: Organizations, Identity Providers, and Groups : Edit*, *Account Settings : Read*. Saisissez-le sans le laisser dans l'historique :
+- **Jeton** : sur le Mac ou le PC, créez un jeton dans le tableau de bord Cloudflare, « Mon profil › Jetons d'API ». Permissions du compte : *Cloudflare Pages : Edit*, *D1 : Edit*, *Access: Apps and Policies : Edit*, *Access: Organizations, Identity Providers, and Groups : Edit*, *Account Settings : Read*. Saisissez-le sans le laisser dans l'historique :
 
   ```bash
   read -s CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
   npm run deploy:private
   ```
 
-  Avec plusieurs comptes, ajoutez `CLOUDFLARE_ACCOUNT_ID`. Dans la session cloud, le jeton est fourni par l'environnement, ce qui suffit pour le provisionnement et les vérifications. L'envoi des fichiers y est en revanche impossible : le proxy de la session remplace l'autorisation d'envoi. Lancez donc le déploiement depuis le Mac ; le provisionnement déjà fait est simplement relu.
+  Avec plusieurs comptes, ajoutez `CLOUDFLARE_ACCOUNT_ID`. Dans la session cloud, le jeton est fourni par l'environnement ; il suffit pour tout le déploiement par D1. Seul `--direct` doit être lancé depuis le Mac : le proxy de la session remplace l'autorisation d'envoi de Pages.
 - **Garanties** :
   - le déploiement va toujours sur la production, jamais sur un aperçu ;
   - les applications Access sont créées et relues avant l'envoi du moindre fichier ;
@@ -140,6 +176,15 @@ npm run deploy:private   # Cloudflare : provisionnement (idempotent), envoi sur 
   - 0 : tout est protégé ;
   - 1 : une ressource est servie sans connexion, à corriger immédiatement ;
   - 2 : les adresses sont injoignables depuis ce poste ; vérifiez alors dans une fenêtre de navigation privée.
+
+#### Ajouter un joueur
+
+Sur la version hébergée, le jeu connaît le prénom du joueur par son adresse de connexion : le worker répond à `api/me` par `{ "name": "<prénom>" }` pour l'adresse authentifiée par Access, et rien (404) pour une adresse sans prénom. Le jeu utilise ce prénom pour l'accueil et les meilleurs scores, sans demander de nom. Un nom saisi à la main sur un appareil n'est jamais remplacé. Le worker ne contient que les empreintes SHA-256 des adresses, jamais les adresses elles-mêmes. Le standalone et l'usage local gardent la saisie du nom.
+
+1. Dans `private_assets/deploy.json`, ajoutez une ligne `"adresse": "Prénom"` dans `players`, par exemple `"joueur@example.org": "Prénom"`. L'adresse est alors autorisée, sans autre liste à tenir.
+2. Ajoutez la même adresse à la politique Access existante : Zero Trust › Access › Policies › « Zuma — joueurs » › règle e-mail. Le script ne réécrit jamais un objet existant : sans cette étape, il signale un conflit et s'arrête sans rien modifier.
+3. `node tools/deploy.mjs --plan` : aucun conflit ne doit être signalé.
+4. `npm run deploy:private` : le worker est régénéré avec le nouveau prénom, puis vérifié.
 
 #### Installer le jeu depuis l'adresse privée
 
@@ -198,7 +243,7 @@ Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`confi
 | `repeat` | 40–50 (42 → 50 sur les plateaux doubles) | Probabilité `(repeat + 1) / 100` qu'une nouvelle bille répète la couleur de la précédente (`repeatChance`) ; `lvl11` / `lvl12` portent l'attribut en double (40 puis 50), le dernier gagne → 0,51 au 1-1. | vérifié ; valeur 50 au 1-1 = hypothèse A1 |
 | `single` | 7–9, niveaux avancés seulement | Seuil de **réparation des billes isolées** (`singleLimit`, 0..10) : quand le tirage `repeat` échoue et que le groupe d'entrée est une bille seule, la nouvelle bille copie sa couleur si `single = 0` ou si les dix derniers groupes comptent au plus `single` billes isolées ; 10 = désactivé (tout le temple 1). Ce n'est pas une probabilité. | vérifié |
 | `start` | 35 → 45 | Pourcentage de la longueur de la courbe (`startFraction`) rempli par l'arrivée rapide : la chaîne arrive à la vitesse calculée par la formule originale (`feedSpeed`, 1 520 px/s sur la spirale) puis décélère à 1 000 px/s² ; « PARTEZ » quand toutes les chaînes sont à `speed` + 10 px/s (au plus tard après 5 s). | vérifié ; appel unique de la formule = hypothèse A2 |
-| `speed` | 0,5 → 0,6 (px par maj) | Vitesse de croisière de la chaîne, ×100 → px/s (50 px/s au 1-1). Le pousseur y converge par une rampe de +50 px/s² / −1 000 px/s² et s'arrête 40 maj (24 ticks) à chaque insertion dans le segment qu'il pousse, puis repart de 0. | vérifié ; arrêt à chaque insertion arrière = à confirmer au ressenti |
+| `speed` | 0,5 → 0,6 (px par maj) | Vitesse de croisière de la chaîne, ×100 → px/s (50 px/s au 1-1). Le pousseur y converge par une rampe de +50 px/s² / −1 000 px/s². Depuis R2.0.21, il s'arrête 40 maj (24 ticks) quand **la bille la plus en arrière est retirée** à la fin de sa destruction, jamais à une insertion, puis repart de 0 (voir « Difficulté »). | vérifié (R2.0.21, 0x423a10) |
 | `slowfactor`, `slowspeed` | 4 par défaut (3,5 → 1 sur les niveaux avancés) ; `slowspeed` → `slowfactor = speed / slowspeed` | **Zone lente de fin de piste** (`endSlowFactor`) : sur les `slowdistance` px qui précèdent la ligne de danger, la vitesse cible descend linéairement de `speed` à `speed / slowfactor`, puis y reste jusqu'au crâne. Ce **n'est pas** le facteur de la balle RALENTIR (`slowFactor` du moteur, toujours 4). | vérifié |
 | `danger`, `slowdistance` | jamais définis (défauts 600 / 500 px) | Ligne de danger à 600 px du crâne (`dangerDistance`) : départ de l'alerte, du couvercle du crâne et fin de la zone lente ; zone lente de 500 px avant la ligne (`slowDistance`). | vérifié |
 | `firespeed` | 6 (px par maj) | Vitesse du projectile, ×100/60 → px par tick. | vérifié |
@@ -208,6 +253,23 @@ Chaque niveau du pack porte des attributs de difficulté ; `src/main.ts` (`confi
 | `colors` | 4 (1-1 à 1-3 seulement) | Nombre de couleurs, borné 3..6 ; sinon déduit du temple (4 pour les temples 1–3, 5 pour 4–6, 6 ensuite). | vérifié (`Rand() % colors`) ; déduction par temple = hypothèse, verrouillée par test |
 | `treasurefreq` | jamais défini (défaut 300) | Probabilité `1 / treasurefreq` par maj d'une tentative d'apparition de pièce (≈ 1/180 par tick, `coinChance`), 13 s après l'apparition précédente ; voir « Pièces et fin de niveau ». | vérifié (R2.0.18) |
 | `mergespeed`, `reloaddelay`, `maxspeed`, `accrate` | — | Non interprétés ; `mergespeed` a seulement inspiré `mergeTicks` ; `maxspeed` / `accrate` sont inopérants sans `accrate` dans `levels.xml`. | à confirmer |
+
+### Difficulté
+
+Depuis R2.0.21, l'arrêt du pousseur suit la règle originale (0x423a10, stop 0x423ac7–0x423ad6). Le pousseur s'arrête 40 maj (24 ticks) et repart de 0 à 50 px/s² **seulement quand la bille la plus en arrière** (celle qu'il pousse) quitte la chaîne à la fin de sa destruction, bombes comprises. **Une insertion ne l'arrête jamais.** Jusqu'en R2.0.20, chaque tir dans le segment arrière l'arrêtait, à la suite d'une erreur de lecture des recherches 01 et 04 : le jeu freinait presque à chaque tir et paraissait plus facile que l'original. L'original n'a **aucune accélération par étage ou par temple** en aventure (0x418780) : toute la progression est dans `levels.xml` (`speed`, `start`, `score`, `slowfactor`…), appliqué tel quel. Le nombre de couleurs (`colors`) n'a pas changé (question ouverte).
+
+La difficulté se mesure sans navigateur, avec un robot de tir déterministe :
+
+```bash
+npm test                                   # compile .compiled/ (ou node tools/build.mjs)
+node tools/sim-difficulty.mjs --levels=1-1,2-3 --compare
+node tools/sim-difficulty.mjs [--levels=1-1,2-3] [--seeds=6] [--horizon=240] [--shot=40] [--miss=0.4] [--compare] [--pack=<dossier>|none]
+```
+
+- Pour chaque niveau : part du temps où la chaîne est à l'arrêt, vitesse moyenne rapportée à la vitesse nominale, arrêts par partie, issue (ZUMA, gagné, perdu) sur `--seeds` parties.
+- `--compare` ajoute l'ancienne règle (arrêt à chaque insertion) pour comparer avant / après.
+- Avec le pack, les niveaux se notent `S-L` (par défaut le premier niveau de chaque étage). Sans pack (ou `--pack=none`), l'outil prend les niveaux procéduraux, notés `P1`, `P2`…
+- Le robot ne mesure que des effets relatifs : un joueur réel tire autrement. Les chiffres de R2.0.21 sont dans `R221_RELEASE_NOTES.md`.
 
 ### Tunnels et calques
 
@@ -253,7 +315,7 @@ Un pack importé avant R2.0.19 garde les deux clics inversés : relancer `npm ru
 
 Espace, Entrée ou Échap ouvrent le menu de jeu, **composé comme les dialogues du jeu original** : l'original n'a pas de dialogue MENU distinct, c'est son dialogue OPTIONS construit en mode « en jeu » (0x445310). Le jeu est **en pause** dessous.
 
-- Titre « MENU » ; curseurs « Musique » (grisé : pas de musique avant les phases 6–7) et « Sons » (volume général, persisté) ; cases « Plein écran » et « Pixels nets » ; « Aide » (commandes, astuces du pack, version) ; « Retour au menu principal » (confirmation « Quitter la partie ? » puis **nouvelle partie** tant que le menu principal n'existe pas) ; « Retour à la partie ».
+- Titre « MENU » ; curseurs « Musique » (grisé : pas de musique avant les phases 6–7) et « Sons » (volume général, persisté) ; cases « Plein écran » et « Pixels nets » ; « Aide » (commandes, astuces du pack, version) ; « Retour au menu principal » (confirmation « Quitter la partie ? » puis **écran d'aventure**, partie sauvegardée au début du niveau ; voir « Parcours de jeu ») ; « Retour à la partie ».
 - Avec le pack : cadre `dialogbox`, tête de divinité, boutons `DialogButton`, curseurs `slidertrack` / `sliderthumb`, cases `checkbutton` et polices bitmap, composés sur un canvas à l'échelle réelle de l'écran (copies 2 × EPX au-delà de 1,5 ×) ; sans pack, même disposition en dessin vectoriel. Plus aucun panneau HTML.
 - Souris : survol, pression, glissement du curseur ; clavier : Haut / Bas pour se déplacer, Gauche / Droite pour le volume, Entrée ou Espace pour valider, Échap pour revenir ou fermer.
 
@@ -315,7 +377,8 @@ Le jeu est simulé et dessiné en 640×480 logiques ; le canvas est mis à l'éc
 - bonus de saut payé au match (barème 500 … 10 × brèches, bille en attente) ; score `10n + 100·combo` ; enchaînement `(chain + 5) × 10` ; textes et sons de score originaux ; grille du STATS, signe du bonus, astuce sur deux lignes ; compte à rebours borné avec mode rapide ; rampe du roulement armée une fois par cible ; `upscale2x`, composition à l'échelle du canvas et actifs 2 × dès 1,5 × (`tests/r217*.test.mjs`) ;
 - décodage CURV aligné (tunnel, priorité 0..3), priorité d'une bille aux deux bords, projectile qui traverse une bille en tunnel, cinq passes de dessin sans bille omise ; vies tous les 50 000 points (sans plafond, aussi pendant le compte à rebours) avec triple `extralife` et compteur de grenouilles ; cadence originale des pièces (10 s, 13 s, 1/180 par tick, rien après ZUMA, `dist` en %), `coinappear` à 0,40 et panoramique ; décompte simultané sur plusieurs chaînes ; menu de jeu (disposition, aide, confirmation, composition, pause, volume) ; visée et tir sur toute la fenêtre, liaisons clavier, `stagePoint`, `fitScale` ; roulement 0,35 / 50 ms / 500 ms (`tests/r218*.test.mjs`) ;
 - destruction en 24 ticks sans mouvement ; attraction `v = 10` après la destruction et `v = 1` après un tir sans alignement (⌊v/8⌋ px par maj, sans plafond) ; rebond au contact (18 ticks à max(50, 150 × profondeur) px/s, toute la chaîne, pousseur arrêté ≥ 12 ticks) ; recul ZUMA par chaîne depuis la tête (100 px/s, 180 ticks au plus, arrêt sous 50 px) et `ball-exit` sous 1 px ; pièce à 36 px qui consomme le tir ; trois grenouilles par partie et un seul `lost` par perte ; sons du contact et de l'impact, anti-rafale 250 ms, `power-spawn` muet ; réserve de grenouilles, « xN », clignotement, barre du haut recalée (`tests/r219*.test.mjs`) ;
-- bouton OK du STATS selon la règle du pied du `Dialog` original, dessin en trois tranches partagé avec le menu, zone cliquable alignée ; service worker généré (deux caches, seules les ressources absentes téléchargées, routage hors ligne, mise à jour sur confirmation, `api/` jamais intercepté), artefact `--deploy`, icônes PNG, manifeste, métadonnées Apple, consignes d'installation par plateforme (aucune hors http(s)) ; toucher la grenouille = échange, rotation, marges sûres, plein écran conditionnel, audio iOS ; astuce complète en `Arial12Bold` pour les sept astuces du pack (`tests/r220*.test.mjs`).
+- bouton OK du STATS selon la règle du pied du `Dialog` original, dessin en trois tranches partagé avec le menu, zone cliquable alignée ; service worker généré (deux caches, seules les ressources absentes téléchargées, routage hors ligne, mise à jour sur confirmation, `api/` jamais intercepté), artefact `--deploy`, icônes PNG, manifeste, métadonnées Apple, consignes d'installation par plateforme (aucune hors http(s)) ; toucher la grenouille = échange, rotation, marges sûres, plein écran conditionnel, audio iOS ; astuce complète en `Arial12Bold` pour les sept astuces du pack (`tests/r220*.test.mjs`) ;
+- arrêt du pousseur au retrait de la bille arrière, jamais à l'insertion ; outil de simulation de la difficulté ; progression par étages et temples, portes, textes du dieu, tableau des dix meilleurs scores, profil, sauvegarde, machine d'états des écrans, revue sans écriture, prénom de l'hébergement ; menu principal original (composition, animations, sons, OVNI, OPTIONS hors partie, dialogues de nom et de reprise) ; écran d'aventure (portes, plaque, arrivée des temples), dialogue du dieu, écran de fin et routage après un niveau ; route `api/me` du worker (`tests/r221*.test.mjs`).
 
 ## Fournir ses propres graphismes de niveau
 
@@ -330,6 +393,8 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.20 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Elle ajoute à R2.0.19 le bouton OK du STATS posé par la règle du pied du `Dialog` original (lue dans l'exécutable : `Dialog::Resize` 0x4ac160, marges de 0x43ef30), une PWA installable qui est exactement le jeu local avec ses ressources, jouable hors ligne après la première visite et mise à jour sur confirmation, l'installation et le jeu au toucher sur iPhone / iPad (à vérifier sur appareils réels une fois l'hébergement privé en place), et l'astuce du STATS toujours complète en `Arial12Bold`. Le standalone reste maintenu et livré à chaque version ; l'hébergement privé et la synchronisation des scores viendront ensuite. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement ; et depuis R2.0.19 (spike 04) la durée de destruction (40 maj), l'attraction accélérée à la fin de la destruction et après un tir sans alignement, le rebond au contact (et l'absence de recul à l'alignement), le recul ZUMA par chaîne depuis la tête avec arrêt sous 50 px et la perte des billes qui repassent l'entrée, la prise de la pièce à 36 px qui consomme le tir, les trois grenouilles par partie, le dessin de la réserve de vies (seuil 3, « xN », clignotement) et la disposition de la barre du haut, les sons du contact et de l'impact (et leur anti-rafale), l'absence de son à l'apparition d'un power-up.
+R2.0.21 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Elle ajoute à R2.0.20 le parcours de l'aventure de l'original, composé à partir du pack : menu principal (animations, sons, OVNI), écran d'aventure (temples, portes, plaque des scores, arrivée des temples), dialogue du dieu entre les temples, écran de fin après 13-1 avec le tableau des dix meilleurs scores (sans crédits, D-10), profil saisi une fois ou fourni par l'hébergement privé (D-12), reprise de partie. Elle corrige surtout la difficulté : l'arrêt du pousseur suit la règle originale (retrait de la bille arrière, jamais une insertion, D-09), mesurable par `tools/sim-difficulty.mjs`. Sont vérifiés par analyse statique depuis R2.0.21 : cette règle, l'absence d'accélération par étage en aventure, la composition et les animations du menu principal, la composition de l'écran d'aventure (portes, plaque, textes, boutons, arrivée), les transitions de temple, les clés et la taille (10) du tableau des scores et ses soumissions (game over, fin du STATS final).
 
-Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), C1 (clic droit = échange), C2 (découpes = pochoirs du fond), C3 (unité du panoramique des pièces), C4 (police des libellés du menu), la tête de divinité et les marges du menu, la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, l'arrêt du pousseur à chaque insertion arrière, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions, la condition exacte du rafraîchissement du roulement, la sensation de vitesse du recul ZUMA (100 px/s dans l'exécutable, plus lent que le souvenir de l'utilisateur), les billes en destruction poussées par le rebond, la grenouille en jeu comptée pendant la perte d'une vie, le modèle d'apparition des power-ups (lu, non implémenté) et les polices `FONT_MONODIGIT` / `FONT_DIALOG` du score et du niveau ; et des choix assumés : Espace = menu (l'original : pause), Échap / Entrée / Tab / P sans équivalent original, gain 0,35 du roulement sur un seul canal (l'original : 1,0, un canal par courbe), curseur Musique inerte, « Retour au menu principal » qui lance une nouvelle partie, boutons du HUD actifs au toucher seulement (sauf l'appui long de 450 ms sur MENU, qui ouvre le menu avec la souris aussi). Deux déviations volontaires sont documentées : D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure) et D-30 (décompte de fin de niveau simultané sur toutes les chaînes, là où l'original les décompte l'une après l'autre). Deux écarts avec les souvenirs de l'utilisateur sont tranchés en faveur de l'exécutable, à reconfirmer en UAT 9 : D-31 (une pièce touchée consomme le tir ; drapeau `coinConsumesShot` pour l'autre comportement) et D-32 (aucun son quand une bille devient power-up ; le son entendu jusqu'en R2.0.18 était celui des pièces).
+R2.0.20 ajoutait à R2.0.19 le bouton OK du STATS posé par la règle du pied du `Dialog` original (lue dans l'exécutable : `Dialog::Resize` 0x4ac160, marges de 0x43ef30), une PWA installable qui est exactement le jeu local avec ses ressources, jouable hors ligne après la première visite et mise à jour sur confirmation, l'installation et le jeu au toucher sur iPhone / iPad (à vérifier sur appareils réels une fois l'hébergement privé en place), et l'astuce du STATS toujours complète en `Arial12Bold`. Le standalone reste maintenu et livré à chaque version ; l'hébergement privé est en place (Pages, D1, Access) ; la synchronisation des scores entre appareils viendra ensuite. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement ; et depuis R2.0.19 (spike 04) la durée de destruction (40 maj), l'attraction accélérée à la fin de la destruction et après un tir sans alignement, le rebond au contact (et l'absence de recul à l'alignement), le recul ZUMA par chaîne depuis la tête avec arrêt sous 50 px et la perte des billes qui repassent l'entrée, la prise de la pièce à 36 px qui consomme le tir, les trois grenouilles par partie, le dessin de la réserve de vies (seuil 3, « xN », clignotement) et la disposition de la barre du haut, les sons du contact et de l'impact (et leur anti-rafale), l'absence de son à l'apparition d'un power-up.
+
+Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), C1 (clic droit = échange), C2 (découpes = pochoirs du fond), C3 (unité du panoramique des pièces), C4 (police des libellés du menu), la tête de divinité et les marges du menu, la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions, la condition exacte du rafraîchissement du roulement, la sensation de vitesse du recul ZUMA (100 px/s dans l'exécutable, plus lent que le souvenir de l'utilisateur), les billes en destruction poussées par le rebond, la grenouille en jeu comptée pendant la perte d'une vie, le modèle d'apparition des power-ups (lu, non implémenté) et les polices `FONT_MONODIGIT` / `FONT_DIALOG` du score et du niveau ; et des choix assumés : Espace = menu (l'original : pause), Échap / Entrée / Tab / P sans équivalent original, gain 0,35 du roulement sur un seul canal (l'original : 1,0, un canal par courbe), curseur Musique inerte, boutons du HUD actifs au toucher seulement (sauf l'appui long de 450 ms sur MENU, qui ouvre le menu avec la souris aussi). Deux déviations volontaires sont documentées : D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure) et D-30 (décompte de fin de niveau simultané sur toutes les chaînes, là où l'original les décompte l'une après l'autre). Deux écarts avec les souvenirs de l'utilisateur sont tranchés en faveur de l'exécutable, à reconfirmer en UAT 9 : D-31 (une pièce touchée consomme le tir ; drapeau `coinConsumesShot` pour l'autre comportement) et D-32 (aucun son quand une bille devient power-up ; le son entendu jusqu'en R2.0.18 était celui des pièces). Les hypothèses propres à R2.0.21 (A1–A8 de la recherche 06, cels des portes, montée du temple 4, polices « !program », mises en page du dieu et de la fin, « STAGE 13 », clavier sur l'écran d'aventure) sont listées dans `R221_RELEASE_NOTES.md` et à confirmer dans `06-UAT.md`.
