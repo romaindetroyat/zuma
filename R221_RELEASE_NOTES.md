@@ -164,7 +164,15 @@ L'app s'ouvre désormais sur le **menu principal de Zuma Deluxe**, composé sur 
 
 ## Build
 
-_Complété à la vérification finale (plan 06-05, tâche 3)._
+- **Suite** : `npm test` → **483 tests** verts + `publication guard: 570 tracked files, none proprietary`. `npm run check` propre, `node tools/guard.mjs` vert.
+- **Build public** (`node tools/build.mjs`) : code seul, identique à ce que construit la CI ; sans pack, l'accueil, l'écran d'aventure et la fin passent en repli vectoriel.
+- **Standalone** (`node tools/build.mjs --standalone`) : `standalone/zuma-standalone.html`, **9 407 484 octets** (9,0 Mio ; 7 822 709 au début de la phase : les images du menu principal, de l'aventure et de la fin s'y ajoutent). Quinze modules concaténés (`progress`, `welcome`, `adventure` compris), sans service worker ; `R2.0.21` y apparaît 14 fois. Verrous de fichier unique (`r215-presentation`, 15 tests) verts.
+  - **Démarrage sur `file://`** (Chromium, 1 000 × 750 CSS, DPR 2) : écran principal, aucun moteur ; Aventure → écran d'aventure (kit 2 ×) ; Jouer → 1-1 en jeu, 3 vies ; **console propre**.
+- **Artefact privé** (`node tools/build.mjs --deploy`) : « artefact de déploiement : dist/ (**375 fichiers, 6.9 Mio**, empreinte du pack **1668c4fa9c7f**) — à héberger uniquement en privé ». `dist/version.json` : version 2.0.21, `assets` 350 ; `dist/js/` contient `progress.js`, `welcome.js` et `adventure.js`.
+  - **Servi en local** (Chromium, DPR 2, échelle de rendu 3,125) : accueil (aucun moteur, pas de dialogue de nom avec un profil), Aventure → écran d'aventure, Jouer → niveau de la porte sélectionnée ; partie reprise à 13-1 → STATS → dialogue final → écran de fin (rang 4 surligné, dix entrées, « Score : 102400 », toujours sur l'écran 1,5 s plus tard, sans moteur) → OK → accueil, sauvegarde effacée. Console propre.
+  - **Hors ligne** : la première visite installe le worker ; caches `zuma-shell-<build>` **24 entrées** (le shell et les quinze modules) et `zuma-assets-1668c4fa9c7f` **350 / 350**. Réseau coupé puis rechargement : écran principal avec le kit original ; `welcome.js`, `adventure.js` et `progress.js` servis par le worker ; Aventure → écran d'aventure. Console propre.
+- **Répétition à blanc du déploiement** (`node tools/deploy.mjs --dry-run`, compte simulé dans l'état laissé par 05-16, aucun appel réseau) : Access relu sans changement, 16 écritures prévues (base D1, table, 12 lots `INSERT OR IGNORE` pour 373 contenus, liaison `ASSETS_DB`, déploiement du worker de 69 587 octets sur `main`) ; un second plan annonce « actions prévues : 0 ». Le journal ne contient ni adresse, ni jeton, ni identifiant.
+- **Rien n'est déployé par cette version.** Le déploiement privé (`node tools/deploy.mjs --plan`, puis `node tools/deploy.mjs`, puis `node tools/deploy.mjs --verify`) est lancé par l'orchestrateur après l'accord de l'utilisateur. Le standalone est livré comme à chaque version. `dist/`, `standalone/` et `private_assets/` restent hors de Git ; captures et journaux dans le dossier de travail de la session, jamais dans le dépôt.
 
 ## Hypothèses à confirmer en UAT
 
