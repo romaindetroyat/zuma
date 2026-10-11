@@ -446,3 +446,49 @@ test('main.js: keyboard on the adventure screen — Left / Right walk the open d
   assert.match(main, /adventureUp\(/);
   assert.match(main, /adventureMove\(/);
 });
+
+// ---------------------------------------------------------------- main.js: routing after a level (Task 4)
+
+test('main.js: closeStats sends won (score, lives, local date) / retry (lives) / leave after the game-over STATS; never a new game or a wrap to 1-1', () => {
+  const main = read('.compiled/main.js');
+  const close = method(main, '    async closeStats() {');
+  assert.match(close, /kind: 'won', score: engine\.score, lives: engine\.lives, date: localDate\(\)/);
+  assert.match(close, /kind: 'retry', lives: engine\.lives/);
+  assert.match(close, /outcome === 'gameover'\)\s*this\.dispatch\(\{ kind: 'leave' \}\)/);
+  assert.doesNotMatch(main, /nextLevel\(|retryLevel\(|newGame\(/);
+  assert.doesNotMatch(main, /progress = \{ stage: 0, level: 0 \}/);
+  assert.match(method(main, '    menuActivate(id) {'), /this\.closeMenu\(\);\s*this\.dispatch\(\{ kind: 'leave' \}\)/, '« Retour au menu principal » confirmed → leave (D-02)');
+});
+
+test('main.js: the game over is submitted by checkOutcome when the engine reaches gameover (0x4283c4), once per level; not by the STATS', () => {
+  const main = read('.compiled/main.js');
+  const check = method(main, '    checkOutcome(engine) {');
+  assert.match(check, /engine\.state === 'gameover' && !this\.gameoverSent/);
+  assert.match(check, /this\.gameoverSent = true/);
+  assert.match(check, /kind: 'gameover', score: engine\.score, date: localDate\(\)/);
+  assert.doesNotMatch(method(main, '    openStats(outcome) {'), /kind: 'gameover'/);
+  assert.match(method(main, '    async startLevel() {'), /this\.gameoverSent = false/, 'the guard is armed again at each level start');
+});
+
+test('main.js: temple screen = the frozen board under drawGodDialog, pages then temple-done; ending = drawEnding, OK → ending-done → welcome', () => {
+  const main = read('.compiled/main.js');
+  const temple = method(main, '    drawTempleFrame() {');
+  assert.ok(temple.indexOf('this.renderer.draw(') >= 0 && temple.indexOf('this.renderer.draw(') < temple.indexOf('drawGodDialog('), 'board first, dialogue over it');
+  assert.doesNotMatch(temple, /\.step\(\)/, 'the engine does not step');
+  const next = method(main, '    godNext() {');
+  assert.match(next, /godPages\(/);
+  assert.match(next, /kind: 'temple-done'/);
+  assert.match(method(main, '    drawEndingFrame() {'), /drawScene\([\s\S]*drawEnding\(/);
+  assert.match(method(main, '    endingDone() {'), /kind: 'ending-done'/);
+  const keys = method(main, '    screenKey(code) {');
+  for (const k of ['Enter', 'Space', 'Escape']) assert.match(keys, new RegExp(`'${k}'`));
+  assert.match(method(main, '    enterScreen(screen) {'), /screen !== 'temple'/, 'the engine is kept under the god dialogue');
+});
+
+test('main.js: vector STATS button after a game over reads « OK » (the native STATS has only OK); a review session (?level=) writes no best time', () => {
+  const main = read('.compiled/main.js');
+  const open = method(main, '    openStats(outcome) {');
+  assert.match(open, /outcome === 'gameover' \? 'OK'/);
+  assert.doesNotMatch(open, /'Menu principal'/);
+  assert.match(open, /won && best !== stored && !this\.app\.review/, 'review sessions leave the storage untouched');
+});
