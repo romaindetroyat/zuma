@@ -281,7 +281,8 @@ test('CURV importer decodes control points, sampled deltas and tunnel flags', ()
 });
 
 test('every feedback cue key has an original sound mapping', () => {
-  const keys = new Set(['fire', 'insert', 'merge', 'swap', 'zuma', 'levelwin', 'lose', 'gameover', 'powerup', 'streak', 'gap', 'combo', 'powerbomb', 'powerslow', 'powerback', 'poweraccuracy']);
+  // R2.0.19 (D-32): power-spawn plays nothing in the original — `powerup` is no longer a cue key.
+  const keys = new Set(['fire', 'insert', 'merge', 'swap', 'zuma', 'levelwin', 'lose', 'gameover', 'streak', 'gap', 'combo', 'powerbomb', 'powerslow', 'powerback', 'poweraccuracy']);
   for (let i = 1; i <= 5; i++) keys.add(`destroy${i}`);
   for (const key of keys) assert.ok(SOUND_MAP[key], `missing original sound for ${key}`);
 });
