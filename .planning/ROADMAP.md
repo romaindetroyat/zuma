@@ -96,7 +96,14 @@ Plans:
   3. Après le dernier niveau (13-1), la partie s'arrête sur l'écran de fin original, avec score final et tableau des meilleurs scores ; elle ne recommence pas
   4. La difficulté est analysée contre l'original (arrêts des files, accélération par niveau) et corrigée par petits pourcentages justifiés
   5. Fermer puis rouvrir la PWA propose de reprendre la partie au niveau atteint, avec score et vies (si compatible avec 1–4)
-**Plans**: TBD (contexte : `phases/06-progression-et-menus/06-CONTEXT.md`)
+**Plans:** 5 plans (contexte : `phases/06-progression-et-menus/06-CONTEXT.md`, recherche : `06-RESEARCH.md`)
+
+Plans:
+- [ ] 06-01-PLAN.md — Difficulté (D-09) : arrêt du pousseur au seul retrait de la bille arrière, plus jamais à l'insertion (0x423a10), verrous r221, outil `tools/sim-difficulty.mjs` testé sur les niveaux procéduraux, baseline R2.0.21
+- [ ] 06-02-PLAN.md — Progression et état d'application purs (`src/progress.ts`) : étages / temples / fin après 13-1, meilleurs scores (10, clé `adventure`, démonstration sans noms PopCap), profil, sauvegarde et reprise, machine d'états accueil → aventure → niveau → dieu → fin avec effets
+- [ ] 06-03-PLAN.md — Écran principal de l'original (`src/welcome.ts`) : ciel, soleil et lueur, yeux, pierres actives / inactives, survol `choral1`, OVNI, nom du profil, reprise « Continuer / Rejouer », OPTIONS hors partie, chemin 2×, importateur (images et polices des trois écrans)
+- [ ] 06-04-PLAN.md — Écran d'aventure (temples, portes, plaque des scores, STAGE, Jouer / Menu principal), dialogue du dieu avec `chant6`, écran de fin (`happyending`, « Félicitations », tableau des 10 avec la place), routage après niveau, game over, sortie par le menu
+- [ ] 06-05-PLAN.md — Notes R2.0.21, README, CONCERNS, `06-UAT.md` (première session), vérification finale (standalone `file://`, `--deploy` + `--dry-run`, preuves DPR 2), déploiement privé par l'orchestrateur après accord
 
 #### Phase 7: Finitions audio, visuelles et mobiles
 **Goal**: Musique, animations secondaires, ergonomie tactile, captures automatisées
@@ -124,5 +131,5 @@ Plans:
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
 | 5. Règles originales complètes | v1.1 | 15/17 | In progress (05-16 UAT 9, 05-17) | - |
-| 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
+| 6. Progression et menus | v1.1 | 0/5 | Planned | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
