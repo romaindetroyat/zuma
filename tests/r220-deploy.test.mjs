@@ -286,6 +286,7 @@ const ME = 'joueur@example.org';
 const HOST = 'zuma-x.pages.dev';
 const ALLOW = 'Zuma — joueurs';
 const BYPASS = 'Zuma — fichiers publics';
+const DB_UUID = '9f8e7d6c-5b4a-4321-8fed-cba987654321';
 
 /** An existing app of the account (shape of GET /access/apps), with the shared reusable policy expanded. */
 const otherApp = (name, uri, extra = {}) => ({
@@ -301,7 +302,7 @@ const otherApp = (name, uri, extra = {}) => ({
  * Shapes follow the real GET responses (ids, expanded policies with precedence, app_count on reusable policies).
  */
 function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type: 'cloudflare', name: '' }], policies = [], apps = [], environment = 'production', errorWith = null } = {}) {
-  const s = { project, idps: structuredClone(idps), policies: structuredClone(policies), apps: structuredClone(apps), n: 0 };
+  const s = { project, idps: structuredClone(idps), policies: structuredClone(policies), apps: structuredClone(apps), n: 0, db: null, deployments: [] };
   const calls = [];
   const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
   const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -314,7 +315,7 @@ function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type:
     if (p === `${A}/access/organizations`) return { auth_domain: AUTH, name: 'team' };
     if (p === `${A}/pages/projects/zuma` && method === 'GET') { if (!s.project) throw fail(404, 'Project not found'); return s.project; }
     if (p === `${A}/pages/projects` && method === 'POST') {
-      s.project = { name: o.body.name, subdomain: HOST, production_branch: o.body.production_branch, latest_deployment: null };
+      s.project = { name: o.body.name, subdomain: HOST, production_branch: o.body.production_branch, latest_deployment: null, canonical_deployment: null, deployment_configs: { production: {}, preview: {} } };
       return s.project;
     }
     if (p === `${A}/access/identity_providers`) {
@@ -347,12 +348,49 @@ function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type:
         return expand(s.apps[i]);
       }
     }
+    if (p === `${A}/pages/projects/zuma` && method === 'PATCH') {
+      for (const env of ['production', 'preview']) {
+        const cur = s.project.deployment_configs[env];
+        for (const [k, v] of Object.entries(o.body.deployment_configs[env] ?? {})) {
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            cur[k] = { ...(cur[k] ?? {}), ...v };
+            for (const [n, x] of Object.entries(v)) if (x === null) delete cur[k][n];
+          } else cur[k] = v;
+        }
+      }
+      return s.project;
+    }
+    if (p === `${A}/pages/projects/zuma/deployments` && method === 'GET') return s.deployments.map(d => ({ ...d }));
+    if (method === 'GET' && p.startsWith(`${A}/d1/database?`)) return s.db ? [{ uuid: s.db.uuid, name: s.db.name }] : [];
+    if (method === 'POST' && p === `${A}/d1/database`) { s.db = { uuid: DB_UUID, name: o.body.name, table: false, rows: [] }; return { uuid: DB_UUID, name: o.body.name }; }
+    if (method === 'POST' && s.db && p === `${A}/d1/database/${s.db.uuid}/query`) {
+      const one = (sql, params = []) => {
+        if (sql.startsWith('CREATE TABLE IF NOT EXISTS blobs')) { s.db.table = true; return { results: [], success: true }; }
+        if (sql.startsWith('SELECT name FROM sqlite_master')) return { results: s.db.table ? [{ name: 'blobs' }] : [], success: true };
+        if (!s.db.table) throw fail(400, 'no such table: blobs');
+        if (sql.startsWith('SELECT key, COUNT(*)')) {
+          const by = new Map();
+          for (const r of s.db.rows) { const e = by.get(r.key) ?? { key: r.key, parts: 0, chars: 0 }; e.parts++; e.chars += r.data.length; by.set(r.key, e); }
+          return { results: [...by.values()], success: true };
+        }
+        if (sql.startsWith('INSERT OR IGNORE INTO blobs')) {
+          const [key, part, data] = params;
+          if (!s.db.rows.some(r => r.key === key && r.part === part)) s.db.rows.push({ key, part, data });
+          return { results: [], success: true };
+        }
+        throw fail(400, `unsupported SQL ${sql}`);
+      };
+      return o.body.batch ? o.body.batch.map(q => one(q.sql, q.params)) : [one(o.body.sql, o.body.params)];
+    }
     if (p === `${A}/pages/projects/zuma/upload-token`) return { jwt };
     if (p === '/pages/assets/check-missing') return o.body.hashes;
     if (p === '/pages/assets/upload' || p === '/pages/assets/upsert-hashes') return true;
     if (p === `${A}/pages/projects/zuma/deployments` && method === 'POST') {
-      s.project.latest_deployment = { id: 'dep-1', url: `https://abc12345.${HOST}` };
-      return { id: 'dep-1', url: `https://abc12345.${HOST}`, environment, latest_stage: { name: 'queued', status: 'active' } };
+      const dep = { id: 'dep-1', url: `https://abc12345.${HOST}`, environment, deployment_trigger: { type: 'ad_hoc', metadata: { branch: o.form.get('branch'), commit_message: o.form.get('commit_message') } } };
+      s.project.latest_deployment = { ...dep, latest_stage: { name: 'deploy', status: 'success' } };
+      if (environment === 'production') s.project.canonical_deployment = s.project.latest_deployment;
+      s.deployments = [s.project.latest_deployment];
+      return { ...dep, latest_stage: { name: 'queued', status: 'active' } };
     }
     if (p === `${A}/pages/projects/zuma/deployments/dep-1`) return { id: 'dep-1', url: `https://abc12345.${HOST}`, environment, latest_stage: { name: 'deploy', status: 'success' } };
     throw fail(404, `unexpected ${method} ${p}`);
@@ -383,13 +421,15 @@ function protectedFetch({ exposed = [], unreachable = false } = {}) {
   return { fetch, seen };
 }
 
-async function exec(argv, cloud, { dir = root(), fetch = protectedFetch().fetch, env = {} } = {}) {
+async function exec(argv, cloud, { dir = root(), fetch = protectedFetch().fetch, env = {}, extra = {} } = {}) {
   const out = [];
-  const code = await run(argv, { api: cloud.api, fetch, log: m => out.push(m), env, root: dir, sleep: noSleep });
+  const code = await run(argv, { api: cloud.api, fetch, log: m => out.push(m), env, root: dir, sleep: noSleep, ...extra });
   return { code, out: out.join('\n'), lines: out.join('\n').split('\n') };
 }
 
 const writes = calls => calls.filter(c => c.method !== 'GET' && !c.path.startsWith('/pages/assets/') && !c.path.endsWith('/deployments'));
+/** Every call that changes something (SELECT queries on D1 are reads). */
+const allWrites = calls => calls.filter(c => c.method !== 'GET' && !(c.path.endsWith('/query') && c.body && /^SELECT /.test(c.body.sql ?? '')));
 
 test('planProvision: empty state → the six actions in order; complete state → none', () => {
   const empty = planProvision({ project: null, idps: [{ id: 'idp-cf', type: 'cloudflare' }], policies: [], apps: [] }, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' });
@@ -455,20 +495,26 @@ test('planProvision (D-43): existing apps with empty allowed_idps are pinned to 
   assert.ok(!planProvision(withOtp, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' }).actions.some(a => a.kind === 'pin-idp'), 'OTP present → no pin');
 });
 
-test('run --plan: GET only, « actions prévues : N » then one « - <action> » line per action', async () => {
+test('run --plan: GET only, « actions prévues : N » then one « - <action> » line per action (Access, then D1)', async () => {
   const cloud = fakeCloud();
   const { code, lines } = await exec(['--plan'], cloud);
   assert.equal(code, 0);
-  assert.ok(cloud.calls.every(c => c.method === 'GET'), 'GET only');
-  const i = lines.indexOf('actions prévues : 6');
+  assert.ok(cloud.calls.every(c => c.method === 'GET'), 'GET only (no database yet: nothing to SELECT)');
+  const i = lines.indexOf('actions prévues : 11');
   assert.ok(i >= 0, lines.join('\n'));
   assert.deepEqual(lines.slice(i + 1, i + 7), ['- create-project', '- add-otp', '- create-allow-policy', '- create-allow-app', '- create-bypass-policy', '- create-bypass-app']);
+  assert.deepEqual(lines.slice(i + 7, i + 9), ['- create-d1-database', '- create-table']);
+  assert.match(lines[i + 9], /^- d1-insert \d+ morceau\(x\), \d+ fichier\(s\), \d+ lignes écrites estimées$/);
+  assert.deepEqual(lines.slice(i + 10, i + 12), ['- bind-d1', '- deploy-worker']);
+  // --direct --plan: the former provisioning-only plan.
+  const direct = await exec(['--direct', '--plan'], fakeCloud());
+  assert.ok(direct.lines.includes('actions prévues : 6'), direct.out);
 });
 
 
-test('run (full) on an empty account: project → OTP → policies → apps → upload; no content call before the main app is read back', async () => {
+test('run --direct on an empty account: project → OTP → policies → apps → upload; no content call before the main app is read back', async () => {
   const cloud = fakeCloud();
-  const { code, out } = await exec([], cloud);
+  const { code, out } = await exec(['--direct'], cloud);
   assert.equal(code, 0, out);
   const sig = c => `${c.method} ${c.path}`;
   const idx = pred => cloud.calls.findIndex(pred);
@@ -506,12 +552,100 @@ test('run (full) on an empty account: project → OTP → policies → apps → 
 
   // Second run on the resulting state: no provisioning write, and --plan announces nothing.
   const before = cloud.calls.length;
-  const again = await exec([], cloud);
+  const again = await exec(['--direct'], cloud);
   assert.equal(again.code, 0, again.out);
   assert.deepEqual(writes(cloud.calls.slice(before)), [], 'no provisioning write the second time');
   assert.match(again.out, /déjà présent/);
-  const plan = await exec(['--plan'], cloud);
+  const plan = await exec(['--direct', '--plan'], cloud);
   assert.ok(plan.lines.includes('actions prévues : 0'), plan.out);
+});
+
+test('run (D1, default) on an empty account: Access read back → database → table → inserts → binding → worker on main; second run writes nothing', async () => {
+  const cloud = fakeCloud();
+  const dir = root();
+  const { code, out } = await exec([], cloud, { dir });
+  assert.equal(code, 0, out);
+  const sig = c => `${c.method} ${c.path}`;
+  const mainApp = cloud.calls.findIndex(c => sig(c) === `POST ${A}/access/apps` && c.body.name === 'Zuma');
+  const bypassApp = cloud.calls.findIndex(c => sig(c) === `POST ${A}/access/apps` && c.body.name === BYPASS);
+  const readBack = cloud.calls.findIndex((c, i) => i > bypassApp && c.method === 'GET' && c.path === `${A}/access/apps`);
+  const firstD1Write = cloud.calls.findIndex(c => c.path.includes('/d1/') && c.method === 'POST' && !(c.body?.sql ?? '').startsWith('SELECT'));
+  assert.ok(mainApp >= 0 && readBack > bypassApp && firstD1Write > readBack, 'D1 written only after the Access apps are created and read back');
+  assert.ok(!cloud.calls.some(c => c.path.startsWith('/pages/assets/') || c.path.endsWith('/upload-token')), 'no Pages upload JWT ever');
+  const w = allWrites(cloud.calls).slice(allWrites(cloud.calls).findIndex(c => c.path.includes('/d1/')));
+  const kinds = w.map(c => (c.path.endsWith('/query') ? (c.body.batch ? 'batch' : c.body.sql.split(' ')[0]) : `${c.method} ${c.path.replace(A, '').replace(DB_UUID, '{base}')}`));
+  assert.equal(kinds[0], 'POST /d1/database');
+  assert.equal(kinds[1], 'CREATE');
+  const lastBatch = kinds.lastIndexOf('batch');
+  assert.ok(lastBatch >= 2 && kinds.slice(2, lastBatch + 1).every(k => k === 'batch'));
+  assert.deepEqual(kinds.slice(lastBatch + 1), ['PATCH /pages/projects/zuma', 'POST /pages/projects/zuma/deployments']);
+  assert.deepEqual(w[0].body, { name: 'zuma-assets' });
+  assert.equal(w[1].body.sql, 'CREATE TABLE IF NOT EXISTS blobs (key TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (key, part))');
+  const patch = w[lastBatch + 1].body;
+  for (const env of ['production', 'preview']) assert.deepEqual(patch.deployment_configs[env].d1_databases, { ASSETS_DB: { id: DB_UUID } });
+  const form = w[lastBatch + 2].form;
+  assert.equal(form.get('branch'), 'main');
+  assert.equal(form.get('manifest'), '{}');
+  assert.match(form.get('commit_message'), /^R2\.0\.20 .* worker:[0-9a-f]{16}$/);
+  const source = await form.get('_worker.js').text();
+  assert.match(source, /export default/);
+  // Every file of the artefact is stored, and the worker inlines its key.
+  const files = (await import('../tools/d1worker.mjs')).blobFiles(path.join(dir, 'dist'));
+  for (const f of files) {
+    const data = cloud.s.db.rows.filter(r => r.key === f.key).sort((a, b) => Number(a.part) - Number(b.part)).map(r => r.data).join('');
+    assert.ok(Buffer.from(data, 'base64').equals(fs.readFileSync(f.abs)), f.path);
+    assert.ok(source.includes(f.key), f.path);
+  }
+  assert.match(out, new RegExp(`https://${HOST.replace(/\./g, '\\.')}`), 'production URL in the log');
+  assert.match(out, /abc12345\.zuma-x\.pages\.dev/, 'deployment URL in the log');
+  assert.ok(!out.includes(DB_UUID), 'database id masked');
+  // Second run: not a single write; --plan announces nothing.
+  const before = cloud.calls.length;
+  const again = await exec([], cloud, { dir });
+  assert.equal(again.code, 0, again.out);
+  assert.deepEqual(allWrites(cloud.calls.slice(before)), [], 'idempotent: no write at all');
+  assert.match(again.out, /déjà déployé/);
+  const plan = await exec(['--plan'], cloud, { dir });
+  assert.ok(plan.lines.includes('actions prévues : 0'), plan.out);
+  assert.deepEqual(allWrites(cloud.calls.slice(before)), [], '--plan reads only (GET, SELECT)');
+});
+
+test('run (D1): over the row budget → refused before any write, Access included', async () => {
+  const cloud = fakeCloud();
+  const { code, out } = await exec([], cloud, { extra: { rowBudget: 2 } });
+  assert.equal(code, 1);
+  assert.match(out, /lignes écrites estimées/);
+  assert.deepEqual(allWrites(cloud.calls), []);
+});
+
+test('run --dry-run: whole pipeline on the simulated account, no network, writes listed in order, dist/_d1/ written, second plan 0', async () => {
+  for (const config of [{ project: 'zuma', allow: [ME] }, null]) {
+    const dir = root({ config });
+    const touched = [];
+    const api = async (m, p) => { touched.push(`${m} ${p}`); throw new Error('network'); };
+    const fetch = async url => { touched.push(String(url)); throw new Error('network'); };
+    const out = [];
+    const code = await run(['--dry-run'], { api, fetch, log: m => out.push(m), env: {}, root: dir, sleep: noSleep });
+    const text = out.join('\n');
+    assert.equal(code, 0, text);
+    assert.deepEqual(touched, [], 'no API call, no fetch');
+    const lines = text.split('\n');
+    const i = lines.findIndex(l => l.startsWith('écritures prévues'));
+    assert.ok(i >= 0, text);
+    const listed = lines.slice(i + 1).filter(l => /^\d+\. /.test(l));
+    assert.match(listed[0], /^1\. POST \/accounts\/\{compte\}\/d1\/database \{"name":"zuma-assets"\}/);
+    assert.match(listed[1], /^2\. POST \/accounts\/\{compte\}\/d1\/database\/\{base\}\/query CREATE TABLE IF NOT EXISTS blobs/);
+    assert.match(listed[2], /^3\. POST \/accounts\/\{compte\}\/d1\/database\/\{base\}\/query batch de \d+ INSERT OR IGNORE/);
+    assert.match(listed.at(-2), /PATCH \/accounts\/\{compte\}\/pages\/projects\/zuma .*ASSETS_DB/);
+    assert.match(listed.at(-1), /POST \/accounts\/\{compte\}\/pages\/projects\/zuma\/deployments .*_worker\.js/);
+    assert.ok(lines.slice(i).includes('actions prévues : 0'), 'second plan on the simulated state');
+    const worker = fs.readFileSync(path.join(dir, 'dist', '_d1', '_worker.js'), 'utf8');
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'dist', '_d1', 'manifest.json'), 'utf8'));
+    assert.match(worker, /export default/);
+    assert.ok(manifest['/index.html'] && manifest['/assets/pack.json']);
+    assert.ok(!text.includes(ME), 'no address printed');
+    if (!config) assert.match(text, /configuration privée absente/);
+  }
 });
 
 test('run (D-43): listed existing apps get allowed_idps = [cloudflare] before OTP, nothing else changes, previous value logged', async () => {
@@ -550,13 +684,16 @@ test('run (D-43): listed existing apps get allowed_idps = [cloudflare] before OT
   assert.match(refused.out, /pinIdpApps/);
 });
 
-test('no mode ever sends DELETE / PATCH; PUT only on listed existing Access apps', async () => {
+test('no mode ever sends DELETE; PATCH only on the Pages project; PUT only on listed existing Access apps; SQL limited', async () => {
   const cloud = fakeCloud({ apps: [otherApp('Prisme', 'app.example.org')] });
   const dir = root({ config: { project: 'zuma', allow: [ME], pinIdpApps: ['Prisme'] } });
-  for (const argv of [['--plan'], [], ['--verify'], ['--rollback-plan'], ['--plan']]) await exec(argv, cloud, { dir });
-  assert.ok(!cloud.calls.some(c => c.method === 'DELETE' || c.method === 'PATCH'));
+  for (const argv of [['--plan'], [], ['--verify'], ['--rollback-plan'], ['--plan'], ['--direct']]) await exec(argv, cloud, { dir });
+  assert.ok(!cloud.calls.some(c => c.method === 'DELETE'));
+  assert.deepEqual([...new Set(cloud.calls.filter(c => c.method === 'PATCH').map(c => c.path))], [`${A}/pages/projects/zuma`]);
   const puts = cloud.calls.filter(c => c.method === 'PUT');
   assert.deepEqual(puts.map(c => c.path), [`${A}/access/apps/app-Prisme`], 'one PUT, on the listed app only');
+  const sql = cloud.calls.filter(c => c.path.endsWith('/query')).flatMap(c => (c.body.batch ?? [c.body]).map(q => q.sql));
+  assert.ok(sql.length > 0 && sql.every(q => /^(SELECT |CREATE TABLE IF NOT EXISTS blobs |INSERT OR IGNORE INTO blobs )/.test(q)), 'no UPDATE / DELETE / DROP');
 });
 
 test('run --rollback-plan: GET only, prints the ordered removal (project first) with DELETE endpoints and dashboard paths', async () => {
@@ -567,11 +704,17 @@ test('run --rollback-plan: GET only, prints the ordered removal (project first) 
   assert.equal(code, 0);
   assert.ok(cloud.calls.slice(n).every(c => c.method === 'GET'));
   const at = prefix => lines.findIndex(l => l.startsWith(prefix));
-  assert.ok(at('1. supprimer le projet Pages (contenu retiré d\'abord)') >= 0, out);
-  assert.ok(at('2. supprimer l\'application principale et l\'application Bypass') > at('1. '));
-  assert.ok(at(`3. supprimer les politiques « ${ALLOW} » / « ${BYPASS} » si app_count = 0`) > at('2. '));
-  assert.ok(at('4. garder la méthode « One-time PIN » (facultatif : la retirer)') > at('3. '));
-  assert.match(out, /DELETE \/accounts\/\{compte\}\/pages\/projects\/zuma/);
+  assert.ok(at('1. supprimer les déploiements du projet Pages (contenu retiré d\'abord)') >= 0, out);
+  assert.ok(at('2. retirer la liaison D1 « ASSETS_DB »') > at('1. '));
+  assert.ok(at('3. supprimer la base D1 « zuma-assets »') > at('2. '));
+  assert.ok(at('4. supprimer le projet Pages') > at('3. '));
+  assert.ok(at('5. supprimer l\'application principale et l\'application Bypass') > at('4. '));
+  assert.ok(at(`6. supprimer les politiques « ${ALLOW} » / « ${BYPASS} » si app_count = 0`) > at('5. '));
+  assert.ok(at('7. garder la méthode « One-time PIN » (facultatif : la retirer)') > at('6. '));
+  assert.match(out, /DELETE \/accounts\/\{compte\}\/pages\/projects\/zuma\/deployments\/dep-1\?force=true/);
+  assert.match(out, /PATCH \/accounts\/\{compte\}\/pages\/projects\/zuma .*"ASSETS_DB":null/);
+  assert.match(out, /DELETE \/accounts\/\{compte\}\/d1\/database\/\{base\}/);
+  assert.match(out, /DELETE \/accounts\/\{compte\}\/pages\/projects\/zuma /);
   assert.match(out, /DELETE \/accounts\/\{compte\}\/access\/apps\//);
   assert.match(out, /Workers & Pages › zuma › Settings › Delete project/);
   assert.match(out, /Zero Trust › Access › Applications › Zuma › Delete/);
@@ -623,6 +766,7 @@ test('the whole output of a run never contains the upload JWT, the token or the 
   assert.doesNotMatch(all, /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./);
   assert.ok(!all.includes(ACC), 'no account id');
   assert.ok(!all.includes(ME), 'no e-mail address (the account name embeds it)');
+  assert.ok(!all.includes(DB_UUID), 'no database id');
 });
 
 test('redact masks JWTs, Authorization values and 32+ hex identifiers, keeping the last 4 characters', () => {
@@ -634,6 +778,7 @@ test('redact masks JWTs, Authorization values and 32+ hex identifiers, keeping t
   assert.match(r, /Authorization: \[masqué\]1234/);
   assert.match(r, /short 0123abcd/, 'short hex untouched');
   assert.equal(redact('rien à masquer'), 'rien à masquer');
+  assert.equal(redact(`base ${DB_UUID}`), 'base [masqué]4321', 'UUIDs (D1 database ids) masked too');
 });
 
 test('isAccessRedirect: 301/302/303/307/308 to exactly the team domain', () => {
