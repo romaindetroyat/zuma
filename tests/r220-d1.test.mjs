@@ -300,3 +300,217 @@ test('worker source: ES module without import, console, process, Buffer or eval;
 test('D1 binding name is ASSETS_DB, not the reserved Pages ASSETS binding', () => {
   assert.equal(D1_BINDING, 'ASSETS_DB');
 });
+
+// ============================================================ client D1 + liaison + déploiement (API simulée)
+
+const {
+  findDatabase, readBlobs, planD1, insertBatches, uploadBlobs, bindingBody, bindingOk, deployWorker, workerMarker,
+  ROW_BUDGET, MAX_BODY_BYTES, COMPATIBILITY_DATE, SCHEMA, INSERT, DATABASE_NAME,
+} = await import('../tools/d1deploy.mjs');
+
+const A = '/accounts/acc';
+const UUID = '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0';
+const noSleep = async () => undefined;
+
+/**
+ * Simulated D1 REST API (one database, a tiny SQL subset: schema, sqlite_master, GROUP BY state, INSERT OR IGNORE)
+ * plus the Pages project and deployments. Records every call; `fail` = { status, times, when(call) } injects errors.
+ */
+function fakeApi({ database = true, table = true, rows = [], project = {}, batch = true, fail = null, environment = 'production' } = {}) {
+  const s = { database: database ? { uuid: UUID, name: DATABASE_NAME } : null, table, rows: rows.map(r => ({ ...r })), project: { name: 'zuma', production_branch: 'main', deployment_configs: { production: {}, preview: {} }, ...project } };
+  const calls = [];
+  const err = (status, message) => Object.assign(new Error(message), { status });
+  const run = (sql, params = []) => {
+    assert.ok(params.every(p => typeof p === 'string'), 'D1 REST params are strings');
+    if (sql === SCHEMA) { s.table = true; return { results: [], success: true, meta: { changes: 0 } }; }
+    if (/^SELECT name FROM sqlite_master/.test(sql)) return { results: s.table ? [{ name: 'blobs' }] : [], success: true, meta: {} };
+    if (!s.table) throw err(400, 'no such table: blobs');
+    if (/^SELECT key, COUNT\(\*\) AS parts, SUM\(LENGTH\(data\)\) AS chars FROM blobs GROUP BY key$/.test(sql)) {
+      const by = new Map();
+      for (const r of s.rows) { const e = by.get(r.key) ?? { key: r.key, parts: 0, chars: 0 }; e.parts++; e.chars += r.data.length; by.set(r.key, e); }
+      return { results: [...by.values()], success: true, meta: {} };
+    }
+    if (sql === INSERT) {
+      assert.equal(params.length, 3);
+      assert.ok(Buffer.byteLength(sql) + params.reduce((n, p) => n + Buffer.byteLength(p), 0) < 100000, 'statement under 100 KB');
+      const [key, part, data] = params;
+      if (s.rows.some(r => r.key === key && r.part === Number(part))) return { results: [], success: true, meta: { changes: 0 } };
+      s.rows.push({ key, part: Number(part), data });
+      return { results: [], success: true, meta: { changes: 1 } };
+    }
+    throw err(400, `unsupported SQL ${sql}`);
+  };
+  const api = async (method, p, o = {}) => {
+    const call = { method, path: p, body: o.body, form: o.form };
+    calls.push(call);
+    if (fail && fail.times > 0 && fail.when(call)) { fail.times--; throw err(fail.status, 'injected'); }
+    if (method === 'GET' && p.startsWith(`${A}/d1/database?`)) {
+      const name = new URL(`https://x${p}`).searchParams.get('name');
+      return s.database && s.database.name.includes(name) ? [{ ...s.database }, { uuid: 'other', name: `${DATABASE_NAME}-old` }] : [];
+    }
+    if (method === 'POST' && p === `${A}/d1/database`) { s.database = { uuid: UUID, name: o.body.name }; return { ...s.database }; }
+    if (method === 'POST' && p === `${A}/d1/database/${UUID}/query`) {
+      assert.ok(Buffer.byteLength(JSON.stringify(o.body)) < MAX_BODY_BYTES, 'request body under the cap');
+      if (o.body.batch) {
+        if (!batch) throw err(400, 'batch unsupported');
+        return o.body.batch.map(q => run(q.sql, q.params));
+      }
+      return [run(o.body.sql, o.body.params)];
+    }
+    if (p === `${A}/pages/projects/zuma` && method === 'GET') return structuredClone(s.project);
+    if (p === `${A}/pages/projects/zuma` && method === 'PATCH') {
+      for (const env of ['production', 'preview']) Object.assign(s.project.deployment_configs[env], o.body.deployment_configs[env]);
+      return structuredClone(s.project);
+    }
+    if (p === `${A}/pages/projects/zuma/deployments` && method === 'POST') {
+      const dep = { id: 'dep-1', url: 'https://abc12345.zuma-x.pages.dev', environment, latest_stage: { name: 'queued', status: 'active' }, deployment_trigger: { metadata: { branch: o.form.get('branch'), commit_message: o.form.get('commit_message') } } };
+      s.project.canonical_deployment = { ...dep, latest_stage: { name: 'deploy', status: 'success' } };
+      return dep;
+    }
+    if (p === `${A}/pages/projects/zuma/deployments/dep-1`) return { ...s.project.canonical_deployment };
+    throw err(404, `unexpected ${method} ${p}`);
+  };
+  return { api, calls, s };
+}
+
+const writesOf = calls => calls.filter(c => !(c.method === 'GET' || (c.path.endsWith('/query') && /^SELECT /.test(c.body.sql ?? ''))));
+
+test('findDatabase: exact name only; readBlobs: table check then one GROUP BY (key, parts, chars)', async () => {
+  const { api, calls } = fakeApi({ rows: [{ key: 'sha256:a', part: 0, data: 'QQ==' }, { key: 'sha256:a', part: 1, data: 'Qg==' }] });
+  assert.deepEqual(await findDatabase(api, A, DATABASE_NAME), { uuid: UUID, name: DATABASE_NAME });
+  assert.equal(calls[0].path, `${A}/d1/database?name=${DATABASE_NAME}&per_page=100`);
+  assert.equal(await findDatabase(fakeApi({ database: false }).api, A, DATABASE_NAME), null);
+  const blobs = await readBlobs(api, A, UUID);
+  assert.equal(blobs.table, true);
+  assert.deepEqual(blobs.present.get('sha256:a'), { parts: 2, chars: 8 });
+  assert.ok(calls.slice(1).every(c => c.method === 'POST' && /^SELECT /.test(c.body.sql)), 'reads are SELECTs');
+  const none = await readBlobs(fakeApi({ table: false }).api, A, UUID);
+  assert.deepEqual({ table: none.table, size: none.present.size }, { table: false, size: 0 });
+});
+
+test('planD1: absent database → everything planned; complete rows skipped; an incomplete key is planned again', () => {
+  const { dir } = tree();
+  const files = blobFiles(dir);
+  const empty = planD1({ files, database: null, blobs: null, project: null, marker: 'worker:x' });
+  const unique = new Set(files.map(f => f.key));
+  assert.equal(empty.createDatabase, true);
+  assert.equal(empty.createTable, true);
+  assert.equal(empty.missing.length, unique.size, 'one entry per unique key');
+  assert.equal(empty.chunks, empty.missing.reduce((n, f) => n + chunks(fs.readFileSync(f.abs)).length, 0));
+  assert.equal(empty.rows, 2 * empty.chunks, 'two rows written per chunk (table + primary-key index)');
+  assert.equal(empty.bind, true);
+  assert.equal(empty.deploy, true);
+  // Every key complete except the multi-part music file, which lacks its last part.
+  const present = new Map();
+  for (const f of files) {
+    const parts = chunks(fs.readFileSync(f.abs));
+    const kept = f.path === 'assets/music/zuma.mo3' ? parts.slice(0, -1) : parts;
+    present.set(f.key, { parts: kept.length, chars: kept.join('').length });
+  }
+  const project = { deployment_configs: bindingBody(UUID).deployment_configs, canonical_deployment: { latest_stage: { name: 'deploy', status: 'success' }, deployment_trigger: { metadata: { commit_message: 'R2.0.20 x worker:abc' } } } };
+  const p = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:abc' });
+  assert.deepEqual(p.missing.map(f => f.path), ['assets/music/zuma.mo3']);
+  assert.equal(p.createDatabase || p.createTable || p.bind || p.deploy, false);
+  const done = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present: new Map([...present, [files.find(f => f.path === 'assets/music/zuma.mo3').key, { parts: 3, chars: noise(100000).toString('base64').length }]]) }, project, marker: 'worker:abc' });
+  assert.equal(done.missing.length, 0);
+  assert.equal(done.rows, 0);
+  assert.equal(planD1({ files, database: { uuid: UUID }, blobs: { table: true, present }, project, marker: 'worker:new' }).deploy, true, 'another worker → deploy');
+});
+
+test('insertBatches: every statement exactly once, each request body under 900 KB', () => {
+  const stmts = Array.from({ length: 40 }, (_, i) => ({ sql: INSERT, params: [`sha256:${i}`, '0', 'x'.repeat(60000)] }));
+  const out = insertBatches(stmts);
+  assert.ok(out.length >= 3);
+  for (const b of out) assert.ok(Buffer.byteLength(JSON.stringify({ batch: b })) < MAX_BODY_BYTES);
+  assert.deepEqual(out.flat(), stmts);
+  assert.deepEqual(insertBatches([]), []);
+});
+
+test('uploadBlobs: schema not touched, INSERT OR IGNORE with bound string params in batches; rows rebuild every file', async () => {
+  const { dir } = tree();
+  const files = blobFiles(dir);
+  const { api, calls, s } = fakeApi();
+  const plan = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present: new Map() }, project: null, marker: 'worker:x' });
+  const logs = [];
+  const res = await uploadBlobs(api, { A, uuid: UUID, plan, log: m => logs.push(m), sleep: noSleep });
+  const posts = calls.filter(c => c.method === 'POST');
+  assert.ok(posts.length >= 1 && posts.every(c => c.path === `${A}/d1/database/${UUID}/query` && Array.isArray(c.body.batch)));
+  for (const c of posts) for (const q of c.body.batch) assert.equal(q.sql, INSERT);
+  assert.equal(res.statements, plan.chunks);
+  for (const f of files) {
+    const data = s.rows.filter(r => r.key === f.key).sort((a, b) => a.part - b.part).map(r => r.data).join('');
+    assert.ok(Buffer.from(data, 'base64').equals(fs.readFileSync(f.abs)), `${f.path} rebuilt from its rows`);
+  }
+  assert.match(logs.join('\n'), /instructions/);
+  // Idempotent: nothing missing → no call at all.
+  const again = planD1({ files, database: { uuid: UUID }, blobs: await readBlobs(api, A, UUID), project: null, marker: 'worker:x' });
+  const n = calls.length;
+  await uploadBlobs(api, { A, uuid: UUID, plan: again, sleep: noSleep });
+  assert.equal(again.missing.length, 0);
+  assert.equal(calls.length, n);
+});
+
+test('uploadBlobs: over the row budget → refused before any call; 400 on batch → single statements; 5xx retried', async () => {
+  const { dir } = tree();
+  const files = blobFiles(dir);
+  const plan = planD1({ files, database: { uuid: UUID }, blobs: { table: true, present: new Map() }, project: null, marker: 'w' });
+  const big = { ...plan, chunks: ROW_BUDGET, rows: 2 * ROW_BUDGET };
+  const refused = fakeApi();
+  await assert.rejects(uploadBlobs(refused.api, { A, uuid: UUID, plan: big, sleep: noSleep }), /50 000|budget|lignes/);
+  assert.equal(refused.calls.length, 0);
+  const single = fakeApi({ batch: false });
+  await uploadBlobs(single.api, { A, uuid: UUID, plan, sleep: noSleep });
+  const singles = single.calls.filter(c => c.body && c.body.sql === INSERT);
+  assert.equal(singles.length, plan.chunks, 'one request per statement after the 400');
+  assert.equal(new Set(single.s.rows.map(r => r.key)).size, plan.missing.length);
+  const flaky = fakeApi({ fail: { status: 502, times: 2, when: c => c.method === 'POST' } });
+  await uploadBlobs(flaky.api, { A, uuid: UUID, plan, sleep: noSleep });
+  assert.equal(new Set(flaky.s.rows.map(r => r.key)).size, plan.missing.length, 'completed after retries');
+  const denied = fakeApi({ fail: { status: 403, times: 1, when: c => c.method === 'POST' } });
+  await assert.rejects(uploadBlobs(denied.api, { A, uuid: UUID, plan, sleep: noSleep }), e => e.status === 403);
+  assert.equal(denied.calls.length, 1, 'stops at the refused write');
+});
+
+test('bindingBody / bindingOk: ASSETS_DB → { id } on production and preview with the fixed compatibility date', () => {
+  const body = bindingBody(UUID);
+  assert.match(COMPATIBILITY_DATE, /^\d{4}-\d{2}-\d{2}$/);
+  for (const env of ['production', 'preview']) {
+    assert.deepEqual(body.deployment_configs[env], { d1_databases: { ASSETS_DB: { id: UUID } }, compatibility_date: COMPATIBILITY_DATE });
+  }
+  assert.deepEqual(Object.keys(body), ['deployment_configs']);
+  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, UUID), true);
+  assert.equal(bindingOk({ deployment_configs: body.deployment_configs }, 'other'), false);
+  const prodOnly = structuredClone(body);
+  delete prodOnly.deployment_configs.preview.d1_databases;
+  assert.equal(bindingOk(prodOnly, UUID), false);
+  const oldDate = structuredClone(body);
+  oldDate.deployment_configs.production.compatibility_date = '2021-01-01';
+  assert.equal(bindingOk(oldDate, UUID), false);
+  assert.equal(bindingOk(null, UUID), false);
+});
+
+test('deployWorker: main only; multipart manifest {} + branch + commit message with the worker marker + _worker.js file', async () => {
+  const source = 'export default { fetch() { return new Response("x"); } };\n';
+  for (const branch of ['preview', '', undefined]) {
+    const f = fakeApi();
+    await assert.rejects(deployWorker(f.api, { A, project: 'zuma', worker: source, branch, message: 'R', sleep: noSleep }), /main/);
+    assert.equal(f.calls.length, 0);
+  }
+  const { api, calls } = fakeApi();
+  const res = await deployWorker(api, { A, project: 'zuma', worker: source, branch: 'main', message: 'R2.0.20 build', sleep: noSleep });
+  const post = calls.find(c => c.method === 'POST');
+  assert.equal(post.path, `${A}/pages/projects/zuma/deployments`);
+  const form = post.form;
+  assert.ok(form instanceof FormData);
+  assert.deepEqual([...form.keys()].sort(), ['_worker.js', 'branch', 'commit_dirty', 'commit_message', 'manifest']);
+  assert.equal(form.get('manifest'), '{}');
+  assert.equal(form.get('branch'), 'main');
+  assert.equal(form.get('commit_dirty'), 'true');
+  assert.equal(form.get('commit_message'), `R2.0.20 build ${workerMarker(source)}`);
+  assert.match(workerMarker(source), /^worker:[0-9a-f]{16}$/);
+  const file = form.get('_worker.js');
+  assert.equal(file.name, '_worker.js');
+  assert.equal(await file.text(), source);
+  assert.deepEqual(res, { id: 'dep-1', url: 'https://abc12345.zuma-x.pages.dev', environment: 'production', ready: true });
+  assert.deepEqual(writesOf(calls).map(c => c.method), ['POST']);
+});
