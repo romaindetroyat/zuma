@@ -307,3 +307,125 @@ export function rankOf(list: readonly HighScore[], name: string, score: number):
 export function recordsEnabled(where: { protocol: string; hostname: string; hasPack: boolean }): boolean {
   return (where.protocol === 'http:' || where.protocol === 'https:') && !RECORDS_LOOPBACK.includes(where.hostname) && where.hasPack === true;
 }
+
+// ------------------------------------------------------------------ exchange with api/records (D-06, D-07)
+
+/** The subset of a fetch Response this module reads. */
+export interface RecordsResponse { ok: boolean; status: number; type?: string; headers: { get(name: string): string | null }; json(): Promise<unknown> }
+
+/** Injected transport: the caller passes the browser fetch (or a test double); `timeoutMs` defaults to 5 000 ms. */
+export interface RecordsIo {
+  fetch(url: string, init: {
+    method: 'GET' | 'POST'; credentials: 'same-origin'; cache: 'no-store'; redirect: 'manual';
+    headers: Record<string, string>; body?: string; signal?: AbortSignal;
+  }): Promise<RecordsResponse>;
+  timeoutMs?: number;
+}
+
+export type RecordsExchange = { kind: 'ok'; state: RecordsState } | { kind: 'retry' } | { kind: 'drop' };
+
+/** Same-origin relative path of the worker endpoint (behind Access like the rest of the site). */
+const RECORDS_URL = 'api/records';
+const RECORDS_TIMEOUT_MS = 5000;
+/** Permanent refusals: the send is removed from the queue (bad body, too large, not JSON). */
+const RECORDS_DROP_STATUS: readonly number[] = [400, 413, 415];
+
+/** Wire copy of a POST body: only the known numeric / id fields, whatever the caller added (D-04: never a name). */
+function recordsWire(body: RecordsPost): RecordsPost {
+  return {
+    scores: body.scores.map(e => ({ id: e.id, score: e.score, stage: e.stage, level: e.level, day: e.day })),
+    times: body.times.map(t => ({ level: t.level, seconds: t.seconds })),
+  };
+}
+
+/**
+ * One request to 'api/records' (GET when body is null, else POST JSON); never rejects. D-07: local first, silent
+ * failure, nothing waits on the network longer than `timeoutMs` (the request is aborted then). Classes: 2xx with a
+ * valid JSON state → ok; 400 / 413 / 415 → drop; anything else (offline, timeout, 401 / 403 / 404 / 429 / 5xx, the
+ * opaque redirect of an expired Access session, unreadable answer) → retry, the queue is kept for later.
+ */
+export async function exchangeRecords(io: RecordsIo, body: RecordsPost | null): Promise<RecordsExchange> {
+  const retry: RecordsExchange = { kind: 'retry' };
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'timeout'>(resolve => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      resolve('timeout');
+    }, io.timeoutMs ?? RECORDS_TIMEOUT_MS);
+  });
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (body) headers['Content-Type'] = 'application/json';
+    const res = await Promise.race([
+      io.fetch(RECORDS_URL, {
+        method: body ? 'POST' : 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        redirect: 'manual',
+        headers,
+        ...(body ? { body: JSON.stringify(recordsWire(body)) } : {}),
+        ...(controller ? { signal: controller.signal } : {}),
+      }),
+      expired,
+    ]);
+    if (res === 'timeout' || !recordsIsObject(res)) return retry;
+    if (res.type === 'opaqueredirect' || typeof res.status !== 'number') return retry;
+    if (RECORDS_DROP_STATUS.includes(res.status)) return { kind: 'drop' };
+    if (!res.ok || res.status < 200 || res.status >= 300) return retry;
+    const type = res.headers.get('content-type') ?? '';
+    if (!/^application\/json\b/i.test(type.trim())) return retry;
+    const data = await Promise.race([res.json(), expired]);
+    if (data === 'timeout') return retry;
+    const state = parseRecordsState(data);
+    return state ? { kind: 'ok', state } : retry;
+  } catch {
+    return retry;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Exchanges per synchronisation (T-061-04): the queue, the D-08 import, one more. */
+const RECORDS_SYNC_MAX = 3;
+
+/**
+ * One synchronisation: POST the pending items (else GET), apply the answer to the CURRENT store (access.get()) and
+ * persist it (access.set); after the first success on this device, queue migrationItems (once, migrated = true, in
+ * the same set) and send them. At most 3 exchanges per call. Resolves true when at least one exchange succeeded;
+ * never rejects (a throwing storage or migrate ends the call quietly).
+ */
+export async function syncRecords(
+  access: { get(): RecordsStore; set(store: RecordsStore): void },
+  io: RecordsIo,
+  migrate: () => ReturnType<typeof migrationItems>,
+  makeId: () => string,
+): Promise<boolean> {
+  let success = false;
+  try {
+    for (let i = 0; i < RECORDS_SYNC_MAX; i++) {
+      const body = postBody(access.get());
+      const result = await exchangeRecords(io, body);
+      if (result.kind === 'retry') break;
+      if (result.kind === 'drop') {
+        if (!body) break;
+        access.set(afterDrop(access.get(), body));
+        continue;
+      }
+      success = true;
+      const current = access.get();
+      let store = body ? afterPost(current, body, result.state) : { ...current, cache: result.state };
+      if (!store.migrated) {
+        const items = migrate();
+        for (const entry of items.scores) store = queueScore(store, entry, makeId());
+        for (const level of Object.keys(items.times)) store = queueTime(store, level, items.times[level]);
+        store = { ...store, migrated: true };
+      }
+      access.set(store);
+      if (postBody(store) === null) break;
+    }
+  } catch {
+    // Storage or migration failure: whatever was persisted stays; the next call tries again.
+  }
+  return success;
+}
