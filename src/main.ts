@@ -964,6 +964,12 @@ class Game {
     }
     if (kind !== this.shownPrompt) {
       this.shownPrompt = kind;
+      // A modal dialog: the stones behind it are no longer lit or pressed.
+      if (kind) {
+        this.welcome.hover = null;
+        this.welcome.pressed = null;
+        this.welcome.focus = null;
+      }
       this.promptUi = { hover: null, pressed: null, focus: kind === 'continue' ? 'continue' : kind ? 'name-field' : null, text: naming ? this.promptUi.text : '' };
     }
   }
@@ -1074,7 +1080,7 @@ class Game {
     if (hover === this.welcome.hover) return;
     this.welcome.hover = hover;
     if (!hover || !stone) return;
-    this.welcome.focus = hover; // one lit stone at a time
+    this.welcome.focus = null; // one lit stone at a time: the pointer takes over from the keyboard focus
     this.audio.play({ key: 'choral', gain: 0.2, rate: 2 ** (stone.semitones / 12) });
   }
 

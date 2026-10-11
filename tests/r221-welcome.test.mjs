@@ -463,6 +463,9 @@ test('main.js: OPTIONS out of game from the welcome, hover sounds choral at 0.2 
   const keys = method(main, '    welcomeKey(code) {');
   for (const k of ['ArrowUp', 'ArrowDown', 'Tab', 'Enter', 'Space', 'Escape']) assert.match(keys, new RegExp(`'${k}'`), k);
   assert.match(main, /enabled\)/, 'disabled stones are filtered');
+  // The pointer hover clears the keyboard focus (a stone left by the mouse goes dark again).
+  assert.match(method(main, '    hoverStone(stone) {'), /this\.welcome\.focus = null/);
+  assert.doesNotMatch(method(main, '    hoverStone(stone) {'), /this\.welcome\.focus = hover/);
 });
 
 test('main.js: the profile name is never injected into the DOM — hidden input read through sanitizeName only, canvas rendering', () => {
