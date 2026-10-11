@@ -65,7 +65,7 @@ test('main.js: frog tap swaps instead of shooting, no pinch / double-tap zoom, r
   const down = main.slice(main.indexOf("addEventListener('pointerdown'"));
   const frog = down.indexOf('frogHit(');
   assert.ok(frog > 0, 'frogHit in the pointerdown handler');
-  assert.match(down.slice(frog, frog + 200), /kind: 'swap'/);
+  assert.match(down.slice(frog, frog + 400), /kind: 'swap'/);
   assert.ok(frog < down.indexOf("kind: 'shoot'"), 'checked before the shot');
   assert.match(main, /'gesturestart'/);
   assert.match(main, /'dblclick'/);

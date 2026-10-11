@@ -6,9 +6,9 @@ import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
-import { applyUpdate, formatSize, installGuidance, offlineStatus, readInstallEnv, registerServiceWorker, type InstallGuidance } from './pwa.js';
+import { applyUpdate, fitArea, formatSize, installGuidance, needsRotation, offlineStatus, readInstallEnv, registerServiceWorker, type InstallGuidance, type Insets } from './pwa.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
-import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, frogHit, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
 
 declare const __BUILD__: string;
@@ -79,6 +79,9 @@ class Game {
   private installPrompt: InstallPromptEvent | null = null;
   private installOpen = false;
   private installDone: (() => void) | null = null;
+  /** « Tournez votre appareil » shown (phone in portrait, D-38 §5) and whether the pause is its own. */
+  private rotateOpen = false;
+  private pausedByRotation = false;
   /** Build badge (shown in the help view of the menu). */
   private badge = `R${ENGINE_VERSION} · ${BUILD}`;
   private engine: ZumaEngine | null = null;
@@ -125,6 +128,7 @@ class Game {
     this.bindInstall();
     this.bindScaling();
     this.applyScaling();
+    this.checkRotation();
   }
 
   // ---------------------------------------------------------------- scaling
@@ -137,7 +141,9 @@ class Game {
   private applyScaling(): void {
     const stage = this.canvas.parentElement;
     const dpr = window.devicePixelRatio || 1;
-    const k = fitScale(window.innerWidth, window.innerHeight, dpr, this.pixelated);
+    // R2.0.20 (D-38 §3): the 4:3 stage fits inside the safe areas (notch, home indicator) the body pads.
+    const area = fitArea(window.innerWidth, window.innerHeight, safeInsets());
+    const k = fitScale(area.w, area.h, dpr, this.pixelated);
     stage?.style.setProperty('--k', String(k));
     stage?.classList.add('sized');
     stage?.classList.toggle('pixelated', this.pixelated);
@@ -165,7 +171,8 @@ class Game {
   }
 
   private bindScaling(): void {
-    window.addEventListener('resize', () => this.applyScaling());
+    window.addEventListener('resize', () => { this.applyScaling(); this.checkRotation(); });
+    window.addEventListener('orientationchange', () => { this.applyScaling(); this.checkRotation(); });
     const stage = this.canvas.parentElement;
     if (typeof ResizeObserver !== 'undefined' && stage) new ResizeObserver(() => this.applyScaling()).observe(stage);
     // devicePixelRatio has no change event: re-arm a one-shot media query at each new ratio.
@@ -174,6 +181,29 @@ class Game {
       matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => { this.applyScaling(); watchDpr(); }, { once: true });
     };
     watchDpr();
+  }
+
+  /**
+   * R2.0.20 (D-38 §5): a phone in portrait shows « Tournez votre appareil » and pauses a running game; back in
+   * landscape, only a pause the overlay set itself is lifted. A tablet in portrait keeps the 4:3 stage with bands.
+   */
+  private checkRotation(): void {
+    let coarse = false;
+    try { coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches; } catch { /* no media queries */ }
+    const shortSide = Math.min(screen?.width ?? Number.NaN, screen?.height ?? Number.NaN);
+    const show = needsRotation({ width: window.innerWidth, height: window.innerHeight, coarse, shortSide });
+    const changed = show !== this.rotateOpen;
+    this.rotateOpen = show;
+    document.getElementById('rotate')?.classList.toggle('open', show);
+    if (show) {
+      if (!this.paused && this.engine) {
+        this.togglePause();
+        this.pausedByRotation = this.paused;
+      }
+    } else if (changed && this.pausedByRotation) {
+      this.pausedByRotation = false;
+      if (this.paused) this.togglePause();
+    }
   }
 
   private togglePixels(): void {
@@ -337,6 +367,9 @@ class Game {
     this.fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
     this.endAt = null;
     this.paused = false;
+    // A level starting under « Tournez votre appareil » stays paused until the device is turned (D-38 §5).
+    this.pausedByRotation = this.rotateOpen;
+    if (this.rotateOpen) this.paused = true;
     const art = this.pack && this.level.graphics ? await this.pack.levelArt(this.level.graphics) : null;
     const view: LevelView = { name: this.level.name, tracks: this.level.tracks, frog: this.level.frog, art, skullRotation: this.level.graphics?.skullRotation ?? null };
     this.renderer.setLevel(view);
@@ -609,6 +642,11 @@ class Game {
    */
   private bindInput(): void {
     window.addEventListener('contextmenu', ev => ev.preventDefault());
+    // R2.0.20 (D-38 §3): no pinch (Safari gesture events) and no double-tap zoom on the stage.
+    const stage = this.canvas.parentElement;
+    stage?.addEventListener('gesturestart', ev => ev.preventDefault());
+    stage?.addEventListener('dblclick', ev => ev.preventDefault());
+    this.audio.bindUnlock();
     window.addEventListener('pointermove', ev => {
       if (this.menuOpen || this.statsOpen || this.installOpen) return;
       this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
@@ -616,18 +654,24 @@ class Game {
     });
     window.addEventListener('pointerdown', ev => {
       this.audio.unlock();
-      if (this.loading || this.menuOpen || this.statsOpen || this.installOpen) return;
+      if (this.loading || this.menuOpen || this.statsOpen || this.installOpen || this.rotateOpen) return;
       if (ev.pointerType === 'mouse') ev.preventDefault(); // no text selection while playing
       const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
       if (ev.button !== 0) return;
-      this.pointer = p;
-      this.engine?.command({ kind: 'aim', ...p });
       if (ev.pointerType === 'touch') {
         const button = this.renderer.hitTest(p.x, p.y);
         if (button === 'menu') { this.toggleMenu(); return; }
         if (button === 'stats') { this.openStats('live'); return; }
+        // R2.0.20 (D-38 §4): touching the frog swaps the balls (no aim, no shot), as in the mobile versions.
+        if (this.engine && frogHit(p, this.engine.frog)) {
+          if (this.paused) { this.togglePause(); return; }
+          this.engine.command({ kind: 'swap' });
+          return;
+        }
       }
+      this.pointer = p;
+      this.engine?.command({ kind: 'aim', ...p });
       if (this.paused) { this.togglePause(); return; }
       this.engine?.command({ kind: 'shoot', x: p.x, y: p.y });
     });
@@ -637,6 +681,7 @@ class Game {
         if (ev.code === 'Escape') { ev.preventDefault(); this.closeInstallCard(false); }
         return;
       }
+      if (this.rotateOpen) return;
       if (this.menuOpen) {
         if (this.menuKey(ev.code)) ev.preventDefault();
         return;
@@ -683,7 +728,9 @@ class Game {
   /** Platform widgets of the menu: « Installer » in the help view while there is something to show. */
   private menuOptions(): MenuOptions {
     const g = this.installGuidance();
-    return { install: g !== 'installed' && g !== 'none' };
+    // R2.0.20 (D-38 §4): without the Fullscreen API (iPhone) the « Plein écran » check is not offered.
+    const fullscreen = document.fullscreenEnabled === true && typeof document.documentElement.requestFullscreen === 'function';
+    return { install: g !== 'installed' && g !== 'none', fullscreen };
   }
 
   /** Fills and opens the install card; resolves when it is closed (« Jouer », « × », Escape, or installed). */
@@ -1276,6 +1323,17 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
     zumaBackTicks: ticks(s.zumaback, 300),
     zumaSlowTicks: ticks(s.zumaslow, 1100),
   };
+}
+
+/** Safe-area insets the body pads (CSS `env(safe-area-inset-*)` through `--safe-*`), in CSS px; 0 when unreadable. */
+function safeInsets(): Insets {
+  try {
+    const cs = getComputedStyle(document.body);
+    const px = (v: string): number => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+    return { top: px(cs.paddingTop), right: px(cs.paddingRight), bottom: px(cs.paddingBottom), left: px(cs.paddingLeft) };
+  } catch {
+    return { top: 0, right: 0, bottom: 0, left: 0 };
+  }
 }
 
 /** Shows a fatal initialisation error in the boot overlay instead of leaving a black canvas. */

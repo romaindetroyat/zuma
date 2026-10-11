@@ -140,3 +140,21 @@ export function readInstallEnv(promptAvailable: boolean): InstallEnv {
     promptAvailable,
   };
 }
+
+// ------------------------------------------------------------------ iPhone / iPad (D-38 §3, §5)
+
+export interface ScreenShape { width: number; height: number; coarse: boolean; shortSide: number }
+
+/** A phone held in portrait (coarse pointer, short screen side under 600 px): « Tournez votre appareil ». Tablets get bands. */
+export function needsRotation(s: ScreenShape): boolean {
+  if (![s.width, s.height, s.shortSide].every(Number.isFinite)) return false;
+  return s.height > s.width && s.coarse && s.shortSide < 600;
+}
+
+export interface Insets { top: number; right: number; bottom: number; left: number }
+
+/** Room left for the 4:3 stage inside the safe-area insets (unusable inset → 0), never negative. */
+export function fitArea(innerW: number, innerH: number, insets: Insets): { w: number; h: number } {
+  const v = (n: number): number => (Number.isFinite(n) && n > 0 ? n : 0);
+  return { w: Math.max(0, innerW - v(insets.left) - v(insets.right)), h: Math.max(0, innerH - v(insets.top) - v(insets.bottom)) };
+}

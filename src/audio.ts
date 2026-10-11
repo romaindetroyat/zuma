@@ -160,6 +160,19 @@ function parseManifest(raw: unknown): Record<string, string[]> {
   return sounds;
 }
 
+/**
+ * Safari's Audio Session API (iOS / iPadOS 16.4+): `ambient` mixes with other audio and follows the silent switch, as
+ * games usually do (hypothesis to confirm in UAT 9 against `playback`). Absent elsewhere: nothing happens.
+ */
+function setAudioSession(): void {
+  try {
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) session.type = 'ambient';
+  } catch {
+    /* not settable */
+  }
+}
+
 export class AudioManager {
   enabled = true;
   /** « Sons » slider of the menu, 0..1 (D-24); the master gain is 0.8 × volume. `enabled` (key M) stays a separate mute. */
@@ -221,13 +234,32 @@ export class AudioManager {
     if (!this.ctx) {
       const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
       if (!Ctor) return;
+      setAudioSession();
       this.ctx = new Ctor();
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.8 * this.volume;
       this.master.connect(this.ctx.destination);
       void this.preload();
     }
-    if (this.ctx.state === 'suspended') void this.ctx.resume();
+    this.resume();
+  }
+
+  /** Resumes a context the browser suspended, or that iOS `interrupted` (call, other app, lock). */
+  private resume(): void {
+    const state: string = this.ctx?.state ?? 'closed';
+    if (state === 'suspended' || state === 'interrupted') void this.ctx?.resume().catch(() => undefined);
+  }
+
+  /**
+   * R2.0.20 (D-38 §6): iOS does not always take `touchstart` / `pointerdown` as an activation gesture, so the context
+   * is also unlocked on `touchend`, `pointerup` and `click`; it is resumed when the page becomes visible again.
+   */
+  bindUnlock(target: EventTarget = window): void {
+    const unlock = (): void => this.unlock();
+    for (const type of ['touchend', 'pointerup', 'click']) target.addEventListener(type, unlock, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this.resume();
+    });
   }
 
   /** Fetches and decodes every available key at once; each failure only disables that key. */

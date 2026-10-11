@@ -53,7 +53,11 @@ const PIXELS_LABEL = 'Pixels nets';
  * Platform-dependent widgets (R2.0.20, D-38). `install`: the help view gets « Installer » (left, the confirm view's
  * button geometry) beside « Terminé » (right) — no original string: a deliberate addition with no OPTIONS equivalent.
  */
-export interface MenuOptions { install?: boolean }
+export interface MenuOptions {
+  install?: boolean;
+  /** « Plein écran » (default true); false without the Fullscreen API (iPhone): the check disappears, « Pixels nets » keeps its place. */
+  fullscreen?: boolean;
+}
 /** « Installer » has no original string. */
 const INSTALL_LABEL = 'Installer';
 
@@ -91,7 +95,7 @@ export function menuWidgets(view: MenuView, strings: Record<string, string> | nu
     // No music is played before phases 6–7: the slider is shown greyed and inert.
     { id: 'music', kind: 'slider', rect: slider(0), label: str('MUSIC_VOLUME'), enabled: false },
     { id: 'sfx', kind: 'slider', rect: slider(1), label: str('SOUND_EFFECTS'), enabled: true },
-    { id: 'fullscreen', kind: 'check', rect: check(0), label: str('FULLSCREEN'), enabled: true },
+    ...(options.fullscreen === false ? [] : [{ id: 'fullscreen' as const, kind: 'check' as const, rect: check(0), label: str('FULLSCREEN'), enabled: true }]),
     { id: 'pixels', kind: 'check', rect: check(1), label: PIXELS_LABEL, enabled: true },
     { id: 'help', kind: 'button', rect: button(L.button.help), label: str('HELP'), enabled: true },
     { id: 'main-menu', kind: 'button', rect: button(L.button.mainMenu), label: str('BACK_TO_MAIN_MENU'), enabled: true },

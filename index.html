@@ -25,6 +25,13 @@
     <p class="hint">Si ce message reste affiché, ouvrez ce fichier dans un navigateur avec JavaScript activé (Chrome, Firefox, Safari ou Edge), pas dans un aperçu de fichier.</p>
   </div>
   <section id="menu" class="overlay" aria-label="Menu"></section>
+  <!-- R2.0.20 (plan 05-14, D-38 §5): phone held in portrait → the game pauses until the device is turned. -->
+  <section id="rotate" class="overlay rotate-overlay" role="alert" aria-label="Tournez votre appareil">
+    <div class="rotate-box">
+      <svg class="rotate-icon" viewBox="0 0 64 64" width="72" height="72" aria-hidden="true"><rect x="20" y="6" width="24" height="42" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 40a24 24 0 0 0 30 18" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M36 52l5 6-7 3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <p>Tournez votre appareil</p>
+    </div>
+  </section>
   <!-- R2.0.20 (plan 05-14, D-38 §1): platform install guide, on the start screen (closable) and from the help view. -->
   <section id="install-card" class="overlay install-overlay" aria-labelledby="install-title">
     <div class="panel install-card">

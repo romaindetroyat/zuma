@@ -913,6 +913,15 @@ export function stagePoint(clientX: number, clientY: number, rect: { left: numbe
  * the scale is rounded down to whole device pixels — max(1, ⌊fit × dpr⌋) / dpr: never less than one device pixel
  * per logical pixel. Non-finite sizes → 1; a non-finite or non-positive dpr counts as 1.
  */
+/** Touch radius of the frog (R2.0.20, D-38 §4): a tap this close to its centre swaps the balls instead of shooting. */
+export const FROG_TAP_RADIUS = 32;
+
+/** True when `p` lies within `radius` px of the frog centre (non-finite → false), like the mobile versions of Zuma. */
+export function frogHit(p: Point, frog: Point, radius = FROG_TAP_RADIUS): boolean {
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(frog.x) || !Number.isFinite(frog.y)) return false;
+  return (p.x - frog.x) ** 2 + (p.y - frog.y) ** 2 <= radius * radius;
+}
+
 export function fitScale(innerWidth: number, innerHeight: number, dpr: number, pixelated: boolean): number {
   const fit = Math.min(innerWidth / WIDTH, innerHeight / HEIGHT);
   if (!Number.isFinite(fit) || fit <= 0) return 1;
