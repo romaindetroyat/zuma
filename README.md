@@ -2,7 +2,7 @@
 
 Reconstruction web/PWA d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
-Baseline : **R2.0.19**.
+Baseline : **R2.0.20**.
 
 ## Contenu du dépôt
 
@@ -15,8 +15,9 @@ Baseline : **R2.0.19**.
 | `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
 | `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu). |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
-| `src/main.ts` | Boucle de jeu, progression, entrées, menu de jeu, enregistrement du service worker. |
-| `tools/` | Build, serveur local, garde-fou de publication, extraction et import des ressources originales. |
+| `src/main.ts` | Boucle de jeu, progression, entrées (souris, clavier, toucher), menu de jeu, carte d'installation, bandeau de mise à jour. |
+| `src/pwa.ts` | Service worker (enregistrement, mise à jour confirmée), stockage hors ligne, consignes d'installation par plateforme, rotation et marges sûres. |
+| `tools/` | Build (`build.mjs`, service worker généré par `swgen.mjs`, icônes PNG par `icons.mjs`), serveur local, garde-fou de publication, extraction et import des ressources originales. |
 | `tests/` | Suite de non-régression (`node --test`). |
 
 ## Démarrage
@@ -27,22 +28,74 @@ npm test        # build + tests de non-régression + garde-fou de publication
 npm run dev     # build local (avec ressources privées si présentes) puis http://localhost:8080
 ```
 
-Commandes (R2.0.19) :
+Commandes (R2.0.20) :
 
 | Action | Commande |
 | --- | --- |
 | Viser | Souris n'importe où dans la fenêtre (marges et barre du haut comprises) |
 | Tirer | Clic gauche, partout, y compris sur le cadre et la barre du haut |
-| Échanger la bille | Clic droit |
+| Échanger la bille | Clic droit ; au toucher, toucher la grenouille |
 | Menu | Espace, Entrée ou Échap — le jeu est en pause tant qu'il est ouvert |
 | Statistiques | Tab |
 | Pause | P |
 | Son | M |
-| Tactile | Toucher pour viser et tirer ; toucher MENU / STATS dans la barre pour les ouvrir |
+| Tactile | Toucher pour viser et tirer, toucher la grenouille pour échanger ; toucher MENU / STATS dans la barre pour les ouvrir ; curseurs et cases du menu au doigt |
 
 Dans l'original, Espace met le jeu en pause et l'échange au clic droit n'a pas été localisé (hypothèse C1) ; Entrée, Échap, Tab et P sont des ajouts. L'option de menu « Pixels nets » arrondit l'échelle à un **nombre entier de pixels d'appareil** par pixel du jeu (par exemple 1,5 × en pixels CSS sur un écran Retina, soit 3 pixels physiques), sans lissage, et désactive les copies 2 × (voir « Netteté ») ; sans elle le jeu remplit la fenêtre en 4:3. Le choix est persisté.
 
 Relecture : le paramètre d'URL `?level=1-3` ouvre directement un niveau (temple-niveau, ici le troisième niveau du premier temple) ; il est ignoré sans pack ou si le couple est hors limites. `?debug=1` expose `window.__zuma.game.debugState()` (moteur et niveau en lecture, pour les scripts de capture).
+
+## Ouvrir et installer Zuma
+
+Le jeu complet (avec les ressources originales) se joue de deux façons :
+
+- **le fichier unique** `standalone/zuma-standalone.html` (`npm run standalone`), maintenu et livré à chaque version, qui s'ouvre directement dans un navigateur, sans installation ni connexion ;
+- **l'application installée** (PWA), qui se lance comme une app et fonctionne ensuite hors ligne. Elle s'installe depuis une page servie en `http://localhost` (usage local, ci-dessous) ou, plus tard, depuis l'hébergement privé.
+
+Le standalone ouvert depuis le disque (`file://`) ne peut pas être installé : aucune consigne d'installation ne s'y affiche.
+
+### Mac et PC
+
+- **Chrome ou Edge** : le bouton **« Installer Zuma »** de la carte d'accueil (ou « Installer » dans la vue Aide du menu), ou l'icône d'installation de la barre d'adresse. L'app s'ouvre ensuite dans sa propre fenêtre.
+- **Safari (macOS)** : menu **« Fichier › Ajouter au Dock »** ; la carte d'accueil le rappelle.
+
+### Android
+
+- Chrome : bouton **« Installer Zuma »**, ou « Ajouter à l'écran d'accueil » dans le menu du navigateur.
+
+### iPhone et iPad
+
+- Dans **Safari**, touchez **Partager** puis **« Sur l'écran d'accueil »** ; la carte d'accueil affiche cette consigne avec le pictogramme de partage.
+- **Ouvrez l'app installée une première fois avec une connexion** : l'app de l'écran d'accueil a son propre stockage, séparé de Safari. C'est à ce premier lancement qu'elle met le jeu et les ressources en cache ; elle fonctionne ensuite hors ligne (mode avion compris).
+- L'app s'ouvre en plein écran, en tenant compte de l'encoche et des bords arrondis.
+- Sur iPhone, jouez en **paysage** : en portrait, « Tournez votre appareil » s'affiche et met la partie en pause. Sur iPad, le portrait fonctionne avec des bandes au-dessus et au-dessous du jeu.
+- Les sons démarrent au premier toucher et suivent l'interrupteur silencieux.
+- L'installation sur iPhone et iPad demande une adresse **HTTPS** : elle sera possible avec l'hébergement privé à venir (un iPhone ne peut pas installer depuis `http://<adresse locale>`).
+
+### Hors ligne
+
+Après la première visite, le jeu (`zuma-shell-<build>`) et toutes les ressources (`zuma-assets-<empreinte>`) sont en cache : l'app démarre et se joue sans réseau. La place occupée est indiquée dans la vue Aide du menu (« hors ligne : 6,0 Mo » par exemple). Le navigateur peut effacer ce cache après une longue période sans utilisation ; les ressources sont alors retéléchargées à la visite suivante, avec une connexion.
+
+### Mises à jour
+
+Quand une nouvelle version est publiée, elle se télécharge en arrière-plan. Le bandeau **« Nouvelle version disponible »** propose **« Mettre à jour »** (rechargement sur la nouvelle version) ou « Plus tard ». Rien ne change sans ce clic. Les ressources ne sont pas retéléchargées si le pack n'a pas changé.
+
+### En local
+
+```bash
+npm run import   # une fois, depuis votre copie du jeu (voir « Ressources originales »)
+npm run dev      # build local avec les ressources puis http://localhost:8080/
+```
+
+`http://localhost:8080/` est un contexte sécurisé : sur cet ordinateur, on peut installer l'app depuis Chrome, Edge ou Safari comme ci-dessus. Le serveur peut ensuite être arrêté : l'app installée fonctionne hors ligne.
+
+### Artefact privé
+
+```bash
+npm run deploy   # = node tools/build.mjs --deploy → dist/ avec le pack, dist/version.json
+```
+
+Cette commande produit le jeu complet, ressources originales comprises, dans `dist/`. Elle refuse de s'exécuter sans pack et journalise « à héberger uniquement en privé ». **Cet artefact ne doit jamais être publié ni commité** : `dist/` est ignoré par Git, la garde et la CI ne publient que le code. Son hébergement privé (accès réservé à vos adresses) fera l'objet d'une prochaine étape ; aucune commande d'hébergement n'est fournie ici.
 
 ## Ressources originales (optionnelles, jamais publiées)
 
@@ -150,8 +203,8 @@ Avec le pack, l'écran STATS est **composé à l'exécution** (`src/statsdialog.
 
 - `images/dialogbox.jpg` + `_dialogbox.gif` : cadre dessiné en 9 tranches (coins non étirés, bords étirés dans une dimension, centre étiré) sur le rectangle mesuré de la référence R2.0.12 (x 109–531, y 91–446) ;
 - `images/GodHead.gif` + masque : tête de divinité centrée, chevauchant le bord supérieur ;
-- `images/DialogButton.jpg` + `_Dialogbutton.gif` : bouton OK, trois états peints (normal / survol / pressé) suivis par le contrôle transparent `#result-continue` ; son `button1` au clic ;
-- polices bitmap PopCap lues depuis leurs scripts `fonts/*.txt` (`src/bitmapfont.ts`) : titre en `NativeAlienExtended18` multiplié par l'or `#f0c040` de l'original, libellés et valeurs en `Cancun12` teinté aux couleurs lues dans l'exécutable (libellés jaunes, valeurs crème, TEMPS `#ffff00`, OBJECTIF `#ffa500`, BONUS `#2aff03`, « PAS DE BONUS » `#9dcba2`, RECORD or), astuce en `Arial12Bold` ; l'interligne vaut 1,65 × la hauteur de capitale mesurée sur la police (18 px avec `Cancun12`) ; les deux colonnes partagent la **même grille** (TEMPS sur la ligne POINTS, OBJECTIF sur COMBOS, filet dans la ligne PIÈCES, BONUS sur SAUTS, RECORD sur ENCH. MAX.), les libellés droits sont 200 px à droite des libellés gauches comme dans la fonction de dessin originale, les valeurs sont alignées à droite dans leur colonne ; le signe « + » du bonus est normalisé à l'opacité des chiffres (le masque original du « + » est plus pâle) ; l'astuce est alignée à gauche après « ASTUCE : », sur deux lignes au plus (police réduite puis points de suspension) ;
+- `images/DialogButton.jpg` + `_Dialogbutton.gif` : bouton OK, trois états peints (normal / survol / pressé) suivis par le contrôle transparent `#result-continue` ; son `button1` au clic. Depuis R2.0.20, c'est le **bouton de pied du `Dialog` original** (`Dialog::Resize` 0x4ac160) : pleine largeur intérieure, collé au bord bas intérieur, hauteur 48 (rectangle 138, 373, 364 × 48), dessiné en trois tranches comme les boutons du menu ;
+- polices bitmap PopCap lues depuis leurs scripts `fonts/*.txt` (`src/bitmapfont.ts`) : titre en `NativeAlienExtended18` multiplié par l'or `#f0c040` de l'original, libellés et valeurs en `Cancun12` teinté aux couleurs lues dans l'exécutable (libellés jaunes, valeurs crème, TEMPS `#ffff00`, OBJECTIF `#ffa500`, BONUS `#2aff03`, « PAS DE BONUS » `#9dcba2`, RECORD or), astuce en `Arial12Bold` ; l'interligne vaut 1,65 × la hauteur de capitale mesurée sur la police (18 px avec `Cancun12`) ; les deux colonnes partagent la **même grille** (TEMPS sur la ligne POINTS, OBJECTIF sur COMBOS, filet dans la ligne PIÈCES, BONUS sur SAUTS, RECORD sur ENCH. MAX.), les libellés droits sont 200 px à droite des libellés gauches comme dans la fonction de dessin originale, les valeurs sont alignées à droite dans leur colonne ; le signe « + » du bonus est normalisé à l'opacité des chiffres (le masque original du « + » est plus pâle) ; l'astuce est alignée à gauche après « ASTUCE : » sur deux lignes quand elle y tient ; sinon, depuis R2.0.20, elle continue sous l'étiquette sur trois lignes, toujours en `Arial12Bold` et toujours complète (aucune des sept astuces du pack ne tient sur deux lignes de cette police dans le cadre ; police réduite puis points de suspension seulement au-delà de trois lignes) ;
 - libellés et astuces = chaînes originales de `properties/default.xml` (`pack/strings.json` : STATS, POINTS, COMBOS, COINS, GAPS, MAX_CHAIN, MAX_COMBO, YOUR_TIME, ACE_TIME, BONUS, BEST_TIME, NO_TIME_BONUS, TIP, OK et les sept astuces).
 
 Colonne gauche : POINTS (score du niveau), COMBOS, PIÈCES (pièces touchées), SAUTS, ENCH. MAX., COMBO MAX. Colonne droite : TEMPS (durée du niveau depuis « PARTEZ »), OBJECTIF (`partime` ou temps d'expert par défaut), BONUS (bonus ACE TIME, sinon « PAS DE BONUS » à la place du libellé), RECORD = **meilleur temps du niveau**, persisté dans `localStorage` sous `zuma.best.<id>` (id du niveau du pack ou `proc-N`), mis à jour sur victoire et affiché dès la première partie (alors égal au temps courant). TEMPS, OBJECTIF et RECORD passent par un seul formateur (« N s » sous la minute, « m:ss » au-delà). Les dix valeurs se révèlent ligne par ligne (90 ms, son `pop`). **Compte à rebours du BONUS** : comme dans l'original, le bonus n'est pas dans le score à l'ouverture ; une seconde après, BONUS monte par pas toutes les 100 ms avec un `endoflevelpop1` dont la hauteur monte (hypothèse A5), POINTS et le score du HUD suivent. Le pas vaut 100 jusqu'à 2 000 points, sinon le multiple de 100 ≥ total / 20 (**20 pas au plus, ≈ 2 s**) ; un clic sur le dialogue (hors OK) passe à 2 500 par pas et OK crédite d'un coup ce qui reste. C'est une **déviation documentée** : l'original compte toujours +100 toutes les 10 maj sans accélération en aventure (D-21, demandée en UAT). Chaque état (ligne révélée, pas du compte à rebours, survol, pressé) recompose le canvas directement (≈ 1–2 ms), sans PNG intermédiaire.
@@ -185,7 +238,8 @@ Le jeu est simulé et dessiné en 640×480 logiques ; le canvas est mis à l'éc
 - arrêt du pousseur et zone lente de fin de piste ; décompte original ; bonus ACE TIME (`tests/r216*.test.mjs`) ;
 - bonus de saut payé au match (barème 500 … 10 × brèches, bille en attente) ; score `10n + 100·combo` ; enchaînement `(chain + 5) × 10` ; textes et sons de score originaux ; grille du STATS, signe du bonus, astuce sur deux lignes ; compte à rebours borné avec mode rapide ; rampe du roulement armée une fois par cible ; `upscale2x`, composition à l'échelle du canvas et actifs 2 × dès 1,5 × (`tests/r217*.test.mjs`) ;
 - décodage CURV aligné (tunnel, priorité 0..3), priorité d'une bille aux deux bords, projectile qui traverse une bille en tunnel, cinq passes de dessin sans bille omise ; vies tous les 50 000 points (sans plafond, aussi pendant le compte à rebours) avec triple `extralife` et compteur de grenouilles ; cadence originale des pièces (10 s, 13 s, 1/180 par tick, rien après ZUMA, `dist` en %), `coinappear` à 0,40 et panoramique ; décompte simultané sur plusieurs chaînes ; menu de jeu (disposition, aide, confirmation, composition, pause, volume) ; visée et tir sur toute la fenêtre, liaisons clavier, `stagePoint`, `fitScale` ; roulement 0,35 / 50 ms / 500 ms (`tests/r218*.test.mjs`) ;
-- destruction en 24 ticks sans mouvement ; attraction `v = 10` après la destruction et `v = 1` après un tir sans alignement (⌊v/8⌋ px par maj, sans plafond) ; rebond au contact (18 ticks à max(50, 150 × profondeur) px/s, toute la chaîne, pousseur arrêté ≥ 12 ticks) ; recul ZUMA par chaîne depuis la tête (100 px/s, 180 ticks au plus, arrêt sous 50 px) et `ball-exit` sous 1 px ; pièce à 36 px qui consomme le tir ; trois grenouilles par partie et un seul `lost` par perte ; sons du contact et de l'impact, anti-rafale 250 ms, `power-spawn` muet ; réserve de grenouilles, « xN », clignotement, barre du haut recalée (`tests/r219*.test.mjs`).
+- destruction en 24 ticks sans mouvement ; attraction `v = 10` après la destruction et `v = 1` après un tir sans alignement (⌊v/8⌋ px par maj, sans plafond) ; rebond au contact (18 ticks à max(50, 150 × profondeur) px/s, toute la chaîne, pousseur arrêté ≥ 12 ticks) ; recul ZUMA par chaîne depuis la tête (100 px/s, 180 ticks au plus, arrêt sous 50 px) et `ball-exit` sous 1 px ; pièce à 36 px qui consomme le tir ; trois grenouilles par partie et un seul `lost` par perte ; sons du contact et de l'impact, anti-rafale 250 ms, `power-spawn` muet ; réserve de grenouilles, « xN », clignotement, barre du haut recalée (`tests/r219*.test.mjs`) ;
+- bouton OK du STATS selon la règle du pied du `Dialog` original, dessin en trois tranches partagé avec le menu, zone cliquable alignée ; service worker généré (deux caches, seules les ressources absentes téléchargées, routage hors ligne, mise à jour sur confirmation, `api/` jamais intercepté), artefact `--deploy`, icônes PNG, manifeste, métadonnées Apple, consignes d'installation par plateforme (aucune hors http(s)) ; toucher la grenouille = échange, rotation, marges sûres, plein écran conditionnel, audio iOS ; astuce complète en `Arial12Bold` pour les sept astuces du pack (`tests/r220*.test.mjs`).
 
 ## Fournir ses propres graphismes de niveau
 
@@ -200,6 +254,6 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.19 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement ; et depuis R2.0.19 (spike 04) la durée de destruction (40 maj), l'attraction accélérée à la fin de la destruction et après un tir sans alignement, le rebond au contact (et l'absence de recul à l'alignement), le recul ZUMA par chaîne depuis la tête avec arrêt sous 50 px et la perte des billes qui repassent l'entrée, la prise de la pièce à 36 px qui consomme le tir, les trois grenouilles par partie, le dessin de la réserve de vies (seuil 3, « xN », clignotement) et la disposition de la barre du haut, les sons du contact et de l'impact (et leur anti-rafale), l'absence de son à l'apparition d'un power-up.
+R2.0.20 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Elle ajoute à R2.0.19 le bouton OK du STATS posé par la règle du pied du `Dialog` original (lue dans l'exécutable : `Dialog::Resize` 0x4ac160, marges de 0x43ef30), une PWA installable qui est exactement le jeu local avec ses ressources, jouable hors ligne après la première visite et mise à jour sur confirmation, l'installation et le jeu au toucher sur iPhone / iPad (à vérifier sur appareils réels une fois l'hébergement privé en place), et l'astuce du STATS toujours complète en `Arial12Bold`. Le standalone reste maintenu et livré à chaque version ; l'hébergement privé et la synchronisation des scores viendront ensuite. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement ; et depuis R2.0.19 (spike 04) la durée de destruction (40 maj), l'attraction accélérée à la fin de la destruction et après un tir sans alignement, le rebond au contact (et l'absence de recul à l'alignement), le recul ZUMA par chaîne depuis la tête avec arrêt sous 50 px et la perte des billes qui repassent l'entrée, la prise de la pièce à 36 px qui consomme le tir, les trois grenouilles par partie, le dessin de la réserve de vies (seuil 3, « xN », clignotement) et la disposition de la barre du haut, les sons du contact et de l'impact (et leur anti-rafale), l'absence de son à l'apparition d'un power-up.
 
-Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), C1 (clic droit = échange), C2 (découpes = pochoirs du fond), C3 (unité du panoramique des pièces), C4 (police des libellés du menu), la tête de divinité et les marges du menu, la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, l'arrêt du pousseur à chaque insertion arrière, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions, la condition exacte du rafraîchissement du roulement, la sensation de vitesse du recul ZUMA (100 px/s dans l'exécutable, plus lent que le souvenir de l'utilisateur), les billes en destruction poussées par le rebond, la grenouille en jeu comptée pendant la perte d'une vie, le modèle d'apparition des power-ups (lu, non implémenté) et les polices `FONT_MONODIGIT` / `FONT_DIALOG` du score et du niveau ; et des choix assumés : Espace = menu (l'original : pause), Échap / Entrée / Tab / P sans équivalent original, gain 0,35 du roulement sur un seul canal (l'original : 1,0, un canal par courbe), curseur Musique inerte, « Retour au menu principal » qui lance une nouvelle partie, boutons du HUD actifs au toucher seulement. Deux déviations volontaires sont documentées : D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure) et D-30 (décompte de fin de niveau simultané sur toutes les chaînes, là où l'original les décompte l'une après l'autre). Deux écarts avec les souvenirs de l'utilisateur sont tranchés en faveur de l'exécutable, à reconfirmer en UAT 8 : D-31 (une pièce touchée consomme le tir ; drapeau `coinConsumesShot` pour l'autre comportement) et D-32 (aucun son quand une bille devient power-up ; le son entendu jusqu'en R2.0.18 était celui des pièces).
+Restent des hypothèses, à confirmer sur l'original ou au ressenti : A1 (`repeat` 50 au 1-1), A2 (appel unique de l'arrivée rapide), A3 (+10 000 par courbe en fin de niveau), A4 (bannière ZUMA 2 s), A5 (hauteur du pop du compte à rebours), A7 (`defaultParTime`), B1 (largeur de brèche en px de piste), B3 (alignement des valeurs du STATS et `y` exacts), B4 (sons de match malgré un power-up), C1 (clic droit = échange), C2 (découpes = pochoirs du fond), C3 (unité du panoramique des pièces), C4 (police des libellés du menu), la tête de divinité et les marges du menu, la couleur du « +N », la bille en attente qui n'entretient pas l'enchaînement, l'arrêt du pousseur à chaque insertion arrière, la loi RNG des power-ups (`powerfreq`), `mergespeed`, `reloaddelay`, le départ du chronomètre à « PARTEZ », le rafraîchissement immédiat des munitions, la condition exacte du rafraîchissement du roulement, la sensation de vitesse du recul ZUMA (100 px/s dans l'exécutable, plus lent que le souvenir de l'utilisateur), les billes en destruction poussées par le rebond, la grenouille en jeu comptée pendant la perte d'une vie, le modèle d'apparition des power-ups (lu, non implémenté) et les polices `FONT_MONODIGIT` / `FONT_DIALOG` du score et du niveau ; et des choix assumés : Espace = menu (l'original : pause), Échap / Entrée / Tab / P sans équivalent original, gain 0,35 du roulement sur un seul canal (l'original : 1,0, un canal par courbe), curseur Musique inerte, « Retour au menu principal » qui lance une nouvelle partie, boutons du HUD actifs au toucher seulement. Deux déviations volontaires sont documentées : D-21 (compte à rebours borné à ≈ 2 s et accéléré au clic, là où l'original n'accélère jamais en aventure) et D-30 (décompte de fin de niveau simultané sur toutes les chaînes, là où l'original les décompte l'une après l'autre). Deux écarts avec les souvenirs de l'utilisateur sont tranchés en faveur de l'exécutable, à reconfirmer en UAT 9 : D-31 (une pièce touchée consomme le tir ; drapeau `coinConsumesShot` pour l'autre comportement) et D-32 (aucun son quand une bille devient power-up ; le son entendu jusqu'en R2.0.18 était celui des pièces).
