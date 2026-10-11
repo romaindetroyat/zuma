@@ -1769,8 +1769,9 @@ export class ZumaEngine {
     } else if (this.state === 'draining' && this.chains.every(c => c.balls.length === 0)) {
       // 0x428383–0x4283a5: lives − 1 at the loss, game over when the count is ≤ 0 — `lives` frogs per game, the one
       // in play included (the HUD shows lives − 1 in reserve, D-33).
+      // `lost` was emitted at the loss already (one event per loss, « Perdu… » once): only the game over is new here.
       this.state = this.lives <= 0 ? 'gameover' : 'lost';
-      this.emit(this.state);
+      if (this.state === 'gameover') this.emit('gameover');
     }
   }
 
