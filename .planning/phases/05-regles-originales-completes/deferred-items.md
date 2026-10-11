@@ -48,3 +48,8 @@
 - **Chromium headless** : `Page.getAppId` renvoie `{}` (l'`id` du manifeste est pourtant présent) et `storage.persisted()` reste faux ; à revoir dans un vrai navigateur.
 - **Aide du menu sans pagination** (rappel de 05-10) : toujours trois astuces du pack sur sept ; la mise en page de l'astuce du STATS (05-15) n'a pas été portée à la vue Aide.
 - **Interligne de l'astuce du STATS** (05-15) : 14 px pour une police de 17 px de haut ; sur trois lignes les jambages touchent presque la ligne suivante. À ajuster si l'UAT 9 le juge serré (la boîte de 51 px ne laisse que 2–3 px de marge).
+
+## Relevé UAT 9 (2026-10-11)
+
+- Formulation des mails d'installation : ne plus écrire « connexion valable environ un mois » ; écrire que le jeu installé reste jouable sans limite de durée (démarrage depuis le cache du service worker) et qu'une reconnexion n'est demandée que pour recevoir les mises à jour (session Cloudflare Access plafonnée à un mois). Gabarits corrigés hors dépôt ; à appliquer aux prochains envois.
+- Option proposée, non demandée : message « Reconnectez-vous pour recevoir les mises à jour » quand une mise à jour est bloquée par une session expirée.
