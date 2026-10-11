@@ -587,7 +587,9 @@ export class Renderer {
     const ctx = this.ctx;
     for (const { ball, track } of items) {
       if (ball.destroyingUntil === undefined) continue;
-      const counter = engine.config.destroyTicks - (ball.destroyingUntil - engine.tick);
+      // The 13 × 3 explosion frames are counted in maj (0x423b31: the destruction counter runs 40 maj): the tick
+      // counter is converted (ticks × 100 / tickHz) so the whole explosion plays within the 24-tick destruction.
+      const counter = ((engine.config.destroyTicks - (ball.destroyingUntil - engine.tick)) * 100) / engine.config.tickHz;
       const frame = explosionFrame(counter);
       if (frame < 0) continue;
       const p = track.pointAt(ball.s);

@@ -248,29 +248,30 @@ test('end to end: the STATS values of the r215 cleared level are the expected li
   //   points  = 30 (run of three: 3 × 10) + 500 (levelBonus × 1 curve at clearing) + 100 × 28 steps = 3330,
   //             steps = ⌈(2000 − 352) / 60⌉ = 28 (the last destruction sits at s = 352 → x = 352 on the straight track);
   //   combos / coins / gaps = 0 (a direct destruction, no coin, no gap), chain = comboMax = 1 (one match, depth 1);
-  //   time    = formatSeconds(⌊levelTicks / 60⌋) with levelTicks = clearTick − goTick = 62 − 0 (feeding off → go at tick 0) → « 1 s »;
-  //   objective = « 25 s » (parTime); bonus = aceTimeBonus(1, 25) = ⌊250 × 24 / 25⌋ × 100 = 24000 + 100 = 24100 → « +24100 »;
-  //   record  = the current time when no best time is stored → « 1 s ».
+  //   time    = formatSeconds(⌊levelTicks / 60⌋) with levelTicks = clearTick − goTick = 46 − 0 (feeding off → go at tick 0) → « 0 s »;
+  //   R2.0.19 (D-34): the run is removed 24 ticks after the match (40 maj), no longer 40 — 22 + 24 = 46 (was 62, « 1 s »);
+  //   objective = « 25 s » (parTime); bonus = aceTimeBonus(0, 25) = ⌊250 × 25 / 25⌋ × 100 + 100 = 25100 → « +25100 »;
+  //   record  = the current time when no best time is stored → « 0 s ».
   assert.equal(destroy.x, 352);
-  assert.equal(g.levelTicks, 62);
-  assert.equal(g.timeBonus, aceTimeBonus(1, 25));
+  assert.equal(g.levelTicks, 46);
+  assert.equal(g.timeBonus, aceTimeBonus(0, 25));
   const input = {
     levelScore: g.levelScore, combos: g.stats.combos, coins: g.stats.coins, gaps: g.stats.gaps, maxStreak: g.stats.maxStreak, maxCombo: g.stats.maxCombo,
     seconds: Math.floor(g.levelTicks / 60), parTime: 25, timeBonus: g.timeBonus, won: true, bestSeconds: null, noBonusLabel: 'PAS DE BONUS',
   };
   assert.deepEqual(statsValues(input), {
-    points: '3330', combos: '0', coins: '0', gaps: '0', chain: '1', comboMax: '1', time: '1 s', objective: '25 s', bonus: '+24100', record: '1 s',
+    points: '3330', combos: '0', coins: '0', gaps: '0', chain: '1', comboMax: '1', time: '0 s', objective: '25 s', bonus: '+25100', record: '0 s',
   });
   // The dialog opens on « +0 » and counts the bonus into the level score (creditBonus); the final frame shows everything.
   assert.equal(statsValues({ ...input, timeBonusShown: 0 }).bonus, '+0');
-  // R2.0.17 (D-21): above 2 000 the step is the multiple of 100 ≥ total / 20 — 1 300 for 24 100 (≈ 2 s instead of 24 s).
+  // R2.0.17 (D-21): above 2 000 the step is the multiple of 100 ≥ total / 20 — 1 300 for 25 100 (≈ 2 s instead of 25 s).
   assert.equal(statsValues({ ...input, timeBonusShown: bonusCountUp(g.timeBonus, 1000) }).bonus, '+1300');
   assert.equal(g.timeBonusCredited, 0, 'nothing credited before the count-up');
   g.creditBonus(g.timeBonus);
-  assert.equal(g.levelScore, 3330 + 24100);
+  assert.equal(g.levelScore, 3330 + 25100);
   assert.equal(g.timeBonusCredited, g.timeBonus);
-  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).points, String(3330 + 24100));
-  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).bonus, '+24100');
+  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).points, String(3330 + 25100));
+  assert.equal(statsValues({ ...input, levelScore: g.levelScore, timeBonusShown: g.timeBonus }).bonus, '+25100');
 });
 
 test('main.js counts the time bonus up inside the STATS dialog through creditBonus and credits the rest on close (U17, T-05-15)', () => {

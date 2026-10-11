@@ -4,9 +4,7 @@
  * Deterministic, DOM-free and tick based. Every rule that the regression suite
  * locks lives here: stable ball identities, insertion without replacement or
  * recolouring, progressive insertion over mergeTicks (run detection deferred
- * until the slot is fully open), 40-tick destruction persistence, local recoil
- * propagated from segment to segment, attraction that only reconnects after
- * physical contact, immutable projectile colour, the four power-up families,
+ * until the slot is fully open), immutable projectile colour, the four power-up families,
  * coins on the treasure points (one at a time, free once the chain head passed `dist` %, grabbed by a
  * projectile without breaking the streak), and — from R2.0.16, transcribed from
  * the original executable (05-RESEARCH.md) — the pusher kinematics (±50 / 1000
@@ -25,7 +23,12 @@
  * them) and byte B the draw priority 0..3; one life per multiple of `extraLifeEvery` (50 000) crossed,
  * with no cap; coins stay 10 s and are attempted at 1/180 per tick from 780 ticks after the previous
  * appearance, never in ZUMA mode, on points whose chain head passed `dist` % of the curve; the
- * end-of-level tally walks one marker per chain, all together.
+ * end-of-level tally walks one marker per chain, all together. From R2.0.19 (05-RESEARCH-04.md, D-34): a
+ * destroyed ball stays 40 maj (24 ticks) and nothing moves meanwhile; when it is removed between two balls of one
+ * colour the front segment is attracted back by a counter v (⌊v/8⌋ px per maj, then v + 1, no cap), also armed
+ * (v = 1) by a shot ball that lands without a match against a gap of its colour; only the contact of an attraction
+ * makes the chain recoil (the most advanced ball of the arrived segment rolls back for 30 maj at max(0.5, 1.5 ×
+ * depth) px/maj, pushing the whole chain behind it and stopping the pusher) — no recoil at match time.
  *
  * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
  * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
@@ -208,6 +211,11 @@ export interface Ball {
   gapBonus?: number;
   /** Number of gaps the shot crossed (0x421d2b, `ball+0x5e`), armed and cleared with `gapBonus`. */
   gapCount?: number;
+  /**
+   * Attraction counter v (`ball+0x3c`): the segment led by this ball (it and the balls ahead in contact) rolls back
+   * ⌊v/8⌋ px per maj towards the alive ball behind it, then v += 1 (0x421800); cleared at the contact.
+   */
+  attract?: number;
 }
 
 export interface Projectile {
@@ -328,10 +336,24 @@ export interface EngineConfig {
   mergeTicks: number;
   accuracySpeedFactor: number;
   fireCooldownTicks: number;
+  /** Destruction persistence before the removal, ticks (0x423a62 `cmp 0x28`: 40 maj × 0.6 = 24). */
   destroyTicks: number;
-  attractSpeed: number;
-  recoilSpeed: number;
-  recoilTicks: number;
+  /**
+   * Attraction counter v given to the front edge when a destruction ends between two balls of one colour
+   * (0x423a95). The segment led by that ball rolls back ⌊v/8⌋ px per maj, then v += 1, without cap (0x421800):
+   * 100 px/s at first, +100 px/s every 8 maj (≈ 1 250 px/s²).
+   */
+  attractStartAfterMatch: number;
+  /** Attraction counter v given when a shot ball without a match borders a gap of its colour (0x421d74 / 0x421dae). */
+  attractStartAfterShot: number;
+  /** Contact recoil of the most advanced ball of the arrived segment, ticks (0x4219a6: 30 maj × 0.6 = 18). */
+  contactRecoilTicks: number;
+  /** Contact recoil speed without a match at the junction, px/s (0x54c85c: 0.5 px/maj × 100 = 50). */
+  contactRecoilMin: number;
+  /** Contact recoil speed per combo depth, px/s (0x54cde8: 1.5 px/maj × 100 = 150): max(min, perDepth × depth). */
+  contactRecoilPerDepth: number;
+  /** Pusher stop while a recoil moves balls and after it, ticks (0x40ad04–0x40ad15: 20 maj × 0.6 = 12). */
+  contactPusherStopTicks: number;
   slowFactor: number;
   slowTicks: number;
   backwardsSpeed: number;
@@ -413,10 +435,13 @@ export const CANDIDATE: EngineConfig = {
   mergeTicks: 12,
   accuracySpeedFactor: 1.5,
   fireCooldownTicks: 8,
-  destroyTicks: 40,
-  attractSpeed: 240,
-  recoilSpeed: 90,
-  recoilTicks: 8,
+  destroyTicks: 24, // 40 maj × 0.6, 0x423a62
+  attractStartAfterMatch: 10, // v, 0x423a95
+  attractStartAfterShot: 1, // v, 0x421d74 / 0x421dae
+  contactRecoilTicks: 18, // 30 maj × 0.6, 0x4219a6
+  contactRecoilMin: 50, // 0.5 px/maj × 100, 0x54c85c
+  contactRecoilPerDepth: 150, // 1.5 px/maj × 100, 0x54cde8
+  contactPusherStopTicks: 12, // 20 maj × 0.6, 0x40ad04–0x40ad15
   slowFactor: 4,
   slowTicks: 600,
   backwardsSpeed: 120,
@@ -541,7 +566,11 @@ export interface Stats {
 export class Chain {
   balls: Ball[] = [];
   removals: Removal[] = [];
-  recoils: Array<{ id: number; ticks: number }> = [];
+  /**
+   * Contact recoils (0x4219a6 → 0x40ab60): ball `id` rolls back `speed` px/s for `ticks` ticks and pushes every ball
+   * behind it that it overlaps (exploding balls included); one entry per ball.
+   */
+  recoils: Array<{ id: number; ticks: number; speed: number }> = [];
   spawned = 0;
   lastSpawnColor = -1;
   /** Current pusher speed, px/s (original `mSpeed`); null until the chain's first moveChain (lazy: v0 of the fast feed, or the target). */
@@ -574,6 +603,12 @@ export class ZumaEngine {
   /** Balls destroyed in the level (statistics only; the gauge is driven by `levelScore`). */
   destroyedCount = 0;
   zumaMode = false;
+  /**
+   * Fractional maj clock (1 maj = 10 ms): += 100 / tickHz at the start of each step; the step runs ⌊majClock⌋ whole
+   * maj steps of the attraction (1 or 2 at 60 Hz, 5 for 3 ticks), which keeps the original integer ⌊v/8⌋ px
+   * integration exact. The original runs the attraction at 100 Hz.
+   */
+  majClock = 0;
   score = 0;
   /** Points scored since the start of the level; the score carried over from previous levels is excluded. */
   levelScore = 0;
@@ -603,6 +638,8 @@ export class ZumaEngine {
   };
 
   private commands: Command[] = [];
+  /** Whole maj steps of the current tick (see majClock). */
+  private majSteps = 0;
   private nextId = 1;
   private lastShotTick = -Infinity;
   private lastPowerTick = -Infinity;
@@ -783,6 +820,9 @@ export class ZumaEngine {
 
   step(): void {
     this.tick++;
+    this.majClock += 100 / this.config.tickHz;
+    this.majSteps = Math.floor(this.majClock + 1e-9);
+    this.majClock = Math.max(0, this.majClock - this.majSteps);
     this.processCommands();
     this.tickPowers();
     for (const chain of this.chains) this.spawnBalls(chain);
@@ -973,19 +1013,6 @@ export class ZumaEngine {
     }
   }
 
-  /** Pushes balls behind `from` backwards while they overlap; returns the lowest index moved. */
-  private resolveBackward(alive: Ball[], from: number): number {
-    let lowest = from;
-    for (let i = from - 1; i >= 0; i--) {
-      const max = alive[i + 1].s - this.gap(alive[i], alive[i + 1]);
-      if (alive[i].s > max) {
-        alive[i].s = max;
-        lowest = i;
-      } else break;
-    }
-    return lowest;
-  }
-
   /**
    * Pusher target (0x418780): `speed`, × zumaSlowFactor while the ZUMA slowdown runs, ÷ slowFactor
    * under the SLOW power-up, × the end-of-track slow zone for the most advanced alive ball.
@@ -1065,31 +1092,12 @@ export class ZumaEngine {
     if (this.backwardsTicks > 0) {
       for (const b of alive) b.s -= this.config.backwardsSpeed * dt;
     } else {
-      // Local recoil: the segment behind a fresh gap rolls back and pushes whatever it touches.
-      const recoiling = new Set<number>();
-      for (const r of chain.recoils) {
-        const idx = alive.findIndex(b => b.id === r.id);
-        if (idx >= 0) recoiling.add(before[idx]);
-        r.ticks--;
-      }
-      chain.recoils = chain.recoils.filter(r => r.ticks > 0);
-      let pusherBlocked = recoiling.has(0);
-      for (const c of recoiling) {
-        shift(c, -this.config.recoilSpeed * dt);
-        if (this.resolveBackward(alive, first[c]) === 0) pusherBlocked = true;
-      }
-      if (!pusherBlocked) shift(0, (chain.speed ?? 0) * dt);
-      // Attraction: a segment whose rear colour matches the front colour of the segment
-      // behind it rolls back; it only reconnects once the balls physically touch.
-      for (let c = 1; c < compCount; c++) {
-        if (recoiling.has(c)) continue;
-        const rear = alive[first[c]];
-        const prevFront = alive[last[c - 1]];
-        if (rear.color !== prevFront.color) continue;
-        const room = rear.s - (prevFront.s + this.gap(prevFront, rear));
-        const d = Math.min(room, this.config.attractSpeed * dt);
-        if (d > 0) shift(c, -d);
-      }
+      // Order of one curve update (0x423c50): attraction 0x421800 → pusher 0x418780 → recoil 0x40ab60.
+      this.attractSegments(alive, before, first, last, compCount);
+      // The pusher does not advance on a tick where a recoil moves balls: the recoil stops it (0x40ad04).
+      const recoiling = chain.recoils.some(r => chain.balls.some(b => b.id === r.id));
+      if (!recoiling) shift(0, (chain.speed ?? 0) * dt);
+      if (recoiling) this.applyRecoils(chain);
     }
 
     this.resolveForward(alive);
@@ -1103,7 +1111,77 @@ export class ZumaEngine {
     for (const ball of settled) this.settle(chain, ball);
   }
 
-  /** Two segments just came into contact between alive[i-1] and alive[i]. */
+  /**
+   * Attraction (0x421800), once per whole maj of the tick: the rear ball of each segment that carries a counter v
+   * pulls its segment (it and the balls ahead in contact) ⌊v/8⌋ px back, bounded by the exact contact with the alive
+   * ball in front of the segment behind, then v += 1 — no cap. A counter that does not lead a segment with an alive
+   * ball behind it is dropped (T-05-37).
+   */
+  private attractSegments(alive: Ball[], comp: number[], first: number[], last: number[], compCount: number): void {
+    for (let i = 0; i < alive.length; i++) {
+      if (alive[i].attract !== undefined && (comp[i] === 0 || first[comp[i]] !== i)) delete alive[i].attract;
+    }
+    for (let m = 0; m < this.majSteps; m++) {
+      for (let c = 1; c < compCount; c++) {
+        const rear = alive[first[c]];
+        const v = rear.attract;
+        if (v === undefined || !(v > 0)) continue;
+        const prevFront = alive[last[c - 1]];
+        const room = Math.max(0, rear.s - (prevFront.s + this.gap(prevFront, rear)));
+        const d = Math.min(room, Math.floor(v / 8));
+        if (d > 0) for (let i = first[c]; i <= last[c]; i++) alive[i].s -= d;
+        rear.attract = v + 1;
+      }
+    }
+  }
+
+  /**
+   * Contact recoils (0x40ab60), front to back: each recoiling ball rolls back `speed` × dt and pushes every ball
+   * behind it that it overlaps back to contact — exploding balls included, they keep their place on the curve until
+   * their removal in the original. Anything moved stops the pusher for at least `contactPusherStopTicks`.
+   */
+  private applyRecoils(chain: Chain): void {
+    const dt = 1 / this.config.tickHz;
+    const list = chain.balls;
+    const entries = chain.recoils
+      .map(r => ({ r, idx: list.findIndex(b => b.id === r.id) }))
+      .sort((a, b) => b.idx - a.idx);
+    let moved = false;
+    for (const { r, idx } of entries) {
+      if (idx >= 0) {
+        list[idx].s -= r.speed * dt;
+        this.pushBehind(list, idx);
+        moved = true;
+      }
+      r.ticks--;
+    }
+    chain.recoils = chain.recoils.filter(r => r.ticks > 0 && list.some(b => b.id === r.id));
+    if (moved) this.stopPusher(chain);
+  }
+
+  /** Pusher stop of a recoil or of the ZUMA pushback (0x40ad04–0x40ad15): ≥ 20 maj, then restarting from 0. */
+  private stopPusher(chain: Chain): void {
+    chain.stopTicks = Math.max(chain.stopTicks, this.config.contactPusherStopTicks);
+    chain.speed = 0;
+  }
+
+  /** Pushes the balls behind `list[idx]` (curve order, exploding balls included) back while they overlap it. */
+  private pushBehind(list: Ball[], idx: number): void {
+    for (let i = idx - 1; i >= 0; i--) {
+      const max = list[i + 1].s - this.gap(list[i], list[i + 1]);
+      if (list[i].s > max) list[i].s = max;
+      else break;
+    }
+  }
+
+  /**
+   * Two segments just came into contact between alive[i-1] and alive[i] (0x421928–0x4219f1). When the front segment
+   * was attracted (`right.attract`), the most advanced ball of that arrived segment — taken before the junction match
+   * marks anything — gets a recoil of `contactRecoilTicks` at max(contactRecoilMin, contactRecoilPerDepth × d), d =
+   * the depth carried by the edges when the junction destroys a run, else 0; if the junction destroys that ball, the
+   * most advanced ball of the segment left alive takes it; a ball that already recoils keeps its recoil. The pusher
+   * catching a still segment only merges (0x418a0d).
+   */
   private onJunction(chain: Chain, alive: Ball[], i: number): void {
     const left = alive[i - 1];
     const right = alive[i];
@@ -1111,12 +1189,35 @@ export class ZumaEngine {
     delete left.comboDepth;
     delete right.comboDepth;
     this.emit('merge', { leftId: left.id, rightId: right.id, chain: chain.index });
+    const attracted = (right.attract ?? 0) > 0;
+    delete right.attract;
+    const arrived: Ball[] = [];
+    if (attracted) {
+      let j = i;
+      arrived.push(alive[j]);
+      while (j + 1 < alive.length && this.touching(alive[j], alive[j + 1])) arrived.push(alive[++j]);
+    }
+    const destroyed = this.junctionMatch(chain, alive, i, depth);
+    if (!attracted) return;
+    let pusher: Ball | undefined;
+    for (let k = arrived.length - 1; k >= 0 && !pusher; k--) if (arrived[k].destroyingUntil === undefined) pusher = arrived[k];
+    if (!pusher || chain.recoils.some(r => r.id === pusher.id)) return;
+    const d = destroyed ? depth : 0;
+    const speed = Math.max(this.config.contactRecoilMin, this.config.contactRecoilPerDepth * d);
+    chain.recoils.push({ id: pusher.id, ticks: this.config.contactRecoilTicks, speed });
+  }
+
+  /** Match at a junction (0x421240); returns whether a run was destroyed. */
+  private junctionMatch(chain: Chain, alive: Ball[], i: number, depth: number): boolean {
+    const left = alive[i - 1];
+    const right = alive[i];
     // A ball still opening its slot does not take part in a run; `settle` will check it.
-    if (left.width < 1 || right.width < 1) return;
-    if (left.color !== right.color) return;
+    if (left.width < 1 || right.width < 1) return false;
+    if (left.color !== right.color) return false;
     const run = this.runAround(alive, i);
-    if (run.length < 3) return;
+    if (run.length < 3) return false;
     this.destroyRun(chain, alive, run, depth > 0 ? depth + 1 : 1, 0);
+    return true;
   }
 
   /**
@@ -1154,6 +1255,16 @@ export class ZumaEngine {
         delete ball.gapCount;
       }
       this.streak = 0;
+      // 0x421d55–0x421dae: a ball landing without a match next to a gap whose other edge has its colour arms the
+      // attraction with v = 1 — on itself when the gap is behind it, on the next ball when the gap is ahead and that
+      // ball does not attract already. Neighbours in curve order; an exploding neighbour is no edge.
+      const list = chain.balls;
+      const k = list.indexOf(ball);
+      const behind = list[k - 1];
+      const ahead = list[k + 1];
+      const edge = (b: Ball | undefined): b is Ball => b !== undefined && b.destroyingUntil === undefined && b.color === ball.color;
+      if (edge(behind) && !this.touching(behind, ball) && !((ball.attract ?? 0) > 0)) ball.attract = this.config.attractStartAfterShot;
+      if (edge(ahead) && !this.touching(ball, ahead) && !((ahead.attract ?? 0) > 0)) ahead.attract = this.config.attractStartAfterShot;
     }
   }
 
@@ -1189,7 +1300,7 @@ export class ZumaEngine {
     if (left) left.comboDepth = depth;
     if (right) right.comboDepth = depth;
     chain.removals.push({ ids: run.map(b => b.id), leftId: left?.id ?? null, rightId: right?.id ?? null, shotId, depth, due: until });
-    if (left) chain.recoils.push({ id: left.id, ticks: this.config.recoilTicks });
+    // 0x4219a6 / 0x40abde are the only writers of the recoil counter: no recoil at match time (D-34).
 
     const middle = run[Math.floor(run.length / 2)];
     const centre = this.ballPosition(middle, chain);
@@ -1500,6 +1611,12 @@ export class ZumaEngine {
 
   // --------------------------------------------------------------- removals
 
+  /**
+   * End of destruction (0x423a10): the due balls are removed; for every block of removed balls whose two curve
+   * neighbours are alive, not exploding and of one colour, the front one gets the attraction counter
+   * `attractStartAfterMatch` (0x423a6b–0x423aa8) — whatever opened the gap (match or bomb). The colour is not
+   * checked again afterwards; the depth stays on `comboDepth` (set by destroyRun).
+   */
   private processRemovals(): void {
     for (const chain of this.chains) {
       if (chain.removals.length === 0) continue;
@@ -1508,7 +1625,20 @@ export class ZumaEngine {
       chain.removals = chain.removals.filter(r => r.due > this.tick);
       const gone = new Set<number>();
       for (const r of due) for (const id of r.ids) gone.add(id);
-      chain.balls = chain.balls.filter(b => !(gone.has(b.id) && b.destroyingUntil !== undefined));
+      const list = chain.balls;
+      const removed = (b: Ball): boolean => gone.has(b.id) && b.destroyingUntil !== undefined;
+      for (let a = 0; a < list.length; a++) {
+        if (!removed(list[a])) continue;
+        let b = a;
+        while (b + 1 < list.length && removed(list[b + 1])) b++;
+        const prev = list[a - 1];
+        const next = list[b + 1];
+        if (prev && next && prev.destroyingUntil === undefined && next.destroyingUntil === undefined && prev.color === next.color) {
+          next.attract = this.config.attractStartAfterMatch;
+        }
+        a = b;
+      }
+      chain.balls = list.filter(b => !removed(b));
     }
   }
 
