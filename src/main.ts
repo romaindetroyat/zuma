@@ -267,10 +267,11 @@ class Game {
   }
 
   async start(): Promise<void> {
-    // D-12: the platform first name is asked first (hosted build only); the boot waits for it at most PLATFORM_NAME_TIMEOUT.
-    const deadline = performance.now() + PLATFORM_NAME_TIMEOUT;
-    const platformName = fetchPlatformName();
     this.pack = await OriginalPack.load();
+    // D-12: the platform first name is asked as soon as the pack is known (only the private host, which always ships
+    // the pack, has the endpoint); the boot waits for it at most PLATFORM_NAME_TIMEOUT.
+    const deadline = performance.now() + PLATFORM_NAME_TIMEOUT;
+    const platformName = this.pack ? fetchPlatformName() : Promise.resolve(null);
     await this.audio.discover();
     if (this.pack) {
       this.strings = await this.pack.strings();
@@ -1867,12 +1868,15 @@ function localDate(now = new Date()): string {
 /**
  * D-12: the player's first name on the hosted build — `api/me` answers `{ name }` for the Access identity (private
  * table, never committed). Same origin, the Access cookie only. Any failure (no endpoint / 404, offline, not JSON,
- * abort, the `file:` standalone) gives null: the one-time name prompt is used. The value is untrusted: only a string
+ * abort) gives null, and so do the `file:` standalone and a loopback host without asking: the one-time name prompt
+ * is used. The value is untrusted: only a string
  * goes on, sanitised by the state machine (sanitizeName) and drawn on the canvas only.
  */
 function fetchPlatformName(): Promise<string | null> {
   try {
     if (typeof fetch !== 'function' || (location.protocol !== 'http:' && location.protocol !== 'https:')) return Promise.resolve(null);
+    // A local server (npm run dev) has no identity endpoint: no request, no 404 in the console.
+    if (['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname)) return Promise.resolve(null);
   } catch {
     return Promise.resolve(null);
   }
