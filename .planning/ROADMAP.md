@@ -91,10 +91,12 @@ Plans:
 **Depends on**: Phase 5
 **Requirements**: PROG-01, PROG-02, PROG-03
 **Success Criteria** (what must be TRUE):
-  1. La partie suit `StageProgression` avec un écran de transition entre temples
-  2. Fermer puis rouvrir la PWA propose de reprendre la partie au niveau atteint, avec score et vies
-  3. Un menu principal donne accès à Aventure, options et aide
-**Plans**: TBD
+  1. L'app s'ouvre sur l'écran de bienvenue du jeu original (menu principal), jamais directement dans un niveau
+  2. La partie suit `StageProgression` avec l'écran d'aventure / transitions entre temples de l'original
+  3. Après le dernier niveau (13-1), la partie s'arrête sur l'écran de fin original, avec score final et tableau des meilleurs scores ; elle ne recommence pas
+  4. La difficulté est analysée contre l'original (arrêts des files, accélération par niveau) et corrigée par petits pourcentages justifiés
+  5. Fermer puis rouvrir la PWA propose de reprendre la partie au niveau atteint, avec score et vies (si compatible avec 1–4)
+**Plans**: TBD (contexte : `phases/06-progression-et-menus/06-CONTEXT.md`)
 
 #### Phase 7: Finitions audio, visuelles et mobiles
 **Goal**: Musique, animations secondaires, ergonomie tactile, captures automatisées
