@@ -217,3 +217,23 @@ test('main.ts wiring: the records synchronisation is never awaited (D-07), no in
   assert.doesNotMatch(start, /await[^;\n]*records/i, 'start() never waits on the records');
   assert.ok(!MAIN.includes('innerHTML'), 'no innerHTML in main.ts');
 });
+
+// ------------------------------------------------------------ standalone bundle: module text inserted verbatim
+
+test('standalone build: the bundle, the styles and the assets are inserted by replacer functions (no $-pattern expansion)', () => {
+  // R2.0.22 (06.1-05): records.js contains `'^[a-z0-9-]{1,40}$'`; inserted as a replacement STRING, `$'` expanded to the
+  // rest of index.html and the single file became a SyntaxError. A replacer function inserts the text as is.
+  const records = fs.readFileSync(new URL('../.compiled/records.js', import.meta.url), 'utf8');
+  assert.ok(records.includes("$'"), 'the hazard is real: records.js holds a « $\' » sequence');
+  assert.notEqual('<s>'.replace('<s>', records), records, 'a replacement string corrupts it');
+  assert.equal('<s>'.replace('<s>', () => records), records, 'a replacer function keeps it');
+  const build = fs.readFileSync(new URL('../tools/build.mjs', import.meta.url), 'utf8');
+  const block = build.slice(build.indexOf('if (standalone) {'), build.indexOf("fs.mkdirSync(path.join(root, 'standalone')"));
+  assert.ok(block.length > 0, 'standalone block found');
+  for (const needle of ['${js}', '${css}', 'JSON.stringify(inline)']) {
+    const at = block.indexOf(needle);
+    assert.ok(at > 0, needle);
+    const call = block.slice(block.lastIndexOf('.replace(', at), at);
+    assert.match(call, /,\s*\(\)\s*=>\s*`/, `${needle} goes through a replacer function`);
+  }
+});
