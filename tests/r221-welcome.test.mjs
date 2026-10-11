@@ -493,3 +493,23 @@ test('audio.js: the ufo loop has its own gain and is cut by stopLoops like rolli
   assert.deepEqual(rampPlan(0, 1, UFO_GAIN), { to: 0.8, seconds: 0.05 });
   assert.match(method(audio, '    stopLoops() {'), /this\.loops/);
 });
+
+test('bitmap fonts: all layers share one pen that advances by the widest layer (ImageFont::DrawStringEx) — the NativeAlienExtended16 shadow (space 15 vs 11) stays under its letter', async () => {
+  const { parseFontScript, layoutText, measureText } = await import('../.compiled/bitmapfont.js');
+  const script = [
+    "Define CharList ('A', 'B');", 'Define WidthList (10, 12);', 'Define RectList ((0, 0, 10, 20), (10, 0, 12, 20));',
+    "CreateLayer Main; LayerSetImage Main 'F16'; LayerSetAscent Main 25; LayerSetCharWidths Main CharList WidthList; LayerSetCharWidths Main (' ') (11); LayerSetImageMap Main CharList RectList;",
+    "CreateLayer Shadow; LayerSetImage Shadow 'F16'; LayerSetAscent Shadow 25; LayerSetCharWidths Shadow CharList WidthList; LayerSetCharWidths Shadow (' ') (15); LayerSetImageMap Shadow CharList RectList;",
+    'LayerSetOffset Shadow (-1, -1); LayerSetColorMult Shadow (0, 0, 0, 0.75); LayerSetBaseOrder Shadow -1;',
+  ].join('\n');
+  const font = parseFontScript(script);
+  const layout = layoutText(font, 'A B A');
+  const shadow = layout.glyphs.filter(g => g.layer === 0);
+  const main = layout.glyphs.filter(g => g.layer === 1);
+  assert.equal(shadow.length, 3);
+  assert.equal(main.length, 3);
+  main.forEach((g, i) => assert.equal(shadow[i].dx, g.dx - 1, `glyph ${i}: the shadow sits 1 px left of its letter`));
+  assert.deepEqual(main.map(g => g.dx), [0, 25, 52], 'A (10) + space (max 15) → B at 25; B (12) + space (15) → A at 52');
+  assert.equal(layout.width, 62);
+  assert.equal(measureText(font, 'A B A'), 62);
+});
