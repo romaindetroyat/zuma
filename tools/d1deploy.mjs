@@ -7,11 +7,17 @@
  * statement (each statement of a batch), ≤ 100 bound parameters, ≤ 2 MB per row, ≤ 30 s per API call; free plan:
  * 100 000 rows written per day, an index adding one written row (our composite primary key → 2 rows per chunk).
  * Statements: one `INSERT OR IGNORE` per 60 000-character chunk (3 string parameters), batches < 900 KB of JSON.
+ *
+ * Two databases (R2.0.22, plan 06.1-03, D-05): `zuma-assets` (ASSETS_DB, the game files written here) and
+ * `zuma-scores` (SCORES_DB, the shared records written only by the worker). The deployment only creates the records
+ * database and applies its idempotent schema (`CREATE TABLE IF NOT EXISTS scores / times`): it never writes a row
+ * there. One PATCH binds both databases on production and preview.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { chunks, CHUNK_CHARS, D1_BINDING } from './d1worker.mjs';
 import { pollDeployment } from './pagesupload.mjs';
+import { SCORES_BINDING, SCORES_TABLES } from './recordsapi.mjs';
 
 export const DATABASE_NAME = 'zuma-assets';
 /** Refusal threshold on the estimated rows written by one run (half of the free 100 000 per day). */
@@ -26,6 +32,8 @@ export const SCHEMA = 'CREATE TABLE IF NOT EXISTS blobs (key TEXT NOT NULL, part
 export const INSERT = 'INSERT OR IGNORE INTO blobs (key, part, data) VALUES (?, ?, ?)';
 const TABLE_SQL = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blobs'";
 const STATE_SQL = 'SELECT key, COUNT(*) AS parts, SUM(LENGTH(data)) AS chars FROM blobs GROUP BY key';
+/** The only read of the records database by the deployment: which of its tables exist. */
+export const SCORES_TABLES_SQL = "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('scores', 'times')";
 const ATTEMPTS = 4;
 
 /** Path of the query endpoint of database `uuid`. */
@@ -50,6 +58,12 @@ export async function readBlobs(api, A, uuid) {
   return { table: true, present: new Map(rows.map(r => [r.key, { parts: Number(r.parts), chars: Number(r.chars) }])) };
 }
 
+/** Set of the records tables present in database `uuid` (one SELECT on sqlite_master, nothing else). */
+export async function readScoresTables(api, A, uuid) {
+  const rows = firstResults(await api('POST', queryPath(A, uuid), { body: { sql: SCORES_TABLES_SQL } }));
+  return new Set(rows.map(r => r.name).filter(n => SCORES_TABLES.includes(n)));
+}
+
 /** Expected rows of a file of `size` bytes: { parts, chars } of its base64. */
 export function expected(size) {
   const chars = 4 * Math.ceil(size / 3);
@@ -61,17 +75,22 @@ export function workerMarker(source) {
   return `worker:${crypto.createHash('sha256').update(source).digest('hex').slice(0, 16)}`;
 }
 
-/** Binding body of PATCH /pages/projects/:p (production and preview). */
-export function bindingBody(uuid) {
-  const env = () => ({ d1_databases: { [D1_BINDING]: { id: uuid } }, compatibility_date: COMPATIBILITY_DATE });
+/** Binding body of PATCH /pages/projects/:p: ASSETS_DB and SCORES_DB on production and preview, fixed date. */
+export function bindingBody(assetsUuid, scoresUuid) {
+  const env = () => ({ d1_databases: { [D1_BINDING]: { id: assetsUuid }, [SCORES_BINDING]: { id: scoresUuid } }, compatibility_date: COMPATIBILITY_DATE });
   return { deployment_configs: { production: env(), preview: env() } };
 }
 
-/** True when both environments bind ASSETS_DB to `uuid` with the fixed compatibility date. */
-export function bindingOk(project, uuid) {
+/** True when both environments bind `binding` to `uuid` with the fixed compatibility date. */
+export function boundTo(project, binding, uuid) {
   const cfg = project?.deployment_configs;
   if (!cfg || !uuid) return false;
-  return ['production', 'preview'].every(e => cfg[e]?.d1_databases?.[D1_BINDING]?.id === uuid && cfg[e]?.compatibility_date === COMPATIBILITY_DATE);
+  return ['production', 'preview'].every(e => cfg[e]?.d1_databases?.[binding]?.id === uuid && cfg[e]?.compatibility_date === COMPATIBILITY_DATE);
+}
+
+/** True when both environments bind ASSETS_DB to `assetsUuid` and SCORES_DB to `scoresUuid` with the fixed date. */
+export function bindingOk(project, assetsUuid, scoresUuid) {
+  return boundTo(project, D1_BINDING, assetsUuid) && boundTo(project, SCORES_BINDING, scoresUuid);
 }
 
 /** The production deployment of `project` (canonical, else latest when it is production), or null. */
@@ -90,10 +109,12 @@ export function deployedOk(project, marker) {
 }
 
 /**
- * Pure D1 plan: { createDatabase, createTable, missing (one file per absent or incomplete key), chunks, rows, bind,
- * deploy }. `blobs` = readBlobs() (null when the database does not exist yet); `marker` = workerMarker(source).
+ * Pure D1 plan: { createDatabase, createTable, missing (one file per absent or incomplete key), chunks, rows,
+ * createScoresDatabase, createScoresTables, bind, deploy }. `blobs` = readBlobs() (null when the database does not
+ * exist yet); `scores` = { database, tables } of the records database (readScoresTables; database null when absent);
+ * `marker` = workerMarker(source). `rows` counts the chunks only: the records schema writes no row.
  */
-export function planD1({ files, database, blobs, project, marker }) {
+export function planD1({ files, database, blobs, project, marker, scores = null }) {
   const present = blobs?.present ?? new Map();
   const seen = new Set();
   const missing = [];
@@ -105,13 +126,17 @@ export function planD1({ files, database, blobs, project, marker }) {
     if (!have || have.parts !== want.parts || have.chars !== want.chars) missing.push(f);
   }
   const count = missing.reduce((n, f) => n + expected(f.size).parts, 0);
-  const bind = !database || !bindingOk(project, database.uuid);
+  const scoresDb = scores?.database ?? null;
+  const tables = scores?.tables ?? new Set();
+  const bind = !database || !scoresDb || !bindingOk(project, database.uuid, scoresDb.uuid);
   return {
     createDatabase: !database,
     createTable: !blobs?.table,
     missing,
     chunks: count,
     rows: ROWS_PER_CHUNK * count,
+    createScoresDatabase: !scoresDb,
+    createScoresTables: !scoresDb || !SCORES_TABLES.every(t => tables.has(t)),
     bind,
     deploy: bind || !deployedOk(project, marker),
   };

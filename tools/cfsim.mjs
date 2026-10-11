@@ -5,9 +5,16 @@
  * enforces the documented limits that matter here (D1: 100 000 bytes per statement, 100 bound parameters, string
  * parameters through the REST API; Pages: `ASSETS` is a reserved binding name, `_worker.js` and `_worker.bundle` are
  * mutually exclusive). Records every call. Never touches the network.
+ *
+ * D1 (R2.0.22, plan 06.1-03): each database has its own vocabulary. `zuma-scores` (the shared records) accepts exactly
+ * the two `CREATE TABLE IF NOT EXISTS scores / times` texts of SCORES_SCHEMA (idempotent) and the
+ * `sqlite_master … IN ('scores', 'times')` read — any other statement there is refused (400), so a deployment that
+ * tried to write a record row would fail. Every other database understands the `blobs` statements of the files store.
  */
+import { SCORES_DATABASE_NAME, SCORES_SCHEMA } from './recordsapi.mjs';
 
 const STATEMENT_MAX = 100000;
+const SCORES_READ = "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('scores', 'times')";
 const PARAMS_MAX = 100;
 
 /** Error shaped like the API layer's (message + HTTP status). */
@@ -39,12 +46,22 @@ export function simulatedCloudflare({ accountId = 'f'.repeat(32), authDomain = '
     const bytes = Buffer.byteLength(text) + params.reduce((n, p) => n + Buffer.byteLength(p), 0);
     if (bytes > STATEMENT_MAX) throw fail(400, `D1: statement of ${bytes} bytes (limit ${STATEMENT_MAX})`);
     const t = text.trim();
+    if (db.name === SCORES_DATABASE_NAME) {
+      // Records database: the schema and the table read only (the deployment never writes a row there).
+      const i = SCORES_SCHEMA.indexOf(t);
+      if (i >= 0) {
+        db.tables.add(['scores', 'times'][i]);
+        return { results: [], success: true, meta: { changes: 0, rows_written: 0 } };
+      }
+      if (t === SCORES_READ) return { results: ['scores', 'times'].filter(n => db.tables.has(n)).map(name => ({ name })), success: true, meta: {} };
+      throw fail(400, `D1: statement refused on ${SCORES_DATABASE_NAME} in the simulation: ${t.slice(0, 60)}`);
+    }
     if (/^CREATE TABLE IF NOT EXISTS blobs \(/.test(t)) {
-      db.table = true;
+      db.tables.add('blobs');
       return { results: [], success: true, meta: { changes: 0, rows_written: 0 } };
     }
-    if (/^SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blobs'$/.test(t)) return { results: db.table ? [{ name: 'blobs' }] : [], success: true, meta: {} };
-    if (!db.table) throw fail(400, 'D1_ERROR: no such table: blobs');
+    if (/^SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blobs'$/.test(t)) return { results: db.tables.has('blobs') ? [{ name: 'blobs' }] : [], success: true, meta: {} };
+    if (!db.tables.has('blobs')) throw fail(400, 'D1_ERROR: no such table: blobs');
     if (/^SELECT key, COUNT\(\*\) AS parts, SUM\(LENGTH\(data\)\) AS chars FROM blobs GROUP BY key$/.test(t)) {
       const by = new Map();
       for (const r of db.rows.values()) {
@@ -165,11 +182,11 @@ export function simulatedCloudflare({ accountId = 'f'.repeat(32), authDomain = '
     // D1
     if (route === `${A}/d1/database` && method === 'GET') {
       const name = url.searchParams.get('name');
-      return s.databases.filter(d => !name || d.name.includes(name)).map(d => ({ uuid: d.uuid, name: d.name, version: 'production', num_tables: d.table ? 1 : 0 }));
+      return s.databases.filter(d => !name || d.name.includes(name)).map(d => ({ uuid: d.uuid, name: d.name, version: 'production', num_tables: d.tables.size }));
     }
     if (route === `${A}/d1/database` && method === 'POST') {
       if (s.databases.some(d => d.name === o.body?.name)) throw fail(400, 'A database with that name already exists');
-      const db = { uuid: uuid(), name: o.body.name, table: false, rows: new Map() };
+      const db = { uuid: uuid(), name: o.body.name, tables: new Set(), rows: new Map() };
       s.databases.push(db);
       return { uuid: db.uuid, name: db.name, version: 'production' };
     }

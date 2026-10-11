@@ -42,7 +42,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkArtifact, uploadAndDeploy } from './pagesupload.mjs';
 import { blobFiles, D1_BINDING, generateWorker, playerNames, workerManifest } from './d1worker.mjs';
 import {
-  bindingBody, bindingOk, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
+  boundTo, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
   productionDeployment, queryPath, readBlobs, ROW_BUDGET, SCHEMA, uploadBlobs, workerMarker,
 } from './d1deploy.mjs';
 import { simulatedCloudflare } from './cfsim.mjs';
@@ -446,7 +446,11 @@ export async function run(argv, deps = {}) {
       try {
         const database = await findDatabase(api, A, DATABASE_NAME);
         const blobs = database ? await readBlobs(api, A, database.uuid) : null;
-        return { database, blobs, plan: planD1({ files, database, blobs, project, marker }) };
+        const plan = planD1({ files, database, blobs, project, marker });
+        // Temporary bridge until the records database is provisioned here (plan 06.1-03 task 2): ASSETS_DB only.
+        plan.bind = !database || !boundTo(project, D1_BINDING, database.uuid);
+        plan.deploy = plan.bind || !deployedOk(project, marker);
+        return { database, blobs, plan };
       } catch (e) {
         if (e && (e.status === 401 || e.status === 403)) throw new Error(`${e.message} — lecture D1 refusée : permission du jeton probablement manquante « ${permissionFor('/d1/')} ».`);
         throw e;
@@ -557,10 +561,11 @@ export async function run(argv, deps = {}) {
     p = planD1({ files, database, blobs, project, marker });
     if (p.missing.length) { log(`D1 relue : ${p.missing.length} fichier(s) encore absents ou incomplets ; arrêt (relancer reprend où il s'est arrêté).`); return 1; }
     log(`D1 relue : ${new Set(files.map(f => f.key)).size} contenus complets`);
-    if (!bindingOk(project, database.uuid)) {
-      await write('PATCH', `${A}/pages/projects/${cfg.project}`, bindingBody(database.uuid));
+    if (!boundTo(project, D1_BINDING, database.uuid)) {
+      const env = () => ({ d1_databases: { [D1_BINDING]: { id: database.uuid } }, compatibility_date: COMPATIBILITY_DATE });
+      await write('PATCH', `${A}/pages/projects/${cfg.project}`, { deployment_configs: { production: env(), preview: env() } });
       project = await api('GET', `${A}/pages/projects/${cfg.project}`);
-      if (!bindingOk(project, database.uuid)) { log(`liaison « ${D1_BINDING} » non relue sur le projet ; arrêt.`); return 1; }
+      if (!boundTo(project, D1_BINDING, database.uuid)) { log(`liaison « ${D1_BINDING} » non relue sur le projet ; arrêt.`); return 1; }
       log(`lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} » (production et aperçu, compatibilité ${COMPATIBILITY_DATE})`);
     } else log(`déjà lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} »`);
     let deploymentUrl = productionDeployment(project)?.url ?? null;
@@ -652,7 +657,7 @@ async function verify({ api, A, readState, plan, cfg, team, fetch, log }) {
     const db = await findDatabase(api, A, DATABASE_NAME);
     const msg = productionDeployment(state.project)?.deployment_trigger?.metadata?.commit_message ?? '';
     const worker = msg.split(/\s+/).find(w => w.startsWith('worker:'));
-    log(`D1 : base « ${DATABASE_NAME} » ${db ? 'présente' : 'absente'} ; liaison « ${D1_BINDING} » ${db && bindingOk(state.project, db.uuid) ? 'en place (production et aperçu)' : 'absente'} ; worker en production : ${worker ?? 'aucun'}`);
+    log(`D1 : base « ${DATABASE_NAME} » ${db ? 'présente' : 'absente'} ; liaison « ${D1_BINDING} » ${db && boundTo(state.project, D1_BINDING, db.uuid) ? 'en place (production et aperçu)' : 'absente'} ; worker en production : ${worker ?? 'aucun'}`);
   } catch (e) {
     log(`D1 : état illisible (${e.message})`);
   }
