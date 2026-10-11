@@ -102,7 +102,8 @@ export function warningGain(_level?: number): number {
 }
 
 /** Looping pack sounds: the chain rolling (D-17) and the UFO of the main menu (`ufo1`, R2.0.21, spike 06 Q1). */
-export type LoopKey = 'rolling' | 'ufo';
+export const LOOP_KEYS = ['rolling', 'ufo'] as const;
+export type LoopKey = (typeof LOOP_KEYS)[number];
 export type PulseKey = 'warning';
 
 /**

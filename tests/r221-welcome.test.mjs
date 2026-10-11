@@ -494,7 +494,8 @@ test('main.js: platform first name (D-12) — api/me same-origin with a short ti
 test('audio.js: the ufo loop has its own gain and is cut by stopLoops like rolling', async () => {
   const audio = read('.compiled/audio.js');
   assert.match(audio, /ufo: UFO_GAIN/);
-  const { rampPlan, UFO_GAIN, ROLLING_GAIN } = await import('../.compiled/audio.js');
+  const { rampPlan, UFO_GAIN, ROLLING_GAIN, LOOP_KEYS } = await import('../.compiled/audio.js');
+  assert.deepEqual(LOOP_KEYS, ['rolling', 'ufo']);
   assert.equal(UFO_GAIN, 0.8);
   assert.deepEqual(rampPlan(0, 1), { to: ROLLING_GAIN, seconds: 0.05 }, 'rolling unchanged');
   assert.deepEqual(rampPlan(0, 1, UFO_GAIN), { to: 0.8, seconds: 0.05 });
