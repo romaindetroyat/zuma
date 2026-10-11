@@ -186,3 +186,208 @@ test('progress: temple name fallbacks are the literals of the executable (0x5505
   const { TEMPLE_NAMES } = await P();
   assert.deepEqual(TEMPLE_NAMES.map(t => t.fallback), ['TEMPLE DE ZUKULKAN', 'QUETZAL QUATL', 'POPO POYOLLI', 'TEMPLE SECRET DE ZUMA']);
 });
+
+// ---------------------------------------------------------------- composition: adventure screen, god dialogue, ending (Task 2)
+
+/** Canvas 2D stand-in that records every call and property write (Node has no canvas). */
+function recorder() {
+  const calls = [];
+  const state = { globalCompositeOperation: 'source-over', globalAlpha: 1, fillStyle: '#000', strokeStyle: '#000', font: '10px sans-serif', textAlign: 'left', textBaseline: 'alphabetic', lineWidth: 1, imageSmoothingEnabled: true };
+  const stack = [];
+  return new Proxy({}, {
+    get(_t, prop) {
+      if (prop === 'calls') return calls;
+      if (prop in state) return state[prop];
+      if (prop === 'save') return () => { stack.push({ ...state }); calls.push({ op: 'save' }); };
+      if (prop === 'restore') return () => { Object.assign(state, stack.pop() ?? {}); calls.push({ op: 'restore' }); };
+      if (prop === 'measureText') return s => ({ width: String(s).length * 8 });
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') return () => ({ addColorStop() {} });
+      return (...args) => { calls.push({ op: prop, args, alpha: state.globalAlpha, fill: state.fillStyle }); };
+    },
+    set(_t, prop, value) {
+      state[prop] = value;
+      calls.push({ op: 'set', prop, value });
+      return true;
+    },
+  });
+}
+const pic = (name, width, height) => ({ name, width, height });
+/** A font stand-in that records its draws into the context's call list. */
+const fakeFont = (name, k = 1) => ({
+  name, pixelScale: k, ascent: 8, height: 12, capHeight: 8,
+  measure: s => String(s).length * 7,
+  draw(ctx, text, x, y, options = {}) { ctx.calls.push({ op: 'font', font: name, text, x, y, options }); return String(text).length * 7; },
+});
+const DOOR_W = [62, 60, 57, 64, 57, 51, 45, 44, 56, 61, 64, 62];
+const DOOR_H = [58, 90, 56, 57, 43, 35, 34, 38, 41, 50, 49, 49];
+function fakeAdvKit(k = 1, fonts = false) {
+  const t = (name, w, h) => pic(name, w * k, h * k);
+  const f = name => (fonts ? fakeFont(name, k) : null);
+  return {
+    sky: t('advsky', 640, 116), back: t('advback', 640, 250), title: t('advtitle', 185, 73), plaque: t('advhighscore', 184, 65), stage: t('advstage', 76, 16),
+    temples: {
+      advtemple1: t('advtemple1', 640, 292), advtemple2: t('advtemple2', 228, 208), advtemple2v: t('advtemple2v', 228, 208), advtemple3: t('advtemple3', 245, 194),
+      advtemple3v: t('advtemple3v', 245, 194), advtemple4: t('advtemple4', 291, 249), advmiddle: t('advmiddle', 640, 185),
+    },
+    doors: DOOR_W.map((w, i) => t(`door${i}`, w * 4, DOOR_H[i])),
+    doorMasks: null,
+    play: t('play', 291, 39), mainMenu: t('mainmenu', 375, 42), happyEnding: t('happyending', 640, 480),
+    fonts: { brown: f('brown'), message: f('message'), score: f('score'), number: f('number'), huge: f('huge'), title: f('title') },
+    dialog: null, pixelScale: k,
+  };
+}
+const advView = { c: 8, maxStage: 4, selected: 4, hover: 3, button: { hover: 'play', pressed: null }, focus: null, reveal: null, shake: [0, 0, 0, 0], scores: [], strings: null };
+const imgs = ctx => ctx.calls.filter(c => c.op === 'drawImage');
+
+test('drawAdventure: 0x441b50 order — sky ×3 before advback, title, plaque, temples with their doors (cel from doorCel), stage plaque, buttons', async () => {
+  const { drawAdventure } = await A();
+  const ctx = recorder();
+  drawAdventure(ctx, fakeAdvKit(), advView);
+  const order = imgs(ctx).map(c => c.args[0].name);
+  assert.deepEqual(order.slice(0, 6), ['advsky', 'advsky', 'advsky', 'advback', 'advtitle', 'advhighscore'], 'advsky before advback (the back is holed)');
+  assert.deepEqual(imgs(ctx).slice(0, 3).map(c => c.args[1]), [2 - 640, 2, 2 + 640], 'o = (8 >> 2) mod 640');
+  assert.deepEqual(order.slice(6), ['advmiddle', 'advtemple3v', 'advtemple2', 'door3', 'door4', 'door5', 'advtemple1', 'door0', 'door1', 'door2', 'advstage', 'mainmenu', 'play']);
+  const door = i => imgs(ctx).find(c => c.args[0].name === `door${i}`).args;
+  assert.deepEqual(door(4), [door(4)[0], 3 * 57, 0, 57, 43, 69, 159, 57, 43], 'selected door: cel 3 at its place');
+  assert.equal(door(3)[1], 2 * 64, 'hovered door: cel 2');
+  assert.equal(door(5)[1], 0, 'door above maxStage: cel 0');
+  assert.equal(door(0)[1], 62, 'unlocked door: cel 1');
+  const btn = name => imgs(ctx).find(c => c.args[0].name === name).args;
+  assert.deepEqual(btn('play'), [btn('play')[0], 97, 0, 97, 39, 542, 441, 97, 39], '« Jouer » hovered: state 1');
+  assert.deepEqual(btn('mainmenu').slice(1), [0, 0, 125, 42, 0, 438, 125, 42]);
+  assert.deepEqual(btn('advstage').slice(1, 3), [289, 382]);
+});
+
+test('drawAdventure: texts — temple name (brown, white, centred 326 / 422), door message (outlined, 0xffea01, 456), stage number, plaque scores through scoreRows, hint', async () => {
+  const { drawAdventure } = await A();
+  const ctx = recorder();
+  const scores = [{ name: 'Zuma', score: 10000 }, { name: 'Grenouille', score: 5000 }, { name: 'Têtard', score: 1000 }, { name: 'Quatre', score: 10 }];
+  drawAdventure(ctx, fakeAdvKit(1, true), { ...advView, selected: 0, hover: 1, scores, strings: { TEMPLE_OF_ZUKULKAN: 'TEMPLE DE ZUKULKAN', DO_YOU_DARE_ENTER_THE_ANCIENT_RUINS: 'ENTRER ?', CLICK_ON_A_DOORWAY: 'Cliquez sur une porte.' } });
+  const fonts = ctx.calls.filter(c => c.op === 'font');
+  const plain = fonts.filter(c => (c.options.tint ?? '').toLowerCase() !== '#000000');
+  const title = plain.find(c => c.text === 'TEMPLE DE ZUKULKAN');
+  assert.deepEqual([title.font, title.x, title.y, title.options.align], ['brown', 326, 422, 'center']);
+  const message = plain.find(c => c.text === 'ENTRER ?');
+  assert.deepEqual([message.font, message.x, message.y, message.options.tint], ['message', 326, 456, '#ffea01']);
+  assert.ok(fonts.filter(c => c.text === 'ENTRER ?' && c.options.tint === '#000000').length >= 4, 'black 1 px outline under the door message');
+  const number = plain.find(c => c.font === 'number');
+  assert.deepEqual([number.text, number.x, number.y, number.options.tint], ['1', 344, 396, '#fbf1b0']);
+  const score = plain.filter(c => c.font === 'score' && /^\d+$/.test(c.text));
+  assert.deepEqual(score.map(c => [c.text, c.x, c.y]), [['10000', 575, 70], ['5000', 575, 82], ['1000', 575, 94]], 'three scores, left-aligned at 575');
+  const nameRows = plain.filter(c => c.font === 'score' && ['Zuma', 'Grenouille', 'Têtard', 'Quatre'].includes(c.text));
+  assert.deepEqual(nameRows.map(c => [c.text, c.x]), [['Zuma', 470], ['Grenouille', 470], ['Têtard', 470]]);
+  assert.ok(ctx.calls.some(c => c.op === 'rect' && c.args[0] + c.args[2] === 567) && ctx.calls.some(c => c.op === 'clip'), 'names clipped to x < 567 (0x463820)');
+  const hint = plain.filter(c => c.font === 'score' && /porte/.test(c.text));
+  assert.ok(hint.length >= 1 && hint[0].x === 20, 'hint box at x 20 (CLICK_ON_A_DOORWAY while another door is hovered)');
+});
+
+test('drawAdventure: arrival — the opening temple fades at the reveal alpha, its doors too; a 2 × kit is cut at 2 × and drawn at the logical size', async () => {
+  const { drawAdventure } = await A();
+  const ctx = recorder();
+  drawAdventure(ctx, fakeAdvKit(2), { ...advView, maxStage: 3, selected: 3, hover: null, reveal: { temple: 2, progress: 0.25 } });
+  const veiled = imgs(ctx).find(c => c.args[0].name === 'advtemple2v');
+  const open = imgs(ctx).find(c => c.args[0].name === 'advtemple2');
+  assert.equal(veiled.alpha, 0.75);
+  assert.equal(open.alpha, 0.25);
+  assert.deepEqual(open.args.slice(1), [0, 112, 228, 208]);
+  const door3 = imgs(ctx).find(c => c.args[0].name === 'door3');
+  assert.equal(door3.alpha, 0.25);
+  assert.deepEqual(door3.args.slice(1), [3 * 64 * 2, 0, 64 * 2, 57 * 2, 0, 164, 64, 57]);
+});
+
+test('drawAdventure: a missing piece is skipped without exception; kit null → a vector adventure screen (doors, texts, buttons)', async () => {
+  const { drawAdventure } = await A();
+  const kit = fakeAdvKit();
+  kit.sky = null;
+  kit.temples.advtemple3v = null;
+  kit.doors[1] = null;
+  kit.stage = null;
+  kit.play = null;
+  const ctx = recorder();
+  assert.doesNotThrow(() => drawAdventure(ctx, kit, advView));
+  assert.ok(!imgs(ctx).some(c => c.args[0] === null));
+  const vec = recorder();
+  assert.doesNotThrow(() => drawAdventure(vec, null, { ...advView, c: NaN }));
+  const texts = vec.calls.filter(c => c.op === 'fillText').map(c => c.args[0]);
+  assert.ok(texts.some(t => /JOUER/i.test(t)) && texts.some(t => /MENU/i.test(t)), texts.join(' | '));
+});
+
+test('godDialogWidgets: one footer button « <RIBBIT> <reply> » (pack strings, built-in fallbacks); temple 4 has two pages, temple 5 « Coâ-coâ ! (Bizarre) ! »', async () => {
+  const { godDialogWidgets, godPages } = await A();
+  const strings = { RIBBIT: 'Coâ-coâ.', I_BEG_TO_DIFFER: '(Je proteste).', 'RIBBIT_?': 'Coâ-coâ ?', IN_SPACE: "(Dans l'espace) ?", 'RIBBIT_!': 'Coâ-coâ !', WERD: '(Bizarre) !' };
+  const one = godDialogWidgets(strings, 1);
+  assert.equal(one.length, 1);
+  assert.equal(one[0].id, 'god-next');
+  assert.equal(one[0].label, 'Coâ-coâ. (Je proteste).');
+  assert.equal(godDialogWidgets(null, 1)[0].label, 'Coâ-coâ. (Je proteste).', 'fallback');
+  assert.equal(godDialogWidgets(strings, 4)[0].label, "Coâ-coâ ? (Dans l'espace) ?");
+  assert.equal(godDialogWidgets(strings, 5)[0].label, 'Coâ-coâ ! (Bizarre) !');
+  assert.deepEqual([1, 2, 3, 4, 5].map(godPages), [1, 1, 1, 2, 1]);
+  const r = one[0].rect;
+  assert.ok(r.x >= 0 && r.y >= 0 && r.x + r.w <= 640 && r.y + r.h <= 480);
+});
+
+test('drawGodDialog: frame, GodHead, temple name title (none for temple 5), the page text wrapped, the footer button; never throws without kit', async () => {
+  const { drawGodDialog } = await A();
+  const fontRec = name => fakeFont(name);
+  const kit = { frame: pic('dialogbox', 243, 242), head: pic('godhead', 156, 140), button: pic('dialogbutton', 360, 48), fonts: { title: fontRec('t'), text: fontRec('x'), tip: null, tipSmall: null }, strings: { TEMPLE_OF_ZUKULKAN: 'TEMPLE DE ZUKULKAN', FINAL_TEMPLE_STRUCK: 'Le dernier temple est tombé !', WE_COME_FROM_STAR: 'Nous venons des étoiles.' }, pixelScale: 1 };
+  const ctx = recorder();
+  drawGodDialog(ctx, kit, { temple: 4, page: 1, hover: false, pressed: false }, null);
+  const texts = ctx.calls.filter(c => c.op === 'font').map(c => c.text);
+  assert.ok(texts.includes('TEMPLE SECRET DE ZUMA'), 'title = temple name');
+  assert.ok(texts.some(t => /étoiles/.test(t)), 'page 2 of temple 4');
+  assert.ok(!texts.some(t => /dernier temple/.test(t)));
+  assert.ok(imgs(ctx).some(c => c.args[0].name === 'godhead'));
+  const final = recorder();
+  drawGodDialog(final, kit, { temple: 5, page: 0, hover: true, pressed: false }, null);
+  assert.ok(!final.calls.some(c => c.op === 'font' && /TEMPLE/.test(c.text)), 'no title for the final dialogue');
+  assert.doesNotThrow(() => drawGodDialog(recorder(), null, { temple: 1, page: 0, hover: false, pressed: true }, null));
+});
+
+test('ending: endingWidgets one « OK » inside the table frame; drawEnding happyending at (0, 0), CONGRATULATIONS, advHighscore plaque, rank row in 0xffff4c', async () => {
+  const { endingWidgets, drawEnding, ADV_ENDING } = await A();
+  const [ok] = endingWidgets();
+  assert.equal(ok.id, 'ending-ok');
+  assert.equal(ok.label, 'OK');
+  const f = ADV_ENDING.frame;
+  assert.ok(ok.rect.x >= f.x && ok.rect.y >= f.y && ok.rect.x + ok.rect.w <= f.x + f.w && ok.rect.y + ok.rect.h <= f.y + f.h, 'inside the frame');
+  const kit = fakeAdvKit(1, true);
+  kit.dialog = { frame: pic('dialogbox', 243, 242), head: null, button: pic('dialogbutton', 360, 48), fonts: { title: fakeFont('t'), text: fakeFont('x'), tip: null, tipSmall: null }, strings: {}, pixelScale: 1 };
+  const scores = Array.from({ length: 10 }, (_, i) => ({ name: `N${i}`, score: 90000 - i * 5000, stage: 12, level: 0, date: '' }));
+  const ctx = recorder();
+  drawEnding(ctx, kit, { score: 80000, rank: 2, scores, hover: false, pressed: false, strings: { CONGRATULATIONS: 'FÉLICITATIONS !', SCORE: 'Score :' } });
+  const first = imgs(ctx)[0];
+  assert.deepEqual([first.args[0].name, first.args[1], first.args[2]], ['happyending', 0, 0]);
+  assert.ok(imgs(ctx).some(c => c.args[0].name === 'advhighscore'), 'the plaque heads the table');
+  const fonts = ctx.calls.filter(c => c.op === 'font');
+  assert.ok(fonts.some(c => c.text === 'FÉLICITATIONS !' && c.font === 'huge'), 'title in NativeAlien48');
+  assert.ok(fonts.some(c => c.text === 'Score : 80000'));
+  const rowsOf = name => fonts.filter(c => c.text === name);
+  assert.equal(rowsOf('N2')[0].options.tint, '#ffff4c', 'the run’s row is highlighted');
+  assert.equal(rowsOf('N3')[0].options.tint, '#ffffff');
+  assert.equal(fonts.filter(c => /^N\d$/.test(c.text)).length, 10, 'ten rows');
+  assert.doesNotThrow(() => drawEnding(recorder(), null, { score: 5, rank: null, scores: [], hover: true, pressed: true, strings: null }));
+});
+
+test('source locks: adventure.js draws doors through doorCel(, the plaque through scoreRows(, the ending through CONGRATULATIONS; no innerHTML; names only from progress.ts', () => {
+  const src = read('.compiled/adventure.js');
+  assert.match(src, /doorCel\(/);
+  assert.match(src, /scoreRows\(/);
+  assert.match(src, /CONGRATULATIONS/);
+  assert.match(src, /happyEnding/);
+  assert.doesNotMatch(src, /innerHTML/);
+  assert.doesNotMatch(src, /'(Zuma|Grenouille|Têtard)'/, 'the demonstration names live in progress.ts only');
+});
+
+test('loadAdventureKit: null without advback; missing pieces and fonts are null, never an exception', async () => {
+  const { loadAdventureKit } = await A();
+  const pack = present => ({ base: 'assets/', data: { images: {}, fonts: {} }, masked: async key => (present(key) ? pic(key, 10, 10) : null), image: async key => (present(key) ? pic(key, 10, 10) : null) });
+  assert.equal(await loadAdventureKit(pack(() => false), null), null);
+  const kit = await loadAdventureKit(pack(key => key !== 'advdoor2b' && key !== 'advtemple4'), null);
+  assert.ok(kit);
+  assert.equal(kit.back.name, 'advback');
+  assert.equal(kit.doors[4], null);
+  assert.equal(kit.temples.advtemple4, null);
+  assert.equal(kit.fonts.brown, null);
+  assert.equal(kit.pixelScale, 1);
+});
