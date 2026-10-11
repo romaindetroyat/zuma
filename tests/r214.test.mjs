@@ -106,13 +106,15 @@ test('rollFrame is monotone in s, wraps around the circumference and covers ever
 
 test('advancing balls roll forward, recoiling balls roll backwards', () => {
   assert.ok(rollFrame(28, 50) > rollFrame(20, 50), 'advance increases the frame');
-  // r213 "local recoil" fixture: the destruction behind the rear segment makes it roll back.
-  const g = fixture([{ color: 3, s: 100 }, { color: 2, s: 132 }, { color: 0, s: 164 }, { color: 0, s: 196 }, { color: 3, s: 228 }]);
+  // R2.0.19 (D-34): no recoil at match time any more; the contact recoil (the matching edges meet after the
+  // attraction) makes the whole chain, rear ball included, roll back.
+  const g = fixture([{ color: 3, s: 100 }, { color: 2, s: 132 }, { color: 0, s: 164 }, { color: 0, s: 196 }, { color: 2, s: 228 }]);
   const rear = g.balls[0];
   const startFrame = rollFrame(rear.s, 50);
   g.command({ kind: 'shoot', x: 180, y: 240 });
-  run(g, 30);
+  run(g, 90);
   assert.ok(g.events.some(e => e.kind === 'destroy'));
+  assert.ok(g.events.some(e => e.kind === 'merge'));
   assert.ok(rear.s < 100, `rear ball recoiled (${rear.s})`);
   assert.ok(rear.s > 0, 'no wrap-around over the recoil distance');
   assert.ok(rollFrame(rear.s, 50) < startFrame, `frame ${rollFrame(rear.s, 50)} < ${startFrame} after recoil`);

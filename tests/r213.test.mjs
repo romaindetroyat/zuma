@@ -77,9 +77,13 @@ test('matching neighbours attract across the gap and only merge after contact, p
   const g = fixture([{ color: 1, s: 200 }, { color: 1, s: 232 }, { color: 0, s: 264 }, { color: 0, s: 296 }, { color: 1, s: 328 }]);
   g.command({ kind: 'shoot', x: 280, y: 240 });
   run(g, 24); // R2.0.14: landing + mergeTicks (12) before the run is evaluated
-  assert.ok(g.events.some(e => e.kind === 'destroy' && e.depth === 1));
+  const destroy = g.events.find(e => e.kind === 'destroy' && e.depth === 1);
+  assert.ok(destroy);
   const front = g.balls.find(b => b.color === 1 && b.s > 300);
   const before = front.s;
+  // R2.0.19 (D-34): the attraction starts when the destruction ends (24 ticks), not at the match.
+  run(g, destroy.tick + CANDIDATE.destroyTicks - g.tick);
+  assert.equal(front.s, before, 'still while the run explodes');
   run(g, 10);
   assert.ok(front.s < before, 'front segment rolls back towards the matching colour');
   run(g, 120);
@@ -89,14 +93,20 @@ test('matching neighbours attract across the gap and only merge after contact, p
   assert.equal(g.stats.maxCombo, 2);
 });
 
-test('local recoil pushes the rear segment back and propagates to touching segments behind it', () => {
-  const g = fixture([{ color: 3, s: 100 }, { color: 2, s: 132 }, { color: 0, s: 164 }, { color: 0, s: 196 }, { color: 3, s: 228 }]);
+test('no recoil at match time; the contact recoil pushes the whole chain back', () => {
+  // R2.0.19 (D-34): replaces « local recoil pushes the rear segment back » — the original has no recoil when a run
+  // is matched (0x4219a6 / 0x40abde are the only writers of the recoil counter); the contact of an attraction makes
+  // the most advanced ball of the arrived segment roll back and push the whole chain behind it.
+  const g = fixture([{ color: 3, s: 100 }, { color: 2, s: 132 }, { color: 0, s: 164 }, { color: 0, s: 196 }, { color: 2, s: 228 }]);
   const rear = g.balls[0];
   const rearStart = rear.s;
   g.command({ kind: 'shoot', x: 180, y: 240 });
   run(g, 30);
   assert.ok(g.events.some(e => e.kind === 'destroy'));
-  assert.ok(rear.s < rearStart, `rear ball recoiled (${rear.s} < ${rearStart})`);
+  assert.equal(rear.s, rearStart, 'no recoil at match time');
+  run(g, 60);
+  assert.ok(g.events.some(e => e.kind === 'merge'), 'the matching edges met');
+  assert.ok(rear.s < rearStart, `rear ball pushed back by the contact recoil (${rear.s} < ${rearStart})`);
   assert.ok(g.balls[1].s - rear.s >= CANDIDATE.ballSpacing - 1e-6, 'propagation keeps the segment packed');
 });
 
