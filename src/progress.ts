@@ -114,3 +114,155 @@ export const TEMPLE_NAMES: readonly { key: string; fallback: string }[] = [
   { key: 'POPO_POYOLLI', fallback: 'TEMPLE DE POPO POYOLLI' },
   { key: 'SECRET_SHRINE_OF_ZUMA', fallback: 'TEMPLE SECRET DE ZUMA' },
 ];
+
+// ------------------------------------------------------------------ high scores (research Q4)
+
+/** One high-score entry: the profile name, the score and the level reached (D-04); `date` ISO YYYY-MM-DD or ''. */
+export interface HighScore { name: string; score: number; stage: number; level: number; date: string }
+
+/** Stored as `{ adventure: HighScore[] }`, the key of the original adventure list (0x428170). */
+export const HIGHSCORE_KEY = 'zuma.highscores.v1';
+/** Entries kept per list (0x427d8d: cmp …, 0xa, then truncation 0x415010(list, 10)). */
+export const HIGHSCORE_MAX = 10;
+/** Name used when no profile exists (D-04). */
+const DEFAULT_PLAYER = 'Joueur';
+
+/**
+ * Demonstration entries of a fresh table: the thresholds of the original defaults (0x426f20: 10 000, 5 000 and 1 000
+ * points) under names chosen for this project — the original names are never copied (T-06-07). A fresh copy per call.
+ */
+export function defaultScores(): HighScore[] {
+  return [
+    { name: 'Zuma', score: 10000, stage: 0, level: 0, date: '' },
+    { name: 'Grenouille', score: 5000, stage: 0, level: 0, date: '' },
+    { name: 'Têtard', score: 1000, stage: 0, level: 0, date: '' },
+  ];
+}
+
+/**
+ * Sorted insertion (0x416bc0, score descending; a new entry goes after the existing equal scores) then truncation to
+ * HIGHSCORE_MAX (0x415010), as the manager 0x427d60 does. Returns a new list and the 0-based rank of the entry, or null
+ * when it fell out. Never mutates `list`.
+ */
+export function insertScore(list: readonly HighScore[], entry: HighScore): { list: HighScore[]; rank: number | null } {
+  const out = list.map(e => ({ ...e }));
+  let at = out.findIndex(e => e.score < entry.score);
+  if (at < 0) at = out.length;
+  out.splice(at, 0, { ...entry });
+  const kept = out.slice(0, HIGHSCORE_MAX);
+  return { list: kept, rank: at < HIGHSCORE_MAX ? at : null };
+}
+
+/** Parses JSON without ever throwing: undefined on any error. */
+function progressParse(raw: string | null): unknown {
+  if (typeof raw !== 'string' || raw === '') return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+
+/**
+ * Defensive read of the stored table (T-06-04): null / corrupt / wrong shape → defaultScores(); an empty stored list
+ * stays empty. Entries need a string name (sanitised, empty → « Joueur ») and a finite non-negative integer score;
+ * stage / level are bounded to 0..99 and the date kept when it is a string of at most 10 characters. Sorted (stable),
+ * at most HIGHSCORE_MAX.
+ */
+export function parseScores(raw: string | null): HighScore[] {
+  const data = progressParse(raw);
+  if (!isRecord(data) || !Array.isArray(data.adventure)) return defaultScores();
+  const list: HighScore[] = [];
+  for (const e of data.adventure as unknown[]) {
+    if (!isRecord(e) || typeof e.name !== 'string' || !isCount(e.score)) continue;
+    list.push({
+      name: sanitizeName(e.name) ?? DEFAULT_PLAYER,
+      score: e.score,
+      stage: progressIndex(e.stage, 0, 99),
+      level: progressIndex(e.level, 0, 99),
+      date: typeof e.date === 'string' && e.date.length <= 10 ? e.date : '',
+    });
+  }
+  return list.sort((a, b) => b.score - a.score).slice(0, HIGHSCORE_MAX);
+}
+
+// ------------------------------------------------------------------ profile and saved run (PROG-02)
+
+/** Local player profile: name typed once at the first launch (0x44a8b0), highest unlocked stage index. */
+export interface Profile { name: string; maxStage: number }
+export const PROFILE_KEY = 'zuma.profile.v1';
+/** Longest profile name kept (T-06-05). */
+const NAME_MAX = 16;
+/** Printable characters only: letters, marks, digits, punctuation, symbols and the plain space. */
+const NAME_CHAR = /[\p{L}\p{M}\p{N}\p{P}\p{S} ]/u;
+
+/**
+ * Profile name (T-06-05): whitespace runs become one space, control / format / other non-printable characters are
+ * dropped, trimmed, at most 16 characters (code points, never a broken surrogate); empty or not a string → null. The
+ * result is only ever drawn on the canvas, never injected into the DOM.
+ */
+export function sanitizeName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const kept = Array.from(raw.replace(/\s+/gu, ' ')).filter(c => NAME_CHAR.test(c)).join('');
+  const name = Array.from(kept.replace(/ {2,}/g, ' ').trim()).slice(0, NAME_MAX).join('').trim();
+  return name === '' ? null : name;
+}
+
+/** Defensive read of the profile: a valid name is required; maxStage bounded to 0..12 (non-finite → 0). */
+export function parseProfile(raw: string | null): Profile | null {
+  const data = progressParse(raw);
+  if (!isRecord(data)) return null;
+  const name = sanitizeName(data.name);
+  if (name === null) return null;
+  return { name, maxStage: progressIndex(data.maxStage, 0, FINAL_STAGE_INDEX) };
+}
+
+/** Saved run: the game at the start of its current level (RunState JSON). */
+export const SAVE_KEY = 'zuma.save.v1';
+
+/**
+ * Defensive read of the saved run (T-06-04): null when absent, corrupt, outside the stage sizes, with lives outside
+ * 1..99 or a negative / non-finite / non-integer score; always null without stages (procedural levels).
+ */
+export function parseSave(raw: string | null, sizes: readonly number[]): RunState | null {
+  if (sizes.length === 0) return null;
+  const data = progressParse(raw);
+  if (!isRecord(data)) return null;
+  const { stage, level, score, lives } = data;
+  if (!isCount(stage) || stage >= sizes.length) return null;
+  if (!isCount(level) || level >= sizes[stage]) return null;
+  if (!isCount(score)) return null;
+  if (!isCount(lives) || lives < 1 || lives > 99) return null;
+  return { stage, level, score, lives };
+}
+
+// ------------------------------------------------------------------ storage (injected)
+
+/** The subset of the Web Storage API this module needs; the caller passes the browser storage (or null). */
+export interface StorageLike { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void }
+
+/** Reads a stored string (T-06-06): missing storage or a throwing call → null, never an exception. */
+export function readJson(storage: StorageLike | null, key: string): string | null {
+  if (!storage) return null;
+  try {
+    const v = storage.getItem(key);
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes `value` as JSON, or removes the key when `value` is null (T-06-06): false when it could not, never throws. */
+export function writeJson(storage: StorageLike | null, key: string, value: unknown): boolean {
+  if (!storage) return false;
+  try {
+    if (value === null) storage.removeItem(key);
+    else storage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
