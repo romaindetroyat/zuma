@@ -191,8 +191,12 @@ export function parseScores(raw: string | null): HighScore[] {
 
 // ------------------------------------------------------------------ profile and saved run (PROG-02)
 
-/** Local player profile: name typed once at the first launch (0x44a8b0), highest unlocked stage index. */
-export interface Profile { name: string; maxStage: number }
+/**
+ * Local player profile: name typed once at the first launch (0x44a8b0), highest unlocked stage index. `source` tells
+ * where the name came from: absent = typed on this device (never overwritten automatically), 'platform' = provided by
+ * the hosting platform (identity of the private host), 'default' = the « Joueur » fallback.
+ */
+export interface Profile { name: string; maxStage: number; source?: 'platform' | 'default' }
 export const PROFILE_KEY = 'zuma.profile.v1';
 /** Longest profile name kept (T-06-05). */
 const NAME_MAX = 16;
@@ -217,7 +221,9 @@ export function parseProfile(raw: string | null): Profile | null {
   if (!isRecord(data)) return null;
   const name = sanitizeName(data.name);
   if (name === null) return null;
-  return { name, maxStage: progressIndex(data.maxStage, 0, FINAL_STAGE_INDEX) };
+  const profile: Profile = { name, maxStage: progressIndex(data.maxStage, 0, FINAL_STAGE_INDEX) };
+  if (data.source === 'platform' || data.source === 'default') profile.source = data.source;
+  return profile;
 }
 
 /** Saved run: the game at the start of its current level (RunState JSON). */
@@ -265,4 +271,268 @@ export function writeJson(storage: StorageLike | null, key: string, value: unkno
   } catch {
     return false;
   }
+}
+
+// ------------------------------------------------------------------ application state machine (D-01..D-04, D-10, D-11)
+
+export type AppScreen = 'welcome' | 'adventure' | 'level' | 'temple' | 'ending';
+
+export interface AppState {
+  screen: AppScreen;
+  /** Modal dialogs over the welcome screen. */
+  prompt: 'name' | 'continue' | null;
+  profile: Profile | null;
+  scores: HighScore[];
+  /** Current run, saved at every level start; null when none. */
+  run: RunState | null;
+  /** Selected door / stage on the adventure screen. */
+  selected: number;
+  /** Door opening animation on arrival (stage index), else null. */
+  opening: number | null;
+  /** God dialogue shown on the 'temple' screen. */
+  temple: 1 | 2 | 3 | 4 | 5 | null;
+  ending: { score: number; rank: number | null } | null;
+  /** ?level= session: no write effects. */
+  review: boolean;
+  /** Levels per stage ([] without the pack: procedural levels, no adventure screen). */
+  sizes: readonly number[];
+  /** CANDIDATE.lives. */
+  startLives: number;
+}
+
+export type AppEvent =
+  | { kind: 'name'; name: string }
+  | { kind: 'profile-detected'; name: string }
+  | { kind: 'adventure' }
+  | { kind: 'continue' } | { kind: 'new-game' }
+  | { kind: 'select'; stage: number }
+  | { kind: 'play' } | { kind: 'main-menu' }
+  | { kind: 'won'; score: number; lives: number; date: string }
+  | { kind: 'retry'; lives: number }
+  | { kind: 'gameover'; score: number; date: string }
+  | { kind: 'leave' }
+  | { kind: 'temple-done' } | { kind: 'ending-done' };
+
+export type AppEffect =
+  | { kind: 'start-level'; run: RunState }
+  | { kind: 'save-run'; run: RunState | null }
+  | { kind: 'save-profile'; profile: Profile }
+  | { kind: 'save-scores'; scores: HighScore[] }
+  | { kind: 'sound'; key: 'templecomplete' | 'button' };
+
+type AppStep = { state: AppState; effects: AppEffect[] };
+
+/** Effects that write to the storage: dropped in review sessions (?level=) so the table is never polluted. */
+const WRITE_EFFECTS: ReadonlySet<AppEffect['kind']> = new Set(['save-run', 'save-profile', 'save-scores']);
+
+/**
+ * Profile after the hosting platform reported `raw` as the player's name: used (sanitised) when there is no profile,
+ * or when the stored name is the « Joueur » fallback or an older platform name; a name typed on this device is never
+ * replaced. Returns null when nothing changes.
+ */
+function platformProfile(profile: Profile | null, raw: unknown): Profile | null {
+  const name = sanitizeName(raw);
+  if (name === null) return null;
+  if (profile && profile.source === undefined) return null;
+  if (profile && profile.source === 'platform' && profile.name === name) return null;
+  return { name, maxStage: profile?.maxStage ?? 0, source: 'platform' };
+}
+
+/** Default door: the highest unlocked stage, within the progression. */
+function progressDefaultStage(state: Pick<AppState, 'profile' | 'sizes'>): number {
+  return progressIndex(state.profile?.maxStage ?? 0, 0, Math.max(0, state.sizes.length - 1));
+}
+
+/** Entry submitted at a game over (0x4283c4) or after the final STATS (0x440c6a): the profile name or « Joueur ». */
+function progressEntry(state: AppState, run: RunState, score: number, date: string): HighScore {
+  return { name: state.profile?.name ?? DEFAULT_PLAYER, score, stage: run.stage, level: run.level, date };
+}
+
+/**
+ * Boot. A review run (from ?level=) opens its level directly (screen 'level' + start-level, no write effect);
+ * otherwise the welcome screen — never a level before the player chooses (D-01) — with the name prompt when there is
+ * no profile. `platformName`, when the host provides the player's identity, is used instead of the prompt (see
+ * platformProfile) and persisted like a typed name.
+ */
+export function initialApp(input: {
+  profile: Profile | null;
+  save: RunState | null;
+  scores: HighScore[];
+  sizes: readonly number[];
+  startLives: number;
+  review: RunState | null;
+  platformName?: unknown;
+}): AppStep {
+  const effects: AppEffect[] = [];
+  let profile = input.profile;
+  const detected = platformProfile(profile, input.platformName);
+  if (detected) {
+    profile = detected;
+    effects.push({ kind: 'save-profile', profile: detected });
+  }
+  const base = {
+    profile,
+    scores: input.scores,
+    opening: null,
+    temple: null,
+    ending: null,
+    sizes: input.sizes,
+    startLives: input.startLives,
+  };
+  if (input.review) {
+    const state: AppState = { ...base, screen: 'level', prompt: null, run: input.review, selected: input.review.stage, review: true };
+    effects.push({ kind: 'start-level', run: input.review });
+    return { state, effects: effects.filter(e => !WRITE_EFFECTS.has(e.kind)) };
+  }
+  const state: AppState = {
+    ...base,
+    screen: 'welcome',
+    prompt: profile ? null : 'name',
+    run: input.save,
+    selected: input.save?.stage ?? progressDefaultStage({ profile, sizes: input.sizes }),
+    review: false,
+  };
+  return { state, effects };
+}
+
+/** Starts `run` on the level screen: the run is saved first (level start, 0x41d325), except without stages. */
+function progressStart(state: AppState, run: RunState, patch: Partial<AppState> = {}): AppStep {
+  const effects: AppEffect[] = state.sizes.length > 0 ? [{ kind: 'save-run', run }] : [];
+  effects.push({ kind: 'start-level', run });
+  return { state: { ...state, ...patch, screen: 'level', prompt: null, run, opening: null, temple: null }, effects };
+}
+
+const isLives = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 99;
+
+function progressReduce(state: AppState, event: AppEvent): AppStep {
+  const same: AppStep = { state, effects: [] };
+  const staged = state.sizes.length > 0;
+  switch (event.kind) {
+    case 'name': {
+      // Name dialog OK, first launch or rename from the welcome line (Q4: no name entry at record time).
+      if (state.screen !== 'welcome' || state.prompt === 'continue') return same;
+      const name = sanitizeName(event.name);
+      const profile: Profile = name !== null
+        ? { name, maxStage: state.profile?.maxStage ?? 0 }
+        : { name: DEFAULT_PLAYER, maxStage: state.profile?.maxStage ?? 0, source: 'default' };
+      return { state: { ...state, profile, prompt: null }, effects: [{ kind: 'save-profile', profile }] };
+    }
+    case 'profile-detected': {
+      // Identity reported by the host after boot: any screen; closes a pending name prompt.
+      const profile = platformProfile(state.profile, event.name);
+      if (!profile) return same;
+      const prompt = state.prompt === 'name' ? null : state.prompt;
+      return { state: { ...state, profile, prompt }, effects: [{ kind: 'save-profile', profile }] };
+    }
+    case 'adventure': {
+      // Welcome: AVENTURE stone → ShowAdventureScreen(resume = 1, stageDone = 0) 0x44f180; a saved run is offered
+      // first (0x44ef40, DO_YOU_WANT_TO_CONTINUE_YOUR_LAST_GAME_?). Without stages: straight to the first level (D-02).
+      if (state.screen !== 'welcome' || state.prompt !== null) return same;
+      if (!staged) return progressStart(state, { stage: 0, level: 0, score: 0, lives: state.startLives });
+      if (state.run) return { state: { ...state, prompt: 'continue' }, effects: [] };
+      return { state: { ...state, screen: 'adventure', selected: progressDefaultStage(state), opening: null }, effects: [] };
+    }
+    case 'continue':
+      if (state.prompt !== 'continue' || !state.run) return same;
+      return progressStart(state, state.run);
+    case 'new-game':
+      if (state.prompt !== 'continue') return same;
+      return {
+        state: { ...state, prompt: null, run: null, screen: 'adventure', selected: progressDefaultStage(state), opening: null },
+        effects: [{ kind: 'save-run', run: null }],
+      };
+    case 'select': {
+      // Unlocked doors are clickable (research A5, MEDIUM): stage ≤ maxStage, one of the 12 doors.
+      if (state.screen !== 'adventure') return same;
+      const stage = event.stage;
+      if (typeof stage !== 'number' || !Number.isInteger(stage) || stage < 0 || stage >= DOOR_COUNT) return same;
+      if (stage >= state.sizes.length || stage > (state.profile?.maxStage ?? 0) || stage === state.selected) return same;
+      return { state: { ...state, selected: stage }, effects: [] };
+    }
+    case 'play': {
+      // JOUER: the run of the selected stage goes on; another door starts a new game there.
+      if (state.screen !== 'adventure') return same;
+      const run = state.run && state.run.stage === state.selected
+        ? state.run
+        : { stage: state.selected, level: 0, score: 0, lives: state.startLives };
+      return progressStart(state, run);
+    }
+    case 'main-menu':
+      if (state.screen !== 'adventure') return same;
+      return { state: { ...state, screen: 'welcome', opening: null }, effects: [] };
+    case 'won': {
+      if (state.screen !== 'level' || !state.run) return same;
+      const route = afterWin(state.run, event.score, event.lives, state.sizes);
+      if (route.kind === 'next-level') return progressStart(state, route.run);
+      if (route.kind === 'final') {
+        // Last stage (0x44f530: stage ≥ 12 → ending): score submitted after the final STATS (0x440c6a), save cleared.
+        const { list, rank } = insertScore(state.scores, progressEntry(state, state.run, event.score, event.date));
+        return {
+          state: { ...state, screen: 'temple', temple: 5, run: null, scores: list, ending: { score: event.score, rank }, opening: null },
+          effects: [{ kind: 'save-scores', scores: list }, { kind: 'save-run', run: null }, { kind: 'sound', key: 'templecomplete' }],
+        };
+      }
+      // Stage done (plateau+0x186, A1): next stage saved (0x41d325), next door unlocked, adventure screen with its
+      // opening (0x44f180(0, 1)), after the god dialogue when the stage closes a temple (SOUND_TEMPLE_COMPLETE).
+      const next = route.run.stage;
+      const unlocked = Math.min(next, state.sizes.length - 1, FINAL_STAGE_INDEX);
+      const effects: AppEffect[] = [{ kind: 'save-run', run: route.run }];
+      let profile = state.profile;
+      if (!profile || profile.maxStage < unlocked) {
+        profile = profile ? { ...profile, maxStage: unlocked } : { name: DEFAULT_PLAYER, maxStage: unlocked, source: 'default' };
+        effects.push({ kind: 'save-profile', profile });
+      }
+      if (route.temple === null) {
+        return { state: { ...state, screen: 'adventure', run: route.run, profile, selected: next, opening: next }, effects };
+      }
+      effects.push({ kind: 'sound', key: 'templecomplete' });
+      return { state: { ...state, screen: 'temple', temple: route.temple, run: route.run, profile, selected: next, opening: null }, effects };
+    }
+    case 'retry': {
+      // A life lost, lives remain: the same level again with the score of its start, saved.
+      if (state.screen !== 'level' || !state.run || !isLives(event.lives)) return same;
+      return progressStart(state, { ...state.run, lives: event.lives });
+    }
+    case 'gameover': {
+      // Last life lost (0x4283c4): the score enters the table, the saved run is cleared; the STATS stays on screen.
+      if (state.screen !== 'level' || !state.run) return same;
+      const { list } = insertScore(state.scores, progressEntry(state, state.run, event.score, event.date));
+      return {
+        state: { ...state, run: null, scores: list, selected: progressDefaultStage(state) },
+        effects: [{ kind: 'save-scores', scores: list }, { kind: 'save-run', run: null }],
+      };
+    }
+    case 'leave': {
+      // Game-over STATS closed, or « Retour au menu principal » confirmed: adventure screen (0x44f180(0, 0)); a run
+      // in progress stays saved at the start of its level. Without stages: welcome screen.
+      if (state.screen !== 'level') return same;
+      if (!staged) return { state: { ...state, screen: 'welcome', run: null }, effects: [] };
+      if (state.run) {
+        return { state: { ...state, screen: 'adventure', selected: state.run.stage, opening: null }, effects: [{ kind: 'save-run', run: state.run }] };
+      }
+      return { state: { ...state, screen: 'adventure', selected: progressDefaultStage(state), opening: null }, effects: [] };
+    }
+    case 'temple-done': {
+      if (state.screen !== 'temple') return same;
+      if (state.temple === 5) return { state: { ...state, screen: 'ending', temple: null }, effects: [] };
+      const next = state.run ? state.run.stage : progressDefaultStage(state);
+      return { state: { ...state, screen: 'adventure', temple: null, selected: next, opening: next }, effects: [] };
+    }
+    case 'ending-done':
+      // End of the ending screen → main menu (0x44b3e0); the run is over.
+      if (state.screen !== 'ending') return same;
+      return { state: { ...state, screen: 'welcome', run: null, ending: null, opening: null }, effects: [] };
+    default:
+      return same;
+  }
+}
+
+/**
+ * Pure transition: unknown or out-of-place events return the same state object and no effect; the received state is
+ * never mutated. In a review session (?level=) the write effects are dropped (start-level and sounds remain).
+ */
+export function reduceApp(state: AppState, event: AppEvent): AppStep {
+  const next = progressReduce(state, event);
+  if (next.state === state) return { state, effects: [] };
+  return { state: next.state, effects: state.review ? next.effects.filter(e => !WRITE_EFFECTS.has(e.kind)) : next.effects };
 }
