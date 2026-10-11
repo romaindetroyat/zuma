@@ -205,9 +205,10 @@ test('several chains: only the pusher of the chain whose rear ball is removed st
 
 // ------------------------------------------------------------ baseline
 
-test('baseline 2.0.21: ENGINE_VERSION and package.json agree', () => {
+// R2.0.22: r222 locks '2.0.22'; this one only checks that the baseline moved past 2.0.21 and still agrees with the package.
+test('baseline 2.0.21 superseded: ENGINE_VERSION is newer and agrees with package.json', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(ENGINE_VERSION, '2.0.21');
-  assert.equal(pkg.version, '2.0.21');
-  assert.match(pkg.description, /^Zuma R2\.0\.21 /);
+  assert.ok(ENGINE_VERSION > '2.0.21', ENGINE_VERSION);
+  assert.equal(pkg.version, ENGINE_VERSION);
+  assert.match(pkg.description, new RegExp(`^Zuma R${ENGINE_VERSION.replaceAll('.', '\\.')} `));
 });
