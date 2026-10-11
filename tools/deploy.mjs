@@ -297,7 +297,8 @@ export async function run(argv, deps = {}) {
         return 1;
       }
       account = accounts[0].id;
-      log(`compte : ${accounts[0].name} (${account})`);
+      // The account name often embeds the owner's e-mail address: only the masked id is logged.
+      log(`compte : ${account} (seul compte visible)`);
     } else log(`compte : ${account} (CLOUDFLARE_ACCOUNT_ID)`);
     const A = `/accounts/${account}`;
     const org = await api('GET', `${A}/access/organizations`);

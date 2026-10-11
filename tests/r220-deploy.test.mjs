@@ -310,7 +310,7 @@ function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type:
     calls.push({ method, path: p, body: o.body, form: o.form, bearer: o.bearer });
     if (errorWith && errorWith.method === method && p.startsWith(errorWith.prefix)) throw fail(errorWith.status, `Authentication error on ${p} with Authorization: Bearer secret-token-123456`);
     if (p === '/user/tokens/verify') return { status: 'active' };
-    if (p === '/accounts') return Array.from({ length: accounts }, (_, i) => ({ id: i === 0 ? ACC : `${i}`.repeat(32), name: `Compte ${i}` }));
+    if (p === '/accounts') return Array.from({ length: accounts }, (_, i) => ({ id: i === 0 ? ACC : `${i}`.repeat(32), name: `${ME}'s Account` }));
     if (p === `${A}/access/organizations`) return { auth_domain: AUTH, name: 'team' };
     if (p === `${A}/pages/projects/zuma` && method === 'GET') { if (!s.project) throw fail(404, 'Project not found'); return s.project; }
     if (p === `${A}/pages/projects` && method === 'POST') {
@@ -622,6 +622,7 @@ test('the whole output of a run never contains the upload JWT, the token or the 
   assert.ok(!all.includes(cloud.jwt), 'no JWT');
   assert.doesNotMatch(all, /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./);
   assert.ok(!all.includes(ACC), 'no account id');
+  assert.ok(!all.includes(ME), 'no e-mail address (the account name embeds it)');
 });
 
 test('redact masks JWTs, Authorization values and 32+ hex identifiers, keeping the last 4 characters', () => {
