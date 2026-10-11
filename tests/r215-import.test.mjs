@@ -91,7 +91,8 @@ test('importer uses the default FONTS list and survives a tree without fonts/ or
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
-  assert.deepEqual(FONTS, ['NativeAlienExtended18', 'Cancun12', 'Cancun10', 'Arial12Bold', 'CancunFloat14']);
+  // R2.0.21 (D-05): NativeAlienExtended16 (welcome line), NativeAlien48 and Cancun8 (adventure / ending screens) added.
+  assert.deepEqual(FONTS, ['NativeAlienExtended18', 'Cancun12', 'Cancun10', 'Arial12Bold', 'CancunFloat14', 'NativeAlienExtended16', 'NativeAlien48', 'Cancun8']);
 });
 
 test('sound map carries the coin and stats cues', () => {
