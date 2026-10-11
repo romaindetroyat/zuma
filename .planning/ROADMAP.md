@@ -114,7 +114,15 @@ Plans:
   2. Sur la version hébergée, les meilleurs scores et temps sont communs à tous les joueurs invités, et chacun retrouve aussi ses records personnels sur tous ses appareils
   3. Hors ligne, le jeu fonctionne et envoie les nouveaux records au retour du réseau ; le standalone reste local
   4. Aucune adresse n'est stockée ni commitée ; le prénom est apposé par le serveur
-**Plans:** TBD (contexte : `phases/06.1-records-partages/06.1-CONTEXT.md`)
+**Plans:** 6 plans (contexte : `phases/06.1-records-partages/06.1-CONTEXT.md`)
+
+Plans:
+- [ ] 06.1-01-PLAN.md — Règles client pures (`src/records.ts`) : copie du serveur, file « le meilleur gagne » dans `zuma.records.v1`, bornes D-10, vues TOUS / MOI, meilleur temps avec son auteur, reprise D-08, client `api/records` à fetch injecté ; effet `record-score` de la machine d'états (vague 1)
+- [ ] 06.1-02-PLAN.md — Worker : `GET/POST /api/records` sur la base `SCORES_DB` (`tools/recordsapi.mjs`), prénom apposé depuis `players`, Origin / JSON / taille / bornes / débit par identité, SQL fermé testé sur SQLite ; service worker qui laisse passer `/api/` (vague 1)
+- [ ] 06.1-03-PLAN.md — Déploiement : base `zuma-scores` + schéma + liaison `SCORES_DB` idempotents dans `tools/deploy.mjs`, niveaux du pack transmis au worker, `--plan` / `--dry-run` / `--rollback-plan` / `--verify` à jour, garanties (aucun DELETE, SQL limité) (vague 2)
+- [ ] 06.1-04-PLAN.md — Affichage d'origine : prénom de l'auteur et record personnel dans la grille du STATS, portée TOUS / MOI sur les plaques RECORDS (aventure, fin) et hit-tests (vague 1)
+- [ ] 06.1-05-PLAN.md — Branchement `main.ts` : file des scores et temps, synchronisation non bloquante (chargement, `online`, après chaque niveau), reprise D-08, STATS, plaques et bascule ; contrat client ↔ worker de bout en bout ; preuves Playwright DPR 2 avec `api/records` simulé (vague 2)
+- [ ] 06.1-06-PLAN.md — Livraison R2.0.22 : baseline, notes, README (hébergement, records, ajout d'un joueur), CONCERNS, `06.1-UAT.md`, standalone, `--deploy` + `--dry-run`, déploiement réel par l'orchestrateur après accord (vague 3)
 
 #### Phase 7: Finitions audio, visuelles et mobiles
 **Goal**: Musique, animations secondaires, ergonomie tactile, captures automatisées
