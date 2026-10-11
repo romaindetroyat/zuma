@@ -291,7 +291,8 @@ test('rampPlan: a ramp only when the loop target changes — 50 ms in to ROLLING
   const start = audio.indexOf('setLoop(key, level)');
   const body = audio.slice(start, audio.indexOf('pulse(key, level)', start));
   assert.match(body, /idleSince: null, target: 0/, 'Loop carries its target');
-  assert.match(body, /rampPlan\(loop\.target, target\)/, 'planned from the previous target');
+  // R2.0.21 (D-11): each loop key has its own full gain (rolling = ROLLING_GAIN, ufo = UFO_GAIN).
+  assert.match(body, /rampPlan\(loop\.target, target, LOOP_GAINS\[key\]\)/, 'planned from the previous target');
   assert.equal((body.match(/cancelScheduledValues/g) || []).length, 1);
   assert.ok(body.indexOf('if (plan)') > 0 && body.indexOf('if (plan)') < body.indexOf('cancelScheduledValues'), 'the running ramp is cancelled only when a new one is planned');
   assert.match(body, /loop\.target = target/);

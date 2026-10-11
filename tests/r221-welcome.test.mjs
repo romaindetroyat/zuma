@@ -432,8 +432,8 @@ test('main.js: boot through initialApp, every transition through reduceApp, the 
   assert.match(main, /parseScores\(readJson\(/);
   assert.match(main, /levels\.length\)/, 'stage sizes from the pack');
   const loop = method(main, '    loop(time) {');
-  assert.match(loop, /drawScene\(/);
-  assert.match(main, /drawWelcome\(/);
+  assert.match(loop, /drawWelcomeFrame\(time\)/);
+  assert.match(method(main, '    drawWelcomeFrame(time) {'), /drawScene\([\s\S]*drawWelcome\(/, 'the welcome frame is painted through drawScene');
   const branch = loop.indexOf("screen !== 'level'");
   const engineExit = loop.indexOf('!engine');
   assert.ok(branch > 0 && engineExit > branch, 'the welcome is drawn before the engine early exit');
@@ -447,7 +447,8 @@ test('main.js: boot through initialApp, every transition through reduceApp, the 
   assert.match(main, /kind: 'play'/);
   // The end of a level goes through the machine (saved run kept in step): won / retry / gameover / leave.
   for (const kind of ['won', 'retry', 'gameover', 'leave']) assert.match(main, new RegExp(`kind: '${kind}'`), kind);
-  assert.doesNotMatch(main, /progress = \{ stage: 0, level: 0 \};\n/, 'no wrap-around from 13-1 to 1-1');
+  assert.doesNotMatch(main, /this\.progress = \{ stage: 0, level: 0 \}/, 'no wrap-around from 13-1 to 1-1');
+  assert.doesNotMatch(main, /nextLevel\(|retryLevel\(|newGame\(/, 'the old lifecycle is gone');
 });
 
 test('main.js: OPTIONS out of game from the welcome, hover sounds choral at 0.2 transposed, click button1, UFO loop, keyboard on the stones', () => {

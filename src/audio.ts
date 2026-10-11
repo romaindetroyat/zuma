@@ -101,7 +101,8 @@ export function warningGain(_level?: number): number {
   return WARNING_GAIN;
 }
 
-export type LoopKey = 'rolling';
+/** Looping pack sounds: the chain rolling (D-17) and the UFO of the main menu (`ufo1`, R2.0.21, spike 06 Q1). */
+export type LoopKey = 'rolling' | 'ufo';
 export type PulseKey = 'warning';
 
 /**
@@ -129,10 +130,15 @@ export function loopLevels(input: { speed: number; playing: boolean }): { rollin
  * down to 0. Re-arming the ramp every frame restarted the 150 ms fade from the current value
  * (exponential-like decay, deferred-items 05-07): the ramp is now armed once per target change.
  */
-export function rampPlan(previous: number | null, target: number): { to: number; seconds: number } | null {
+export function rampPlan(previous: number | null, target: number, gain = ROLLING_GAIN): { to: number; seconds: number } | null {
   if ((previous ?? 0) === target) return null;
-  return target > 0 ? { to: target * ROLLING_GAIN, seconds: ROLLING_ATTACK_SECONDS } : { to: 0, seconds: ROLLING_FADE_SECONDS };
+  return target > 0 ? { to: target * gain, seconds: ROLLING_ATTACK_SECONDS } : { to: 0, seconds: ROLLING_FADE_SECONDS };
 }
+
+/** Gain of the UFO loop of the main menu at level 1 (plan choice: the original level of SOUND_UFO was not read). */
+export const UFO_GAIN = 0.8;
+/** Full-level gain of each loop. */
+const LOOP_GAINS: Record<LoopKey, number> = { rolling: ROLLING_GAIN, ufo: UFO_GAIN };
 
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
@@ -472,7 +478,7 @@ export class AudioManager {
   }
 
   /**
-   * Drives a looping pack sound (rolling) at pitch 1. `level` 0..1 scales ROLLING_GAIN:
+   * Drives a looping pack sound (rolling, ufo) at pitch 1. `level` 0..1 scales the loop's gain (LOOP_GAINS):
    * a rising target ramps in over 50 ms, a nil target fades out over ROLLING_FADE_SECONDS
    * (D-17), each ramp armed once per target change (rampPlan); a loop left at 0 for
    * LOOP_IDLE_SECONDS is stopped (the idle clock runs on every call).
@@ -499,7 +505,7 @@ export class AudioManager {
     if (!ctx) return;
     const now = ctx.currentTime;
     const g = loop.gain.gain;
-    const plan = rampPlan(loop.target, target);
+    const plan = rampPlan(loop.target, target, LOOP_GAINS[key]);
     if (plan) {
       g.cancelScheduledValues(now);
       g.setValueAtTime(g.value, now);

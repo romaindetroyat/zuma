@@ -10,6 +10,8 @@ import { applyUpdate, fitArea, formatSize, installGuidance, needsRotation, offli
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, LONG_PRESS_IDLE, LONG_PRESS_MS, Renderer, WIDTH, HEIGHT, fitScale, frogHit, longPress, stagePoint, type FloatingText, type LongPressInput, type LongPressState, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
+import { HIGHSCORE_KEY, PROFILE_KEY, SAVE_KEY, initialApp, parseProfile, parseSave, parseScores, readJson, reduceApp, sanitizeName, writeJson, type AppEffect, type AppEvent, type AppScreen, type AppState, type RunState, type StorageLike } from './progress.js';
+import { MM, continueDialogWidgets, drawContinueDialog, drawNameDialog, drawWelcome, loadWelcomeKit, mmHoverSequence, mmUfo, nameDialogWidgets, upscaleWelcomeKit, welcomeHit, welcomeLineWidth, type EyeMode, type MmStone, type MmStoneId, type PromptView, type UfoState, type WelcomeKit, type WelcomeView } from './welcome.js';
 
 declare const __BUILD__: string;
 /** `beforeinstallprompt` (Chromium, Edge, Android): kept to show « Installer Zuma » (D-38 §1). */
@@ -17,6 +19,10 @@ interface InstallPromptEvent extends Event { prompt(): Promise<unknown>; userCho
 /** localStorage key set when the player closes the install card on the start screen. */
 const INSTALL_HIDDEN_KEY = 'zuma.install.hidden';
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
+/** D-12: the welcome screen waits at most this long (ms) for the platform first name before showing the name prompt. */
+const PLATFORM_NAME_TIMEOUT = 1500;
+/** D-12: the identity request itself is abandoned after this long; an answer between the two arrives as `profile-detected`. */
+const PLATFORM_NAME_ABORT = 8000;
 
 interface ResolvedLevel {
   /** Stable identifier for per-level persistence (pack graphics id, or `proc-N`). */
@@ -31,6 +37,24 @@ interface ResolvedLevel {
 }
 
 interface Progress { stage: number; level: number }
+
+/** Presentation state of the main menu: hover / press / keyboard focus, eyes, UFO and the hover-order counter. */
+interface WelcomeUi {
+  hover: MmStoneId | null;
+  /** Enabled stone or 'welcome-line' pressed by the pointer (activation when released over it). */
+  pressed: string | null;
+  focus: MmStoneId | null;
+  eyes: EyeMode;
+  target: Point | null;
+  ufo: UfoState;
+  seq: { expect: number; laps: number };
+  /** Last stone entered for the hover sequence (moving across the empty space between two stones is not a new entry). */
+  lastSeqStone: MmStoneId | null;
+}
+
+function freshWelcomeUi(): WelcomeUi {
+  return { hover: null, pressed: null, focus: null, eyes: 'rest', target: null, ufo: { phase: 'idle', t0: 0 }, seq: { expect: 0, laps: 0 }, lastSeqStone: null };
+}
 
 const TIPS = [
   'Les balles de même couleur s\'attirent et créent des réactions en chaîne.',
@@ -115,6 +139,27 @@ class Game {
   private pixelated = false;
   /** Ball id → arc position at the previous frame, to measure the chain speed for the rolling loop. */
   private lastPositions = new Map<number, number>();
+  /**
+   * R2.0.21 (D-01): application state of plan 06-02 (screen, prompt, profile, scores, saved run). Replaced at boot by
+   * initialApp; every transition goes through reduceApp and its effects are performed by `applyEffect`.
+   */
+  private app: AppState = initialApp({ profile: null, save: null, scores: [], sizes: [], startLives: CANDIDATE.lives, review: null }).state;
+  /** performance.now() when the current screen was entered: the welcome counter counts 10 ms maj from it. */
+  private screenT0 = 0;
+  /** Browser storage (null when unavailable); only read / written through readJson / writeJson (T-06-06). */
+  private readonly storage: StorageLike | null = openStorage();
+  /** Main-menu kit (1 × and its 2 × EPX copy, like the STATS); null → vector welcome. */
+  private welcomeKitBase: WelcomeKit | null = null;
+  private welcomeKitHd: WelcomeKit | null = null;
+  private welcomeKit: WelcomeKit | null = null;
+  private welcome: WelcomeUi = freshWelcomeUi();
+  /** Rename dialog opened from the welcome line (the machine's prompt stays null). */
+  private renaming = false;
+  /** Dialog shown last (to reset its hover / focus when another opens) and its widget state; `text` = sanitised field. */
+  private shownPrompt: PromptView['kind'] | null = null;
+  private promptUi: { hover: string | null; pressed: string | null; focus: string | null; text: string } = { hover: null, pressed: null, focus: null, text: '' };
+  /** Invisible text field over the name box: brings up the mobile keyboard; its value is only read through sanitizeName. */
+  private nameInput: HTMLInputElement | null = null;
 
   constructor() {
     const canvas = document.getElementById('game');
@@ -130,6 +175,7 @@ class Game {
     this.bindInput();
     this.bindPanels();
     this.bindMenu();
+    this.bindPrompt();
     this.bindInstall();
     this.bindScaling();
     this.applyScaling();
@@ -173,6 +219,8 @@ class Game {
     const menu = this.menuKitBase;
     const statsHd = this.statsKitHd;
     this.menuKit = menu && hd && statsHd ? (this.menuKitHd ??= upscaleMenuKit(menu, statsHd)) : menu;
+    const welcome = this.welcomeKitBase;
+    this.welcomeKit = welcome && hd ? (this.welcomeKitHd ??= upscaleWelcomeKit(welcome, this.statsKitHd)) : welcome;
   }
 
   private bindScaling(): void {
@@ -219,22 +267,29 @@ class Game {
   }
 
   async start(): Promise<void> {
+    // D-12: the platform first name is asked first (hosted build only); the boot waits for it at most PLATFORM_NAME_TIMEOUT.
+    const deadline = performance.now() + PLATFORM_NAME_TIMEOUT;
+    const platformName = fetchPlatformName();
     this.pack = await OriginalPack.load();
     await this.audio.discover();
     if (this.pack) {
       this.strings = await this.pack.strings();
       this.baseAssets = await this.loadAssets(this.pack);
       this.applyHd();
-      // Loaded in the background: a STATS opened before the kit is ready uses the vector panel, the menu its vector dialog.
+      // R2.0.21: the main menu and its dialogs are the first screen, so their pieces are awaited; the in-game menu
+      // kit still loads in the background (a menu opened before it is ready uses its vector dialog).
       const pack = this.pack;
-      void loadStatsKit(pack).then(async kit => {
-        this.statsKitBase = kit;
-        this.applyHd();
-        if (!kit) return;
-        this.menuKitBase = await loadMenuKit(pack, kit);
-        this.applyHd();
-        if (this.menuOpen) this.renderMenu();
-      });
+      const kit = await loadStatsKit(pack);
+      this.statsKitBase = kit;
+      this.welcomeKitBase = await loadWelcomeKit(pack, kit);
+      this.applyHd();
+      if (kit) {
+        void loadMenuKit(pack, kit).then(menu => {
+          this.menuKitBase = menu;
+          this.applyHd();
+          if (this.menuOpen) this.renderMenu();
+        });
+      }
     }
     this.badge = `R${ENGINE_VERSION} · ${BUILD}${this.pack ? ' · ressources originales' : ' · rendu vectoriel'}`;
     // R2.0.20 (D-38 §2): storage kept for offline play, its size shown in the help view.
@@ -248,15 +303,40 @@ class Game {
     let hidden = false;
     try { hidden = localStorage.getItem(INSTALL_HIDDEN_KEY) === '1'; } catch { /* storage unavailable */ }
     if (guidance !== 'installed' && guidance !== 'none' && !hidden) await this.showInstallCard('start');
+    const early = await Promise.race([platformName, bootDelay(deadline - performance.now()).then(() => undefined)]);
     this.loading = false;
-    await this.newGame();
+    // R2.0.21 (D-01): the app opens on the main menu (or directly on the ?level= review level).
+    this.boot(early ?? null);
+    if (early === undefined) void platformName.then(name => { if (name) this.dispatch({ kind: 'profile-detected', name }); });
     document.getElementById('boot')?.classList.add('hidden');
     requestAnimationFrame(t => this.loop(t));
   }
 
+  /**
+   * Builds the application state from the storage (defensive parsers of plan 06-02) and the pack's stage sizes, then
+   * performs the boot effects: the welcome screen with the one-time name prompt when there is no profile, or the
+   * review level of `?level=` (no write effect).
+   */
+  private boot(platformName: string | null): void {
+    const sizes = this.pack?.hasStages ? this.pack.data.stages.map(s => s.levels.length) : [];
+    const { state, effects } = initialApp({
+      profile: parseProfile(readJson(this.storage, PROFILE_KEY)),
+      save: parseSave(readJson(this.storage, SAVE_KEY), sizes),
+      scores: parseScores(readJson(this.storage, HIGHSCORE_KEY)),
+      sizes,
+      startLives: CANDIDATE.lives,
+      review: this.requestedRun(),
+      platformName,
+    });
+    this.app = state;
+    this.enterScreen(state.screen);
+    for (const effect of effects) this.applyEffect(effect);
+    this.syncPrompt();
+  }
+
   /** Read-only view for review (`?debug=1`, T-05-10): the running engine and the resolved level. */
-  debugState(): { engine: ZumaEngine | null; level: ResolvedLevel | null } {
-    return { engine: this.engine, level: this.level };
+  debugState(): { engine: ZumaEngine | null; level: ResolvedLevel | null; app: AppState } {
+    return { engine: this.engine, level: this.level, app: this.app };
   }
 
   // ----------------------------------------------------------------- assets
@@ -328,29 +408,29 @@ class Game {
     };
   }
 
-  private async newGame(): Promise<void> {
-    this.progress = this.requestedProgress();
-    this.levelIndex = 0;
-    this.lives = CANDIDATE.lives;
-    this.carriedScore = 0;
-    await this.startLevel();
-  }
-
   /**
-   * `?level=S-L` (e.g. `1-3`) opens a pack level directly for review. Ignored
-   * without a pack, when malformed or out of the pack's stage/level bounds (T-04-10).
+   * `?level=S-L` (e.g. `1-3`) opens a pack level directly for review: a run at its start with the default lives, or
+   * null (the welcome screen) without a pack, when malformed or out of the pack's stage/level bounds (T-04-10).
    */
-  private requestedProgress(): Progress {
-    const first: Progress = { stage: 0, level: 0 };
-    if (!this.pack?.hasStages) return first;
+  private requestedRun(): RunState | null {
+    if (!this.pack?.hasStages) return null;
     let raw: string | null = null;
-    try { raw = new URLSearchParams(location.search).get('level'); } catch { return first; }
-    if (!raw || !/^\d+-\d+$/.test(raw)) return first;
+    try { raw = new URLSearchParams(location.search).get('level'); } catch { return null; }
+    if (!raw || !/^\d+-\d+$/.test(raw)) return null;
     const [stage, level] = raw.split('-').map(Number);
     const stages = this.pack.data.stages;
-    if (stage < 1 || stage > stages.length) return first;
-    if (level < 1 || level > stages[stage - 1].levels.length) return first;
-    return { stage: stage - 1, level: level - 1 };
+    if (stage < 1 || stage > stages.length) return null;
+    if (level < 1 || level > stages[stage - 1].levels.length) return null;
+    return { stage: stage - 1, level: level - 1, score: 0, lives: CANDIDATE.lives };
+  }
+
+  /** `start-level` effect: the run's position, lives and score at the start of its level, then the level itself. */
+  private async beginRun(run: RunState): Promise<void> {
+    this.progress = { stage: run.stage, level: run.level };
+    this.levelIndex = run.level;
+    this.lives = run.lives;
+    this.carriedScore = run.score;
+    await this.startLevel();
   }
 
   private async startLevel(): Promise<void> {
@@ -383,32 +463,16 @@ class Game {
     this.audio.play({ key: 'gamestart', gain: 0.7, rate: 1 });
   }
 
-  private async nextLevel(): Promise<void> {
-    if (!this.engine) return;
-    this.carriedScore = this.engine.score;
-    this.lives = this.engine.lives;
-    if (this.pack?.hasStages) {
-      const stages = this.pack.data.stages;
-      const stage = stages[Math.min(this.progress.stage, stages.length - 1)];
-      if (this.progress.level + 1 < stage.levels.length) this.progress.level++;
-      else if (this.progress.stage + 1 < stages.length) this.progress = { stage: this.progress.stage + 1, level: 0 };
-      else this.progress = { stage: 0, level: 0 };
-    } else {
-      this.levelIndex++;
-    }
-    await this.startLevel();
-  }
-
-  private async retryLevel(): Promise<void> {
-    if (!this.engine) return;
-    this.lives = this.engine.lives;
-    await this.startLevel();
-  }
-
   // ------------------------------------------------------------------- loop
 
   private loop(time: number): void {
     requestAnimationFrame(t => this.loop(t));
+    // R2.0.21 (D-01): off the level screen the main menu is drawn; no engine exists or steps.
+    if (this.app.screen !== 'level') {
+      this.lastTime = time;
+      this.drawWelcomeFrame(time);
+      return;
+    }
     const engine = this.engine;
     if (!engine || !this.level) return;
     const dt = this.lastTime ? Math.min(0.1, (time - this.lastTime) / 1000) : 0;
@@ -659,13 +723,22 @@ class Game {
       if (this.menuPress.phase === 'pending') this.menuPressStep({ kind: 'move', id: ev.pointerId, x: ev.clientX, y: ev.clientY, inside: this.overMenuButton(ev) });
       if (this.menuOpen || this.statsOpen || this.installOpen) return;
       this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
+      if (this.app.screen !== 'level') {
+        this.welcomeMove(this.pointer, ev.pointerType === 'touch');
+        return;
+      }
       this.engine?.command({ kind: 'aim', ...this.pointer });
     });
     window.addEventListener('pointerdown', ev => {
       this.audio.unlock();
       if (this.loading || this.menuOpen || this.statsOpen || this.installOpen || this.rotateOpen) return;
+      if (ev.target === this.nameInput) return; // the name field keeps its native focus (mobile keyboard)
       if (ev.pointerType === 'mouse') ev.preventDefault(); // no text selection while playing
       const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
+      if (this.app.screen !== 'level') {
+        this.welcomeDown(p, ev.button);
+        return;
+      }
       if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
       if (ev.button !== 0) return;
       const button = this.renderer.hitTest(p.x, p.y);
@@ -696,6 +769,8 @@ class Game {
     });
     window.addEventListener('pointerup', ev => {
       if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'up', id: ev.pointerId, t: performance.now(), inside: this.overMenuButton(ev) });
+      if (this.app.screen === 'level' || this.loading || this.menuOpen || this.installOpen || this.rotateOpen || ev.target === this.nameInput) return;
+      this.welcomeUp(stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect()));
     });
     window.addEventListener('pointercancel', ev => {
       if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'cancel', id: ev.pointerId });
@@ -709,6 +784,10 @@ class Game {
       if (this.rotateOpen) return;
       if (this.menuOpen) {
         if (this.menuKey(ev.code)) ev.preventDefault();
+        return;
+      }
+      if (this.app.screen !== 'level') {
+        if (this.welcomeKey(ev.code)) ev.preventDefault();
         return;
       }
       const dialogKey = ev.code === 'Space' || ev.code === 'Enter' || ev.code === 'NumpadEnter' || ev.code === 'Escape' || ev.code === 'Tab';
@@ -787,6 +866,359 @@ class Game {
     }
   }
 
+  // ------------------------------------------------- application state and main menu (R2.0.21, D-01, D-11)
+
+  /**
+   * One transition of the state machine (plan 06-02): the new state, the screen entry, the effects, the dialogs.
+   * Transitional until plan 06-04 Task 3 draws them: the adventure, temple and ending screens are passed through —
+   * « Aventure », « Rejouer » or a finished stage go straight to the level of the selected door (D-02 « directly to the
+   * level »), leaving a level (« Retour au menu principal », game over) comes back to the main menu.
+   */
+  private dispatch(event: AppEvent): void {
+    const before = this.app;
+    const { state, effects } = reduceApp(before, event);
+    if (state === before) return;
+    this.app = state;
+    if (state.screen !== before.screen) this.enterScreen(state.screen);
+    for (const effect of effects) this.applyEffect(effect);
+    this.syncPrompt();
+    if (state.screen === 'temple') this.dispatch({ kind: 'temple-done' });
+    else if (state.screen === 'ending') this.dispatch({ kind: 'ending-done' });
+    else if (state.screen === 'adventure') this.dispatch(event.kind === 'leave' ? { kind: 'main-menu' } : { kind: 'play' });
+  }
+
+  /** Effects of the machine: level start, storage (T-06-06: writeJson never throws), sounds. */
+  private applyEffect(effect: AppEffect): void {
+    switch (effect.kind) {
+      case 'start-level':
+        void this.beginRun(effect.run);
+        break;
+      case 'save-run':
+        writeJson(this.storage, SAVE_KEY, effect.run);
+        break;
+      case 'save-profile':
+        writeJson(this.storage, PROFILE_KEY, effect.profile);
+        break;
+      case 'save-scores':
+        writeJson(this.storage, HIGHSCORE_KEY, { adventure: effect.scores });
+        break;
+      case 'sound':
+        this.audio.play({ key: effect.key, gain: 1, rate: 1 });
+        break;
+    }
+  }
+
+  /** Screen change: the counter restarts and the loops stop; off the level no engine is kept (D-01) and the menu is fresh. */
+  private enterScreen(screen: AppScreen): void {
+    this.screenT0 = performance.now();
+    this.audio.stopLoops();
+    if (screen === 'level') {
+      this.canvas.style.cursor = '';
+      return;
+    }
+    this.engine = null;
+    this.level = null;
+    this.paused = false;
+    this.pausedByRotation = false;
+    this.message = null;
+    this.endAt = null;
+    this.welcome = freshWelcomeUi();
+    this.renaming = false;
+    this.canvas.style.cursor = 'default';
+  }
+
+  /** Welcome counter c in maj of 10 ms (the original updates at 100 Hz). */
+  private welcomeCounter(now = performance.now()): number {
+    return Math.max(0, Math.floor((now - this.screenT0) / 10));
+  }
+
+  private promptStrings(): Record<string, string> | null {
+    return this.statsKit?.strings ?? this.strings;
+  }
+
+  /** Dialog over the welcome: the machine's name / continue prompt, or the rename dialog of the welcome line. */
+  private promptKind(): PromptView['kind'] | null {
+    if (this.app.screen !== 'welcome') return null;
+    if (this.app.prompt === 'continue') return 'continue';
+    if (this.app.prompt === 'name') return 'name';
+    return this.renaming ? 'rename' : null;
+  }
+
+  /**
+   * Shows the invisible name field while a name dialog is open (empty: the stored name is never written into the
+   * DOM, T-06-08), hides it otherwise; resets the dialog widgets when another dialog opens.
+   */
+  private syncPrompt(): void {
+    const kind = this.promptKind();
+    const naming = kind === 'name' || kind === 'rename';
+    const input = this.nameInput;
+    if (input && naming && input.hidden) {
+      input.value = '';
+      input.hidden = false;
+      this.promptUi.text = '';
+      this.focusNameInput();
+    } else if (input && !naming && !input.hidden) {
+      input.blur();
+      input.hidden = true;
+    }
+    if (kind !== this.shownPrompt) {
+      this.shownPrompt = kind;
+      this.promptUi = { hover: null, pressed: null, focus: kind === 'continue' ? 'continue' : kind ? 'name-field' : null, text: naming ? this.promptUi.text : '' };
+    }
+  }
+
+  private focusNameInput(): void {
+    try { this.nameInput?.focus({ preventScroll: true }); } catch { /* not focusable */ }
+  }
+
+  /** The invisible text field, laid over the name box of the dialog (percentages of the stage). */
+  private bindPrompt(): void {
+    const stage = this.canvas.parentElement;
+    if (!stage) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 16;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.hidden = true;
+    input.className = 'name-input';
+    input.setAttribute('autocapitalize', 'words');
+    input.setAttribute('enterkeyhint', 'done');
+    input.setAttribute('aria-label', 'Nom du joueur');
+    const r = nameDialogWidgets(null)[0].rect;
+    const pct = (v: number, of: number): string => `${(v / of) * 100}%`;
+    Object.assign(input.style, { position: 'absolute', left: pct(r.x, WIDTH), top: pct(r.y, HEIGHT), width: pct(r.w, WIDTH), height: pct(r.h, HEIGHT), opacity: '0', fontSize: '16px', border: '0', padding: '0', margin: '0', zIndex: '2' });
+    input.style.setProperty('user-select', 'text');
+    input.style.setProperty('-webkit-user-select', 'text');
+    input.addEventListener('input', () => { this.promptUi.text = sanitizeName(input.value) ?? ''; });
+    input.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.isComposing) return;
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        this.promptActivate('name-ok');
+      } else if (ev.key === 'Escape' && this.renaming) {
+        ev.preventDefault();
+        this.renaming = false;
+        this.syncPrompt();
+      }
+    });
+    stage.append(input);
+    this.nameInput = input;
+  }
+
+  /** Dialog widget under a logical point. */
+  private promptWidgetAt(kind: PromptView['kind'], p: Point): string | null {
+    const widgets = kind === 'continue' ? continueDialogWidgets(this.promptStrings()) : nameDialogWidgets(this.promptStrings());
+    const hit = widgets.find(w => p.x >= w.rect.x && p.x <= w.rect.x + w.rect.w && p.y >= w.rect.y && p.y <= w.rect.y + w.rect.h);
+    return hit?.id ?? null;
+  }
+
+  /** Dialog buttons: OK of the name dialog, « Continuer » / « Rejouer » of the continue question. */
+  private promptActivate(id: string): void {
+    if (id !== 'name-ok' && id !== 'continue' && id !== 'new-game') return;
+    this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    if (id === 'continue') {
+      this.dispatch({ kind: 'continue' });
+      return;
+    }
+    if (id === 'new-game') {
+      this.dispatch({ kind: 'new-game' });
+      return;
+    }
+    const name = sanitizeName(this.nameInput?.value ?? '');
+    if (this.renaming) {
+      // Rename: an empty field keeps the current name.
+      this.renaming = false;
+      if (name !== null) this.dispatch({ kind: 'name', name });
+      this.syncPrompt();
+      return;
+    }
+    // First launch: an empty field gives the « Joueur » profile (plan 06-02 rule).
+    this.dispatch({ kind: 'name', name: name ?? '' });
+  }
+
+  private welcomeLineW(): number {
+    return welcomeLineWidth(this.welcomeKit, this.promptStrings(), this.app.profile?.name ?? null);
+  }
+
+  /**
+   * Pointer over the welcome: the eyes' target, the cursor, the hover of the enabled stones with `choral1` at 0.2
+   * transposed by the stone's semitones (0x43ed30, once per entry), the hover-order counter of the UFO (every stone,
+   * no feedback on the disabled ones). A finger has no hover: press = pressed state, release inside = activation.
+   */
+  private welcomeMove(p: Point, touch: boolean): void {
+    if (this.loading) return;
+    this.welcome.target = p;
+    const kind = this.promptKind();
+    if (kind) {
+      if (!touch) this.promptUi.hover = this.promptWidgetAt(kind, p);
+      return;
+    }
+    const zone = welcomeHit(p.x, p.y, this.welcomeLineW());
+    const stone = MM.stones.find(s => s.id === zone) ?? null;
+    this.canvas.style.cursor = stone?.enabled || zone === 'welcome-line' || zone === 'frog' ? 'pointer' : 'default';
+    if (!touch) this.hoverStone(stone);
+  }
+
+  private hoverStone(stone: MmStone | null): void {
+    if (stone && stone.id !== this.welcome.lastSeqStone) {
+      this.welcome.lastSeqStone = stone.id;
+      const step = mmHoverSequence(this.welcome.seq, MM.stones.indexOf(stone));
+      this.welcome.seq = step.seq;
+      // Three ordered laps launch the UFO (0x43d880); clicking it leads nowhere (D-10: no credits).
+      if (step.launch && this.welcome.ufo.phase === 'idle') this.welcome.ufo = { phase: 'in', t0: this.welcomeCounter() };
+    }
+    const hover = stone && stone.enabled ? stone.id : null;
+    if (hover === this.welcome.hover) return;
+    this.welcome.hover = hover;
+    if (!hover || !stone) return;
+    this.welcome.focus = hover; // one lit stone at a time
+    this.audio.play({ key: 'choral', gain: 0.2, rate: 2 ** (stone.semitones / 12) });
+  }
+
+  /** Press on the welcome: dialog widgets, enabled stones, the welcome line; the frog toggles « eyes follow » (0x43c430). */
+  private welcomeDown(p: Point, button: number): void {
+    if (button !== 0) return;
+    this.welcome.target = p;
+    const kind = this.promptKind();
+    if (kind) {
+      const id = this.promptWidgetAt(kind, p);
+      this.promptUi.pressed = id;
+      if (id === 'name-field') this.focusNameInput();
+      return;
+    }
+    const zone = welcomeHit(p.x, p.y, this.welcomeLineW());
+    if (zone === 'frog') {
+      this.welcome.eyes = this.welcome.eyes === 'follow' ? 'rest' : 'follow';
+      return;
+    }
+    const stone = MM.stones.find(s => s.id === zone);
+    if (stone && !stone.enabled) return; // D-11: Gauntlet, Plus de jeux, Quitter do nothing
+    this.welcome.pressed = zone;
+  }
+
+  /** Release: activation when it happens over the pressed stone / line / dialog button. */
+  private welcomeUp(p: Point): void {
+    const kind = this.promptKind();
+    if (kind) {
+      const pressed = this.promptUi.pressed;
+      this.promptUi.pressed = null;
+      const id = this.promptWidgetAt(kind, p);
+      if (pressed && id === pressed) this.promptActivate(id);
+      return;
+    }
+    const pressed = this.welcome.pressed;
+    this.welcome.pressed = null;
+    if (!pressed || welcomeHit(p.x, p.y, this.welcomeLineW()) !== pressed) return;
+    if (pressed === 'welcome-line') {
+      this.audio.play({ key: 'button', gain: 1, rate: 1 });
+      this.openRename();
+      return;
+    }
+    this.activateStone(pressed as MmStoneId);
+  }
+
+  /** AVENTURE → the machine (continue question or the run); OPTIONS → the dialog out of game (0x44ac50). */
+  private activateStone(id: MmStoneId): void {
+    const stone = MM.stones.find(s => s.id === id);
+    if (!stone || !stone.enabled) return;
+    this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    if (id === 'adventure') this.dispatch({ kind: 'adventure' });
+    else if (id === 'options') this.openMenu();
+  }
+
+  /** The welcome line stands for « Si ce n'est pas vous, cliquez ici » (Q1 / Q4): it reopens the name dialog. */
+  private openRename(): void {
+    if (this.app.screen !== 'welcome' || this.app.prompt !== null) return;
+    this.renaming = true;
+    this.syncPrompt();
+  }
+
+  /**
+   * Keys on the welcome: in the name dialog Enter = OK (the field takes the other keys), Escape closes a rename; in the
+   * continue question Left / Right / Tab move between « Continuer » and « Rejouer », Enter / Space activate, Escape
+   * closes it without any change; otherwise Up / Down / Tab move the focus over the enabled stones (drawn as hovered)
+   * and Enter / Space activate. Returns true when the key was handled.
+   */
+  private welcomeKey(code: string): boolean {
+    const kind = this.promptKind();
+    const enter = code === 'Enter' || code === 'NumpadEnter';
+    if (kind === 'name' || kind === 'rename') {
+      if (code === 'Escape' && kind === 'rename') {
+        this.renaming = false;
+        this.syncPrompt();
+        return true;
+      }
+      if (enter) {
+        this.promptActivate('name-ok');
+        return true;
+      }
+      this.focusNameInput(); // a key typed elsewhere goes to the field
+      return false;
+    }
+    if (kind === 'continue') {
+      if (code === 'Escape') {
+        // Closing the question changes nothing: the saved run stays (presentation-only dismiss).
+        this.app = { ...this.app, prompt: null };
+        this.syncPrompt();
+        return true;
+      }
+      if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'ArrowUp' || code === 'ArrowDown' || code === 'Tab') {
+        this.promptUi.focus = this.promptUi.focus === 'continue' ? 'new-game' : 'continue';
+        return true;
+      }
+      if (enter || code === 'Space') {
+        this.promptActivate(this.promptUi.focus ?? 'continue');
+        return true;
+      }
+      return false;
+    }
+    const active = MM.stones.filter(s => s.enabled);
+    if (code === 'ArrowUp' || code === 'ArrowDown' || code === 'Tab') {
+      const i = active.findIndex(s => s.id === this.welcome.focus);
+      const step = code === 'ArrowUp' ? -1 : 1;
+      const next = i < 0 ? active[step > 0 ? 0 : active.length - 1] : active[(i + step + active.length) % active.length];
+      this.welcome.focus = next.id;
+      this.welcome.hover = null;
+      this.audio.play({ key: 'choral', gain: 0.2, rate: 2 ** (next.semitones / 12) });
+      return true;
+    }
+    if (enter || code === 'Space') {
+      if (this.welcome.focus) this.activateStone(this.welcome.focus);
+      else this.welcome.focus = active[0].id;
+      return true;
+    }
+    if (code === 'KeyM') this.toggleSound();
+    return false;
+  }
+
+  /**
+   * One frame of the main menu (counter c from the screen entry): the UFO state advances (its `ufo1` loop plays while
+   * it flies and waits, cut under the OPTIONS dialog), then the menu and the open dialog are drawn at the store scale.
+   */
+  private drawWelcomeFrame(time: number): void {
+    const c = Math.max(0, Math.floor((time - this.screenT0) / 10));
+    const ufoState = this.welcome.ufo;
+    const ufo = mmUfo(ufoState, c);
+    this.welcome.ufo = ufo.next;
+    this.audio.setLoop('ufo', ufo.sound && !this.menuOpen ? 1 : 0);
+    const strings = this.promptStrings();
+    const view: WelcomeView = {
+      c, hover: this.welcome.hover, pressed: this.welcome.pressed, focus: this.welcome.focus, eyes: this.welcome.eyes,
+      target: this.welcome.target, ufo: ufoState, name: this.app.profile?.name ?? null, strings,
+    };
+    const kind = this.promptKind();
+    const ui = this.promptUi;
+    this.renderer.drawScene(ctx => {
+      drawWelcome(ctx, this.welcomeKit, view);
+      if (!kind) return;
+      const prompt: PromptView = { kind, text: ui.text, caret: kind !== 'continue' && Math.floor(time / 530) % 2 === 0, hover: ui.hover, pressed: ui.pressed, focus: ui.focus };
+      if (kind === 'continue') drawContinueDialog(ctx, this.statsKit, prompt, strings);
+      else drawNameDialog(ctx, this.statsKit, prompt, strings);
+    });
+  }
+
   // ---------------------------------------------------------------- install
 
   /** Current install instruction (pure rule in pwa.ts over the live navigator). */
@@ -799,7 +1231,8 @@ class Game {
     const g = this.installGuidance();
     // R2.0.20 (D-38 §4): without the Fullscreen API (iPhone) the « Plein écran » check is not offered.
     const fullscreen = document.fullscreenEnabled === true && typeof document.documentElement.requestFullscreen === 'function';
-    return { install: g !== 'installed' && g !== 'none', fullscreen };
+    // R2.0.21: from the main menu the dialog is the OPTIONS out of game (title OPTIONS, footer « Terminé »).
+    return { install: g !== 'installed' && g !== 'none', fullscreen, ...(this.app.screen === 'level' ? {} : { inGame: false }) };
   }
 
   /** Fills and opens the install card; resolves when it is closed (« Jouer », « × », Escape, or installed). */
@@ -998,7 +1431,8 @@ class Game {
 
   /**
    * Action of a menu widget (pointer release or Enter / Space on the focused widget). « Retour au menu principal »
-   * asks LEAVE_GAME_? / QUIT_THE_GAME_? then starts a new game: there is no main menu before phase 6.
+   * asks LEAVE_GAME_? / QUIT_THE_GAME_? then leaves the level (R2.0.21: back to the main menu, the run stays saved at
+   * the start of its level); « Terminé » of the OPTIONS out of game comes back to the main menu.
    */
   private menuActivate(id: MenuWidgetId): void {
     const state = this.menuState;
@@ -1038,7 +1472,7 @@ class Game {
         break;
       case 'leave':
         this.closeMenu();
-        void this.newGame();
+        this.dispatch({ kind: 'leave' });
         return;
       case 'back':
         this.closeMenu();
@@ -1106,6 +1540,8 @@ class Game {
     this.statsOutcome = outcome;
     this.statsOpen = true;
     this.audio.stopLoops();
+    // R2.0.21: the last life lost enters the high-score table and clears the save now (0x4283c4); the STATS stays.
+    if (outcome === 'gameover') this.dispatch({ kind: 'gameover', score: engine.score, date: localDate() });
     const kit = this.statsKit;
     const strings = kit?.strings ?? null;
     const won = outcome === 'won';
@@ -1137,7 +1573,7 @@ class Game {
     const tip = document.getElementById('stats-tip-text');
     if (tip) tip.textContent = this.statsTip;
     const ok = document.getElementById('result-continue');
-    if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : outcome === 'gameover' ? 'Nouvelle partie' : 'OK';
+    if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : outcome === 'gameover' ? 'Menu principal' : 'OK';
     const panel = document.getElementById('stats');
     panel?.classList.toggle('stats-original', kit !== null);
     if (kit) {
@@ -1256,9 +1692,13 @@ class Game {
     this.statsCanvas?.remove();
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
-    if (outcome === 'won') await this.nextLevel();
-    else if (outcome === 'lost') await this.retryLevel();
-    else if (outcome === 'gameover') await this.newGame();
+    // R2.0.21: the end of a level goes through the state machine (next level / stage / ending, the same level again,
+    // or back to the main menu after a game over); the saved run follows every level start.
+    const engine = this.engine;
+    if (!engine) return;
+    if (outcome === 'won') this.dispatch({ kind: 'won', score: engine.score, lives: engine.lives, date: localDate() });
+    else if (outcome === 'lost') this.dispatch({ kind: 'retry', lives: engine.lives });
+    else if (outcome === 'gameover') this.dispatch({ kind: 'leave' });
   }
 }
 
@@ -1403,6 +1843,50 @@ function safeInsets(): Insets {
   } catch {
     return { top: 0, right: 0, bottom: 0, left: 0 };
   }
+}
+
+/** The browser storage, or null when it cannot be reached (private mode, sandbox). */
+function openStorage(): StorageLike | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves after `ms` (0 when negative or not finite). */
+function bootDelay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, Number.isFinite(ms) ? Math.max(0, ms) : 0));
+}
+
+/** Local date « YYYY-MM-DD » of a high-score entry (the ISO day of the local clock). */
+function localDate(now = new Date()): string {
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/**
+ * D-12: the player's first name on the hosted build — `api/me` answers `{ name }` for the Access identity (private
+ * table, never committed). Same origin, the Access cookie only. Any failure (no endpoint / 404, offline, not JSON,
+ * abort, the `file:` standalone) gives null: the one-time name prompt is used. The value is untrusted: only a string
+ * goes on, sanitised by the state machine (sanitizeName) and drawn on the canvas only.
+ */
+function fetchPlatformName(): Promise<string | null> {
+  try {
+    if (typeof fetch !== 'function' || (location.protocol !== 'http:' && location.protocol !== 'https:')) return Promise.resolve(null);
+  } catch {
+    return Promise.resolve(null);
+  }
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = setTimeout(() => controller?.abort(), PLATFORM_NAME_ABORT);
+  return fetch('api/me', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: controller?.signal })
+    .then(async res => {
+      if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) return null;
+      const data: unknown = await res.json();
+      const name = typeof data === 'object' && data !== null ? (data as { name?: unknown }).name : undefined;
+      return typeof name === 'string' ? name : null;
+    })
+    .catch(() => null)
+    .finally(() => clearTimeout(timer));
 }
 
 /** Shows a fatal initialisation error in the boot overlay instead of leaving a black canvas. */
