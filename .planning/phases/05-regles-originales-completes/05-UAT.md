@@ -143,7 +143,7 @@ Standalone R2.0.18 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 | U37 | « Le recul des lignes est trop lent, ça doit être plus dynamique, surtout pour les comblages de brèches » | `recoilSpeed` 90 px/s sur 8 ticks, `attractSpeed` 240 px/s : valeurs de la baseline, jamais lues dans l'exécutable | Spike 04 (vitesse de recul et d'attraction, accélération éventuelle) puis plan 05-12 (D-34) → livré en 05-12 (destruction **0,4 s** au lieu de 0,67 s ; attraction à **100 px/s** au départ, accélérée sans plafond, après la destruction quand les deux bords ont la même couleur — une brèche de trois billes se referme en 0,34 s ; **rebond de 15 / 45 px** de toute la chaîne au contact (sans / avec enchaînement) ; **plus de recul à l'alignement** ; contact `ballclick1`, impact `ballclick2`) |
 | U38 | Fin de niveau (ZUMA) : les billes « ne doivent pas reculer trop loin », « certaines disparaissent dans la version originale », recul plus rapide | Recul `zumaback` en ticks à vitesse constante quand la tête couvre > 50 % ; aucune bille retirée | Spike 04 (recul ZUMA : distance, vitesse, sort des billes qui repassent l'entrée) puis plan 05-12 : même comportement (D-35) → livré en 05-12 (recul de la **tête** à **100 px/s** pendant **3 s au plus** (300 px), seulement pour les chaînes au-delà de **50 %**, brèches refermées par l'avant ; arrêt quand la tête est à **50 px** du départ ; billes repassées par l'entrée **supprimées** ; la sensation « plus rapide » n'est pas confirmée par l'exécutable : à revoir en UAT 8) |
 
-## Huitième session (à remplir)
+## Huitième session (2026-10-11, standalone R2.0.19, macOS)
 
 Standalone R2.0.19 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, écran Retina). Notes de version : `R219_RELEASE_NOTES.md`. Le standalone livré embarque le pack réimporté (sons du contact et de l'impact remis à leur place, plus de `powerup`) ; pour le build local, relancer `npm run import`.
 
@@ -174,3 +174,7 @@ Standalone R2.0.19 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
+| U39 | STATS (niveau 3-3) : « le OK n'est pas bien positionné » | Bouton OK centré, plus étroit que le dialogue, posé entre l'astuce et le bord bas ; la géométrie du bouton du dialogue n'a pas été lue dans l'exécutable (spike 02 Q4 partiel) ; le menu natif utilise déjà un bouton de pied pleine largeur | Plan 05-14 : position et taille du bouton lues dans le constructeur du dialogue STATS / la mise en page des boutons de pied du `Dialog` (0x4478xx), appliquées au STATS ; capture comparée au menu (D-36) |
+| U40 | « Je veux maintenant une version pas standalone mais complètement PWA » | Le dépôt a déjà un manifeste, une icône SVG et un service worker, mais aucun hébergement ; les ressources originales ne peuvent pas être publiées (contrainte légale) | Plan 05-14 : PWA installable et hors ligne hébergée sans ressources ; l'utilisateur importe une fois son pack privé depuis un fichier, conservé dans le navigateur et servi par le service worker ; publication par GitHub Pages à la fusion (D-37) |
+
+Validés implicitement : comblement des brèches, recul ZUMA, HUD, vies, sons (aucune remarque sur R2.0.19 en dehors du bouton OK).
