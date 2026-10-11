@@ -78,8 +78,11 @@ export const STATS_LAYOUT = {
    * lines at most, wrapped on the room left in the box (never more than `maxWidth`).
    * R2.0.20 (D-36): the box keeps its top (the rows stay above it for every line height) and ends 2 px above the
    * OK (h 60 → 51, as before: 380 / 382); the text is re-centred in it (baseline 350 → 348).
+   * R2.0.20 fix: a tip that needs more than `maxLines` lines in the column runs in under the label on `runInLines`
+   * lines in the same font (layoutTipBlock) instead of switching to Cancun10 capitals with an ellipsis; the first
+   * of three run-in baselines is `runInFirst` (336 / 350 / 364: ≈ 5 px of ink margin above, 4 below in the 51 px inset).
    */
-  tip: { labelX: 150, baseline: 348, gap: 6, maxWidth: 270, lineHeight: 14, maxLines: 2, align: 'left' as const, box: { x: 133, y: 320, w: 374, h: STATS_OK.y - 2 - 320 } as Rect },
+  tip: { labelX: 150, baseline: 348, gap: 6, maxWidth: 270, lineHeight: 14, maxLines: 2, runInLines: 3, runInFirst: 336, align: 'left' as const, box: { x: 133, y: 320, w: 374, h: STATS_OK.y - 2 - 320 } as Rect },
   ok: STATS_OK,
   /** Label baseline: 30 px under the top of a 48 px button, centred for another height. */
   okLabelBaseline: STATS_OK.y + (STATS_OK.h - 48) / 2 + 30,
@@ -232,6 +235,57 @@ export function layoutTip(text: string, maxWidth: number, measure: (s: string) =
   return { lines, small };
 }
 
+/** Word wrap where line `i` may take `widthOf(i)` px; same rules as `wrapText` (`&cr;` is a space). */
+export function wrapTextWidths(text: string, widthOf: (line: number) => number, measure: (s: string) => number): string[] {
+  const words = text.replace(/&cr;/g, ' ').split(/\s+/).filter(w => w.length > 0);
+  const lines: string[] = [];
+  let line = '';
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && measure(candidate) > widthOf(lines.length)) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+export interface TipLine { text: string; x: number; baseline: number }
+export interface TipBlock { lines: TipLine[]; small: boolean; labelBaseline: number }
+
+/**
+ * Tip placement in `STATS_LAYOUT.tip` for a label `labelWidth` px wide (R2.0.20 fix of D-20). Two lines of
+ * Arial12Bold after « ASTUCE : » hold only 2 of the 7 original tips (the longest needs 451 px per line, more than
+ * the whole frame), and the old fallback drew the other five in Cancun10 capitals cut by « ... ». Now:
+ * 1. the column after the label on `maxLines` lines when the tip fits there (label centred on them, as in R2.0.19);
+ * 2. else a run-in paragraph on `runInLines` lines: the first after the label, the next ones from the label's x,
+ *    label on the first baseline, still in the tip font;
+ * 3. else the R2.0.17 column (`layoutTip`: smaller font, then the ellipsis).
+ */
+export function layoutTipBlock(text: string, labelWidth: number, measure: (s: string) => number, measureSmall: ((s: string) => number) | null, ellipsis = '…'): TipBlock {
+  const T = STATS_LAYOUT.tip;
+  const right = T.box.x + T.box.w - 10;
+  const textX = T.labelX + labelWidth + T.gap;
+  const firstWidth = Math.min(T.maxWidth, right - textX);
+  const centred = (n: number): number => T.baseline - Math.round(((n - 1) * T.lineHeight) / 2);
+  const column = (lines: string[], small: boolean): TipBlock => {
+    const first = T.baseline - (lines.length > 1 ? Math.round(T.lineHeight / 2) : 0);
+    return { lines: lines.slice(0, T.maxLines).map((s, i) => ({ text: s, x: textX, baseline: first + i * T.lineHeight })), small, labelBaseline: T.baseline };
+  };
+  const wrapped = wrapText(text, firstWidth, measure);
+  if (wrapped.length <= T.maxLines) return column(wrapped, false);
+  const runIn = wrapTextWidths(text, i => (i === 0 ? firstWidth : right - T.labelX), measure);
+  if (runIn.length <= T.runInLines) {
+    const first = runIn.length === T.runInLines ? T.runInFirst : centred(runIn.length);
+    return { lines: runIn.map((s, i) => ({ text: s, x: i === 0 ? textX : T.labelX, baseline: first + i * T.lineHeight })), small: false, labelBaseline: first };
+  }
+  const fallback = layoutTip(text, firstWidth, measure, measureSmall, ellipsis);
+  return column(fallback.lines, fallback.small);
+}
+
 /** Keys of the original tips shown under « ASTUCE » (strings.json). */
 export const TIP_KEYS = [
   'SHOOT_COINS_FOR_EXTRA_POINTS', 'SCORE_POINTS_TO_FILL_THE_ORANGE_GAUGE', 'CREATE_COMBOS_OF_2_OR_MORE_EXPLOSIONS',
@@ -354,19 +408,17 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   });
 
   // Tip inset (a darker band as in the reference): « ASTUCE : » then the text left-aligned after it on two
-  // lines at most (D-20) — the smaller font first, the ellipsis last (layoutTip).
+  // lines (D-20), else run in under the label on three lines in the same font; the smaller font and the
+  // ellipsis only beyond that (layoutTipBlock → layoutTip).
   insetBox(ctx, L.tip.box);
   const tipLabel = `${str('TIP', 'ASTUCE')} :`;
-  text.draw(ctx, tipLabel, L.tip.labelX, L.tip.baseline, { tint: C.label });
-  const textX = L.tip.labelX + text.measure(tipLabel) + L.tip.gap;
-  const tipWidth = Math.min(L.tip.maxWidth, L.tip.box.x + L.tip.box.w - 10 - textX);
   const tipSmall = kit.fonts.tipSmall;
   // No pack font defines U+2026 (an unknown character is skipped by the layout): three dots then.
   const ellipsis = tipFont.measure('…') > 0 ? '…' : '...';
-  const tip = layoutTip(options.tip, tipWidth, s => tipFont.measure(s), tipSmall ? s => tipSmall.measure(s) : null, ellipsis);
+  const tip = layoutTipBlock(options.tip, text.measure(tipLabel), s => tipFont.measure(s), tipSmall ? s => tipSmall.measure(s) : null, ellipsis);
+  text.draw(ctx, tipLabel, L.tip.labelX, tip.labelBaseline, { tint: C.label });
   const lineFont = tip.small && tipSmall ? tipSmall : tipFont;
-  const firstBaseline = L.tip.baseline - (tip.lines.length > 1 ? Math.round(L.tip.lineHeight / 2) : 0);
-  tip.lines.slice(0, L.tip.maxLines).forEach((line, i) => lineFont.draw(ctx, line, textX, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'left' }));
+  tip.lines.forEach(line => lineFont.draw(ctx, line.text, line.x, line.baseline, { tint: C.value, align: 'left' }));
 
   // OK button: the footer button of the original Dialog (D-36), one painted state in three slices, label centred
   // (nudged when pressed).

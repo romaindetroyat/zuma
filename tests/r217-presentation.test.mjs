@@ -201,7 +201,9 @@ test('statsdialog.js: the tip is laid out by layoutTip, left-aligned after « AS
   const start = dialog.indexOf('insetBox(ctx, L.tip.box)');
   assert.ok(start > 0, 'tip block compiled');
   const block = dialog.slice(start, dialog.indexOf('kit.button', start));
-  assert.match(block, /layoutTip\(/);
+  // R2.0.20 fix: layoutTipBlock (column, else three-line run-in in the same font) falls back to layoutTip.
+  assert.match(block, /layoutTipBlock\(/);
+  assert.match(dialog, /const fallback = layoutTip\(/);
   assert.match(block, /align: 'left'/);
   assert.doesNotMatch(block, /align: 'center'/, 'tip lines are not centred any more');
   assert.match(block, /tipSmall/, 'smaller font available to layoutTip');

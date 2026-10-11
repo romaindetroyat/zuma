@@ -102,6 +102,8 @@ test('layoutTipBlock: two lines after the label when they hold the tip (R2.0.19 
   assert.equal(long.lines[0].x, textX, 'first line after the label');
   assert.ok(long.lines.slice(1).every(l => l.x === tip.labelX), 'next lines under the label');
   assert.equal(long.labelBaseline, long.lines[0].baseline, 'label on the first line');
+  assert.deepEqual(long.lines.map(l => l.baseline), [tip.runInFirst, tip.runInFirst + tip.lineHeight, tip.runInFirst + 2 * tip.lineHeight]);
+  assert.ok(tip.runInFirst - 14 >= tip.box.y && tip.runInFirst + 2 * tip.lineHeight + 3 <= tip.box.y + tip.box.h, 'three Arial12Bold lines (ascent 14, descent 3) inside the inset');
   assert.equal(norm(long.lines.map(l => l.text).join(' ')), norm(text), 'complete text');
   assert.ok(long.lines.every(l => !ELLIPSIS.test(l.text)));
   const right = tip.box.x + tip.box.w - 10;
