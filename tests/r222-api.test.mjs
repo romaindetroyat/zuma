@@ -310,8 +310,10 @@ test('api/records: shared = the 10 best of all players, mine = the requester onl
   assert.deepEqual(mineA.shared.scores, mineB.shared.scores);
   await post(ALICE, { scores: [alice[0], alice[0]] });
   assert.equal(rows('scores').length, 12, 'resend ignored (UNIQUE (player, sid))');
-  await post(BRUNO, { scores: [{ ...alice[0], score: 13000 }] });
-  assert.equal(rows('scores').length, 13, 'the same id from another player is another score');
+  assert.equal(rows('scores').filter(r => r.sid === alice[0].id).length, 2, 'the same id from two players: two scores');
+  await post(BRUNO, { scores: [{ ...bruno[0], score: 13000 }] });
+  assert.equal(rows('scores').length, 12, 'a resent id keeps its first value');
+  assert.ok(!rows('scores').some(r => r.score === 13000));
 });
 
 test('api/records: allowed address without a first name → « Joueur »; no address stored, identity = playerKey(email)', async () => {
