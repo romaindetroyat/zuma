@@ -6,6 +6,8 @@
  * `blobs`, base64 chunks, keys `sha256:<hex>`) and served by a generated Pages `_worker.js` (advanced mode) bound to
  * it as ASSETS_DB — every call uses the account token only (the Pages upload JWT never reaches Cloudflare from the
  * cloud session, whose proxy replaces `Authorization`). `--direct` keeps the former Pages direct upload (from a Mac).
+ * The worker validates the Access JWT of every request but the public files: its issuer (https://<auth_domain>) and
+ * the AUD of the « Zuma » application are read from the account (GET only) and inlined at generation, never committed.
  *
  * Modes:
  *   node tools/deploy.mjs                  provision Access (idempotent), then D1 database / table / missing rows,
@@ -49,6 +51,11 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SESSION = '730h';
 /** Size cap of the generated worker (the free Workers plan allows 3 MB compressed; ours is ≈ 60 KB). */
 const WORKER_MAX_BYTES = 1024 * 1024;
+/**
+ * AUD inlined in the worker of --dry-run: a placeholder, so a simulated run never needs (nor writes into dist/_d1/)
+ * the AUD of the real « Zuma » application. The real AUD is read by GET /access/apps and never committed.
+ */
+export const DRY_RUN_AUD = '0'.repeat(64);
 const APP_NAME = 'Zuma';
 const ALLOW_POLICY = 'Zuma — joueurs';
 const BYPASS_NAME = 'Zuma — fichiers publics';
@@ -261,6 +268,9 @@ function readConfig(root) {
   return { project: cfg.project, allow, pinIdpApps: cfg.pinIdpApps ?? null };
 }
 
+/** The main Access app of `host` (covers `host` and `*.host`), or undefined. */
+const mainApp = (state, host) => state.apps.find(a => uris(a).has(norm(host)) && uris(a).has(`*.${norm(host)}`));
+
 const hostOf = (project, name) => {
   const sd = project?.subdomain;
   if (!sd) return `${name}.pages.dev`;
@@ -370,13 +380,11 @@ export async function run(argv, deps = {}) {
   };
   const write = (method, p, body) => guarded(method, p, { body });
 
-  // Artefact → files, worker, marker (D1 method).
+  // Artefact → files and manifest (D1 method). The worker itself is generated once the Access organisation (issuer)
+  // and the « Zuma » application (AUD) are read: it validates their JWT on every request but the public files.
   const info = artefactError ? null : JSON.parse(fs.readFileSync(path.join(dist, 'version.json'), 'utf8'));
   const files = artefactError || direct ? null : blobFiles(dist);
   const manifest = files ? workerManifest(files) : null;
-  const worker = files ? generateWorker(manifest, { build: info.build }) : null;
-  const marker = worker ? workerMarker(worker) : null;
-  if (worker && Buffer.byteLength(worker) > WORKER_MAX_BYTES) { log(`_worker.js de ${Buffer.byteLength(worker)} octets : au-delà de ${WORKER_MAX_BYTES} octets.`); return 1; }
 
   try {
     // Preflight: token, account, Zero Trust organisation.
@@ -403,6 +411,19 @@ export async function run(argv, deps = {}) {
     if (!team) { log('organisation Zero Trust absente : créez-la dans le tableau de bord (Zero Trust).'); return 1; }
     log(`organisation Access : ${team}`);
 
+    /**
+     * Worker for the account `state`: { source, marker }, null without artefact or before the « Zuma » app exists.
+     * Issuer = https://<auth_domain>, AUD = that app's `aud` (DRY_RUN_AUD in --dry-run); a malformed AUD throws.
+     */
+    const workerFor = state => {
+      if (!files) return null;
+      const app = mainApp(state, hostOf(state.project, cfg.project));
+      if (!app) return null;
+      const source = generateWorker(manifest, { build: info.build, access: { team, aud: mode === 'dry' ? DRY_RUN_AUD : app.aud } });
+      if (Buffer.byteLength(source) > WORKER_MAX_BYTES) throw new Error(`_worker.js de ${Buffer.byteLength(source)} octets : au-delà de ${WORKER_MAX_BYTES} octets.`);
+      return { source, marker: workerMarker(source) };
+    };
+
     const readState = async () => {
       let project = null;
       try { project = await api('GET', `${A}/pages/projects/${cfg.project}`); } catch (e) { if (e.status !== 404) throw e; }
@@ -417,7 +438,7 @@ export async function run(argv, deps = {}) {
       for (const c of conflict) log(`! ${c}`);
     };
     /** D1 state and plan (GET + SELECT only); a refused read names the permission. */
-    const readD1 = async project => {
+    const readD1 = async (project, marker) => {
       try {
         const database = await findDatabase(api, A, DATABASE_NAME);
         const blobs = database ? await readBlobs(api, A, database.uuid) : null;
@@ -441,9 +462,10 @@ export async function run(argv, deps = {}) {
       if (!direct) {
         if (!files) log(`D1 : artefact absent, insertions non calculées`);
         else {
-          const d1 = await readD1(state.project);
+          const built = workerFor(state);
+          const d1 = await readD1(state.project, built?.marker ?? null);
           extra = d1Actions(d1.plan);
-          log(`D1 : base « ${DATABASE_NAME} » ${d1.database ? 'présente' : 'absente'} ; ${new Set(files.map(f => f.key)).size} contenus pour ${files.length} fichiers ; worker ${marker}`);
+          log(`D1 : base « ${DATABASE_NAME} » ${d1.database ? 'présente' : 'absente'} ; ${new Set(files.map(f => f.key)).size} contenus pour ${files.length} fichiers ; worker ${built ? built.marker : `non calculé (application « ${APP_NAME} » absente)`}`);
           if (d1.plan.rows > rowBudget) { log(budgetRefusal(d1.plan.rows, rowBudget)); code = 1; }
         }
       }
@@ -459,7 +481,7 @@ export async function run(argv, deps = {}) {
 
     // D1 budget first (read-only): nothing at all is written when the run would exceed it.
     if (!direct) {
-      const pre = await readD1((await readState()).project);
+      const pre = await readD1((await readState()).project, null);
       if (pre.plan.rows > rowBudget) { log(budgetRefusal(pre.plan.rows, rowBudget)); return 1; }
     }
     const firstWrite = sim ? sim.calls.length : 0;
@@ -483,7 +505,7 @@ export async function run(argv, deps = {}) {
     }
     for (const kind of ACTION_ORDER) if (kind !== 'pin-idp' && !done.has(kind)) log(`déjà présent : ${LABELS[kind]}`);
     const host = hostOf(state.project, cfg.project);
-    const main = state.apps.find(a => uris(a).has(norm(host)) && uris(a).has(`*.${norm(host)}`));
+    const main = mainApp(state, host);
     if (!main) { log(`application « ${APP_NAME} » non relue sur ${host} : aucun contenu envoyé.`); return 1; }
     log(`Access relu : « ${main.name} » couvre ${host} et *.${host} ; « ${BYPASS_NAME} » couvre ${host}/public`);
 
@@ -500,6 +522,12 @@ export async function run(argv, deps = {}) {
       log(`durée : ${Math.round((Date.now() - started) / 1000)} s`);
       return await verify({ api, A, readState, plan, cfg, team, fetch, log });
     }
+
+    // Worker (Access JWT validation with the AUD read back above), before any D1 write: a missing or malformed AUD
+    // stops here.
+    const built = workerFor(state);
+    if (!built) { log(`application « ${APP_NAME} » non relue : worker non généré, aucun contenu envoyé.`); return 1; }
+    const { source: worker, marker } = built;
 
     // D1: database, table, rows, binding, worker — each step read back.
     let database = await findDatabase(api, A, DATABASE_NAME);

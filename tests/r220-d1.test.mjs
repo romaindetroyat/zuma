@@ -480,7 +480,7 @@ test('worker: only the exact files under /public/ are served without JWT; traver
   assert.equal((await req('/public/style.css', { method: 'POST', body: 'x' })).status, 405, 'with a JWT: 405');
 });
 
-test('worker: JWKS fetched once per isolate, kept 1 h, refetched once on an unknown kid (at most every 10 s); fetch failures → 403', async () => {
+test('worker: JWKS fetched once per isolate, kept 1 h, refetched once on an unknown kid (at most every 10 s); fetch failures → 403; stale keys kept on a failed refresh', async () => {
   const { anon, jwks, clock } = await setup();
   for (let i = 0; i < 4; i++) assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock))))).status, 200);
   assert.deepEqual(jwks.urls, [CERTS], 'one fetch for several requests');
@@ -508,6 +508,16 @@ test('worker: JWKS fetched once per isolate, kept 1 h, refetched once on an unkn
   await assertDenied(await anon('/index.html', withJwt(await jwt(claims({}, clock)))), 'kid-1 retired');
   assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 })))).status, 200);
 
+  // A failed refresh after the hour keeps the previous keys (no outage when the certs endpoint hiccups).
+  jwks.fail = 500;
+  clock.offset += 3_601_000;
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 })))).status, 200, 'stale keys used');
+  clock.offset += 24 * 3_600_000;
+  await assertDenied(await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 }))), 'keys older than a day are dropped');
+  jwks.fail = false;
+  clock.offset += 11_000;
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 })))).status, 200, 'recovers once the JWKS answers');
+
   for (const fail of ['throw', 500]) {
     const s = await setup();
     s.jwks.fail = fail;
@@ -515,11 +525,15 @@ test('worker: JWKS fetched once per isolate, kept 1 h, refetched once on an unkn
     s.jwks.fail = false;
     assert.equal((await s.anon('/index.html', withJwt(s.token))).status, 200, `JWKS ${fail}: recovers on the next request`);
   }
-  // Concurrent first requests share one fetch.
+  // Concurrent cold requests each fetch for themselves (no in-flight promise shared across requests: a cancelled
+  // request would leave the others hanging in the Workers runtime); the keys are shared afterwards.
   const c = await setup();
   const all = await Promise.all(Array.from({ length: 5 }, () => c.anon('/index.html', withJwt(c.token))));
   assert.ok(all.every(r => r.status === 200));
-  assert.equal(c.jwks.urls.length, 1, 'one in-flight fetch shared');
+  assert.ok(c.jwks.urls.length >= 1 && c.jwks.urls.length <= 5);
+  const n = c.jwks.urls.length;
+  assert.equal((await c.anon('/index.html', withJwt(c.token))).status, 200);
+  assert.equal(c.jwks.urls.length, n, 'keys cached once fetched');
 });
 
 test('worker source: never logs nor echoes the token; JWKS URL is the only fetch', async () => {
