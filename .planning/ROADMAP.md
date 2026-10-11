@@ -65,7 +65,7 @@ Plans:
   1. `configFromSettings` couvre `single`, `zumaslow`, `zumaback`, couleurs par temple et `partime`, documentés dans le README et testés
   2. Les pièces bonus apparaissent aux TreasurePoints, disparaissent après délai et rapportent des points avec leur son
   3. Chaque niveau démarre par « Attention / PARTEZ » et se termine par la vidange, le pop et le bonus de temps
-**Plans:** 11 plans
+**Plans:** 13 plans
 
 Plans:
 - [x] 05-01-PLAN.md — Importateur (polices bitmap, strings.json, sons pièces/pop, garde) + `src/bitmapfont.ts` (parseur/mise en page PopCap testés en Node)
@@ -79,6 +79,8 @@ Plans:
 - [x] 05-09-PLAN.md — Notes R2.0.17, README (score, netteté), CONCERNS, UAT (U22–U25, sixième session), standalone et preuves Playwright, vérification finale
 - [x] 05-10-PLAN.md — UAT 6 : tunnels et priorités CURV (D-23), menu de jeu natif = dialogue OPTIONS en jeu (D-24), fenêtre et « Pixels nets » en pixels d'appareil (D-25), entrées (D-26), vies tous les 50 000 (D-27), cadence originale des pièces (D-28), roulement adouci (D-29), décompte simultané multi-chaînes (D-30), R2.0.18
 - [x] 05-11-PLAN.md — Notes R2.0.18, README (commandes, tunnels, vies, pièces, menu), CONCERNS (C1–C4, déviation D-30), UAT (U26–U33, septième session), standalone et preuves Playwright, vérification finale
+- [ ] 05-12-PLAN.md — UAT 7 : destruction 0,4 s, attraction accélérée et rebond au contact (D-34), recul ZUMA par chaîne et billes perdues par l'entrée (D-35), pièce à 36 px qui consomme le tir (D-31), trois grenouilles et barre du haut recalée (D-33), sons du power-up / contact / impact (D-32), R2.0.19
+- [ ] 05-13-PLAN.md — Notes R2.0.19, README, CONCERNS (D-31 gardé contre le souvenir de l'utilisateur, D-32 sans son, points ouverts du spike 04), UAT (U34–U38, huitième session), standalone, vérification finale
 
 #### Phase 6: Progression et menus
 **Goal**: Aventure par temples, sauvegarde et menu principal
@@ -115,6 +117,6 @@ Plans:
 | 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
-| 5. Règles originales complètes | v1.1 | 11/11 | In progress (UAT 7) | - |
+| 5. Règles originales complètes | v1.1 | 11/13 | In progress (UAT 7) | - |
 | 6. Progression et menus | v1.1 | 0/TBD | Not started | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
