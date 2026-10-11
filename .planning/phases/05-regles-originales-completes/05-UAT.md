@@ -174,10 +174,58 @@ Standalone R2.0.19 (`standalone/zuma-standalone.html`, macOS, Safari ou Chrome, 
 
 | # | Constat | Analyse | Décision |
 |---|---------|---------|----------|
-| U39 | STATS (niveau 3-3) : « le OK n'est pas bien positionné » | Bouton OK centré, plus étroit que le dialogue, posé entre l'astuce et le bord bas ; la géométrie du bouton du dialogue n'a pas été lue dans l'exécutable (spike 02 Q4 partiel) ; le menu natif utilise déjà un bouton de pied pleine largeur | Plan 05-14 : position et taille du bouton lues dans le constructeur du dialogue STATS / la mise en page des boutons de pied du `Dialog` (0x4478xx), appliquées au STATS ; capture comparée au menu (D-36) |
-| U40 | « Je veux maintenant une version pas standalone mais complètement PWA » | Le dépôt a déjà un manifeste, une icône SVG et un service worker, mais aucun hébergement ; les ressources originales ne peuvent pas être publiées (contrainte légale) | Plan 05-14 : PWA installable et hors ligne hébergée sans ressources ; l'utilisateur importe une fois son pack privé depuis un fichier, conservé dans le navigateur et servi par le service worker ; publication par GitHub Pages à la fusion (D-37) |
-| U41 | iPhone / iPad : installation aussi simple que sur Mac et PC | Voir D-38 | Intégré au plan 05-14 (D-38) |
+| U39 | STATS (niveau 3-3) : « le OK n'est pas bien positionné » | Bouton OK centré, plus étroit que le dialogue, posé entre l'astuce et le bord bas ; la géométrie du bouton du dialogue n'a pas été lue dans l'exécutable (spike 02 Q4 partiel) ; le menu natif utilise déjà un bouton de pied pleine largeur | Plan 05-14 : position et taille du bouton lues dans le constructeur du dialogue STATS / la mise en page des boutons de pied du `Dialog` (0x4478xx), appliquées au STATS ; capture comparée au menu (D-36) → livré en 05-14 (règle lue dans l'exécutable, pas le repli D-36 : `Dialog::Resize` 0x4ac160 pose un bouton de pied unique à fond + contenu à gauche, collé au bord bas intérieur, pleine largeur intérieure, hauteur 48 ; marges du STATS 0x43ef30 fond 0 / 80 / 0 / 0, contenu 36 / 52 / 36 / 36 ; converties vers notre cadre opaque : `STATS_OK_RULE` 29 / 29 / 25 / 48 → **OK 138, 373, 364 × 48** (R2.0.19 : 260, 382, 120 × 48) ; dessiné en trois tranches de `DialogButton` comme les boutons du menu, zone cliquable exactement sur le dessin ; encart de l'astuce raccourci 60 → 51 px ; astuce complète en Arial12Bold depuis 05-15) |
+| U40 | « Je veux maintenant une version pas standalone mais complètement PWA » | Le dépôt a déjà un manifeste, une icône SVG et un service worker, mais aucun hébergement ; les ressources originales ne peuvent pas être publiées (contrainte légale) | Plan 05-14 : PWA installable et hors ligne hébergée sans ressources ; l'utilisateur importe une fois son pack privé depuis un fichier, conservé dans le navigateur et servi par le service worker ; publication par GitHub Pages à la fusion (D-37) → livré en 05-14 dans le périmètre révisé D-42 (la PWA est exactement le jeu des standalones, build `--local` avec le pack embarqué ; pas d'import, pas de site public : service worker généré qui précache le shell (`zuma-shell-<build>`) et tout le pack (`zuma-assets-<empreinte>`, 269 fichiers), jeu jouable hors ligne après la première visite ; mise à jour sur « Nouvelle version disponible » → « Mettre à jour » sans retélécharger un pack inchangé ; installable (icônes PNG, manifeste, métadonnées Apple, consigne par plateforme) ; artefact privé `npm run deploy` produit, **rien d'hébergé** : l'hébergement privé Cloudflare Access reste à faire, plan 05-16) |
+| U41 | iPhone / iPad : installation aussi simple que sur Mac et PC | Voir D-38 | Intégré au plan 05-14 (D-38) → livré en 05-14, vérifié en émulation Chromium seulement (consigne « Partager › Sur l'écran d'accueil », marges sûres, toucher sur la grenouille = échange, « Tournez votre appareil », plein écran conditionnel, audio iOS) ; vérification sur appareils réels en UAT 9, après l'hébergement privé HTTPS |
 | U42 | « Garder les meilleurs scores du joueur sur tous ses devices » | Aucun serveur : le site est statique | Choix utilisateur : Cloudflare ; scores par fonction Pages + D1 identifiés par l'utilisateur Access (D-39 révisé par D-42) ; plan dédié |
 | U43 | « Partager le jeu à ses amis » | Le pack privé ne peut pas être partagé (contrainte légale) | Révisé (D-42) : PWA = exactement le jeu des standalones, hébergée en privé sur Cloudflare derrière Access ; pas de bouton Partager ; pas d'import d'installeur |
 
 Validés implicitement : comblement des brèches, recul ZUMA, HUD, vies, sons (aucune remarque sur R2.0.19 en dehors du bouton OK).
+
+## Neuvième session (à remplir)
+
+Version **R2.0.20**. Notes de version : `R220_RELEASE_NOTES.md` ; mode d'emploi par appareil : README, « Ouvrir et installer Zuma ». Le standalone R2.0.20 (`standalone/zuma-standalone.html`) reste livré avec cette version (D-43).
+
+### Prérequis
+
+- **Mac / PC** : `npm run import` (une fois) puis `npm run dev`, ouvrir `http://localhost:8080/` ; ou le standalone sur `file://` (sans installation).
+- **iPhone / iPad** : après l'hébergement privé HTTPS (plan 05-16, pas encore fait) ; un iPhone ne peut pas installer une PWA servie en `http://<IP locale>`.
+
+### Points à vérifier par appareil
+
+- **Mac — Chrome** : carte d'accueil « Installer Zuma » (ou icône d'installation de la barre d'adresse) → l'app s'ouvre dans sa fenêtre, niveau 1-1 avec les ressources originales ; couper le réseau et relancer l'app : le jeu démarre et se joue ; refaire un build (`npm run dev`) app ouverte : « Nouvelle version disponible » → « Mettre à jour » recharge la nouvelle version (badge de la vue Aide).
+- **Mac — Safari** : la carte indique « Fichier › Ajouter au Dock » ; l'app ajoutée au Dock démarre et fonctionne hors ligne.
+- **PC — Chrome / Edge** : mêmes points que Mac Chrome.
+- **iPhone et iPad (vérification humaine sur appareils réels)** :
+  - consigne Partager → « Sur l'écran d'accueil » affichée dans Safari ;
+  - première ouverture de l'app installée en ligne, puis mode avion : le jeu démarre ;
+  - plein écran sans barre, marges sûres respectées (encoche, coins) ;
+  - iPhone en portrait : « Tournez votre appareil », la partie en pause, reprise en paysage ;
+  - iPad en portrait : le jeu entre deux bandes ;
+  - toucher la grenouille = échange ; MENU, curseurs et cases au doigt ;
+  - sons dès le premier toucher, après un retour d'arrière-plan, et comportement avec l'interrupteur silencieux (« ambient » les coupe).
+- **STATS (niveau 3-3)** : l'OK occupe la largeur intérieure en bas du dialogue, comme « Retour à la partie » dans le menu ; l'astuce est **complète, en minuscules (Arial12Bold)** — sur deux lignes après « ASTUCE : » pour les courtes, sur trois lignes sous l'étiquette pour les longues (ouvrir le STATS plusieurs fois : l'astuce est tirée au hasard).
+
+### Hypothèses à confirmer au ressenti
+
+- Règle Q5 du bouton de pied (marges du masque `_dialogbox` transparentes) ; pied du menu à 30 / 30 / 22.
+- Astuce longue sur trois lignes (écart à « deux lignes au plus », D-20) ; interligne 14 px.
+- Libellé « Installer » dans la vue Aide (sans chaîne originale) ; rayon de 32 px de l'échange au doigt ; seuil de 600 px du téléphone.
+- `audioSession` « ambient » (sons coupés par l'interrupteur silencieux) plutôt que « playback ».
+- Comportement réel d'iOS : stockage séparé de l'app, éviction possible, marges sûres réelles.
+- Installabilité réelle hors Chromium (Safari iOS / macOS, Edge, Android).
+- Reportées de la huitième session (non tranchées) : D-31, D-32, trois grenouilles, vitesse du recul ZUMA, billes en destruction poussées par le rebond, grenouille en jeu comptée pendant la perte, mot « MENU » de l'image, polices du score et du niveau, « X4 » ; C1, Espace = menu, C2, C3, C4, tête de divinité et marges du menu, moitiés de l'image des cases, D-30, gain 0,35 et canal unique du roulement, curseur Musique inerte, « Retour au menu principal » → nouvelle partie, boutons du HUD au toucher seulement ; B1, B3, D-21, bille en attente sans enchaînement, B4, couleur du « +N », EPX, canvas enfant du STATS, A1–A5, A7, arrêt du pousseur à chaque insertion arrière, interligne 18 px, couvercle du crâne à 600 px, `levelwin` / pops.
+
+### Décisions consignées (orchestrateur, utilisateur)
+
+- Le standalone reste maintenu et livré à chaque version (D-43, demande de l'utilisateur).
+- L'hébergement privé (Cloudflare Pages derrière Access) et la synchronisation des scores viennent ensuite (plan 05-16) ; ils ne sont pas faits en R2.0.20.
+
+### Observation reportée (cosmétique, 05-04)
+
+- Le score du HUD est dessiné sous la tête du STATS natif (et sous celle du menu) — toujours cosmétique.
+
+### Constats
+
+| # | Constat | Analyse | Décision |
+|---|---------|---------|----------|

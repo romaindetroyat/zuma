@@ -37,3 +37,14 @@
 - **Rebonds pendant le recul ZUMA** : seulement décomptés (l'original réécrit le recul de la tête à chaque maj ; les rebonds des autres billes n'ont pas été modélisés).
 - **Jauge vide** : l'image `gauge` se lit comme une pilule jaune pleine à 0 point (inchangé depuis R2.0.18). Cosmétique.
 - **`lost` émis deux fois par perte** (« Perdu… » affiché deux fois) : — **Corrigé en 05-13** (`checkEnd` n'émet plus que `gameover` à la fin de la vidange ; verrou `r219` « one `lost` event per loss »).
+
+## Relevés en 05-14 / 05-15 (STATS OK, PWA hors ligne installable, iPhone / iPad — R2.0.20)
+
+- **Hébergement privé et synchronisation des scores** (D-42, D-43) : Cloudflare Pages derrière Access (code à usage unique par e-mail) et scores par fonction Pages + D1 identifiés par l'utilisateur Access — plan séparé 05-16, non exécuté. L'artefact `npm run deploy` est prêt ; le service worker laisse déjà passer `api/` et `cdn-cgi/`.
+- **Vérification WebKit automatisée** : WebKit absent du banc ; iPhone / iPad seulement émulés dans Chromium (pas de marges sûres réelles, de stockage isolé, d'`audioSession`). L'installation réelle relève de l'UAT 9, après l'hébergement HTTPS.
+- **Captures d'écran du manifeste** (`screenshots`, interface d'installation enrichie de Chromium) : non fournies.
+- **Mise à jour en arrière-plan sans confirmation** : non retenue ; une nouvelle version attend toujours « Mettre à jour » (« Plus tard » masque le bandeau jusqu'au lancement suivant).
+- **« Installer » après une invite refusée** : le bouton disparaît de la vue Aide jusqu'à ce que Chromium émette un nouveau `beforeinstallprompt`.
+- **Chromium headless** : `Page.getAppId` renvoie `{}` (l'`id` du manifeste est pourtant présent) et `storage.persisted()` reste faux ; à revoir dans un vrai navigateur.
+- **Aide du menu sans pagination** (rappel de 05-10) : toujours trois astuces du pack sur sept ; la mise en page de l'astuce du STATS (05-15) n'a pas été portée à la vue Aide.
+- **Interligne de l'astuce du STATS** (05-15) : 14 px pour une police de 17 px de haut ; sur trois lignes les jambages touchent presque la ligne suivante. À ajuster si l'UAT 9 le juge serré (la boîte de 51 px ne laisse que 2–3 px de marge).
