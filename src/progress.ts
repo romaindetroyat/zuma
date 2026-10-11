@@ -319,12 +319,14 @@ export type AppEffect =
   | { kind: 'save-run'; run: RunState | null }
   | { kind: 'save-profile'; profile: Profile }
   | { kind: 'save-scores'; scores: HighScore[] }
+  /** Shared records (phase 6.1): the presentation queues the entry for api/records on the hosted build. */
+  | { kind: 'record-score'; entry: HighScore }
   | { kind: 'sound'; key: 'templecomplete' | 'button' };
 
 type AppStep = { state: AppState; effects: AppEffect[] };
 
-/** Effects that write to the storage: dropped in review sessions (?level=) so the table is never polluted. */
-const WRITE_EFFECTS: ReadonlySet<AppEffect['kind']> = new Set(['save-run', 'save-profile', 'save-scores']);
+/** Effects that write to the storage (record-score: the shared-records queue): dropped in review sessions (?level=) so the table is never polluted. */
+const WRITE_EFFECTS: ReadonlySet<AppEffect['kind']> = new Set(['save-run', 'save-profile', 'save-scores', 'record-score']);
 
 /**
  * Profile after the hosting platform reported `raw` as the player's name: used (sanitised) when there is no profile,
@@ -467,10 +469,14 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
       if (route.kind === 'next-level') return progressStart(state, route.run);
       if (route.kind === 'final') {
         // Last stage (0x44f530: stage ≥ 12 → ending): score submitted after the final STATS (0x440c6a), save cleared.
-        const { list, rank } = insertScore(state.scores, progressEntry(state, state.run, event.score, event.date));
+        const entry = progressEntry(state, state.run, event.score, event.date);
+        const { list, rank } = insertScore(state.scores, entry);
         return {
           state: { ...state, screen: 'temple', temple: 5, run: null, scores: list, ending: { score: event.score, rank }, opening: null },
-          effects: [{ kind: 'save-scores', scores: list }, { kind: 'save-run', run: null }, { kind: 'sound', key: 'templecomplete' }],
+          effects: [
+            { kind: 'save-scores', scores: list }, { kind: 'record-score', entry },
+            { kind: 'save-run', run: null }, { kind: 'sound', key: 'templecomplete' },
+          ],
         };
       }
       // Stage done (plateau+0x186, A1): next stage saved (0x41d325), next door unlocked, adventure screen with its
@@ -497,10 +503,11 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
     case 'gameover': {
       // Last life lost (0x4283c4): the score enters the table, the saved run is cleared; the STATS stays on screen.
       if (state.screen !== 'level' || !state.run) return same;
-      const { list } = insertScore(state.scores, progressEntry(state, state.run, event.score, event.date));
+      const entry = progressEntry(state, state.run, event.score, event.date);
+      const { list } = insertScore(state.scores, entry);
       return {
         state: { ...state, run: null, scores: list, selected: progressDefaultStage(state) },
-        effects: [{ kind: 'save-scores', scores: list }, { kind: 'save-run', run: null }],
+        effects: [{ kind: 'save-scores', scores: list }, { kind: 'record-score', entry }, { kind: 'save-run', run: null }],
       };
     }
     case 'leave': {

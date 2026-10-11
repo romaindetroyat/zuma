@@ -13,6 +13,8 @@
  * (D-04): the server stamps the first name from the Access identity.
  */
 
+import { defaultScores, type HighScore } from './progress.js';
+
 export const RECORDS_KEY = 'zuma.records.v1';
 
 /**
@@ -232,4 +234,76 @@ export function parseRecordsStore(raw: string | null): RecordsStore {
     if (recordsIsObject(pending.times)) store.pending.times = recordsTimes(pending.times, v => (recordsIsSeconds(v) ? v : null));
   }
   return store;
+}
+
+// ------------------------------------------------------------------ display views and D-08 import
+
+/** Loopback hosts: `npm run dev` stays local (same list as fetchPlatformName in main.ts). */
+const RECORDS_LOOPBACK: readonly string[] = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
+/** True for an entry equal to one of defaultScores() (name, score, date ''). */
+export function isDemoScore(entry: HighScore): boolean {
+  return entry.date === '' && defaultScores().some(d => d.name === entry.name && d.score === entry.score);
+}
+
+/**
+ * D-08: local entries named `name` that are not demo entries (score items, in the local order) + the valid local best
+ * times (keys already in recordLevelId form). Out-of-bounds values are left out; the result never carries a name.
+ */
+export function migrationItems(
+  local: readonly HighScore[],
+  bestTimes: Readonly<Record<string, number>>,
+  name: string,
+): { scores: Array<{ score: number; stage: number; level: number; day: string }>; times: Record<string, number> } {
+  const scores = local
+    .filter(e => e.name === name && !isDemoScore(e))
+    .map(e => ({ score: e.score, stage: e.stage, level: e.level, day: e.date }))
+    .filter(recordsValidEntry);
+  const times = recordsTimes(bestTimes, v => (recordsIsSeconds(v) ? v : null));
+  return { scores, times };
+}
+
+/**
+ * Table to draw for `scope` (HighScore shape, date = day): server copy ∪ pending (named `myName`), sorted (server
+ * entries first on equal scores, as insertScore), ≤ 10; without a server copy: 'shared' → `local` as is, 'mine' → the
+ * local non-demo entries named `myName` (pending scores are already in the local table).
+ */
+export function scoresView(store: RecordsStore, scope: RecordScope, local: readonly HighScore[], myName: string): HighScore[] {
+  if (!store.cache) {
+    const rows = scope === 'shared' ? local : local.filter(e => e.name === myName && !isDemoScore(e));
+    return rows.map(e => ({ ...e }));
+  }
+  const server = store.cache[scope].scores.map(e => ({ name: e.name, score: e.score, stage: e.stage, level: e.level, date: e.day }));
+  const pending = store.pending.scores.map(e => ({ name: myName, score: e.score, stage: e.stage, level: e.level, date: e.day }));
+  return recordsSorted([...server, ...pending], RECORD_BOUNDS.listMax);
+}
+
+/**
+ * Best time of `level` with its holder, and the personal best when it differs (else null). `local` = this device's
+ * best (zuma.best.<id>, the win just made included) or null. Personal = min(server « mine », pending, local); the
+ * shared holder keeps the record on a tie.
+ */
+export function levelRecord(store: RecordsStore, level: string, local: number | null, myName: string): { best: SharedTime | null; personal: number | null } {
+  const id = recordLevelId(level);
+  const shared = store.cache ? recordsOwn(store.cache.shared.times, id) ?? null : null;
+  const mine = [
+    store.cache ? recordsOwn(store.cache.mine.times, id) : undefined,
+    recordsOwn(store.pending.times, id),
+    local,
+  ].filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  const personal = mine.length > 0 ? Math.min(...mine) : null;
+  if (personal === null) return { best: shared ? { ...shared } : null, personal: null };
+  if (!shared || personal < shared.seconds) return { best: { seconds: personal, name: myName }, personal: null };
+  return { best: { ...shared }, personal: personal === shared.seconds ? null : personal };
+}
+
+/** 0-based row of the first entry named `name` with `score`, or null. */
+export function rankOf(list: readonly HighScore[], name: string, score: number): number | null {
+  const at = list.findIndex(e => e.name === name && e.score === score);
+  return at < 0 ? null : at;
+}
+
+/** Shared records only on the hosted build (D-01): http(s), not a loopback host, pack present. */
+export function recordsEnabled(where: { protocol: string; hostname: string; hasPack: boolean }): boolean {
+  return (where.protocol === 'http:' || where.protocol === 'https:') && !RECORDS_LOOPBACK.includes(where.hostname) && where.hasPack === true;
 }
