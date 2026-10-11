@@ -106,12 +106,13 @@ export const GOD_LINES: Readonly<Record<1 | 2 | 3 | 4 | 5, { god: readonly strin
 
 /**
  * Temple names 1..4 (string keys tested for existence by the original, 0x403e60). QUETZAL_QUATL and POPO_POYOLLI are
- * absent from the French pack (research Pitfall 9): their fallbacks take the form of TEMPLE_OF_ZUKULKAN (hypothesis).
+ * absent from the French pack (research Pitfall 9): the original then draws its own literals « QUETZAL QUATL » and
+ * « POPO POYOLLI » (0x550504, 0x5504d0, plan 06-04).
  */
 export const TEMPLE_NAMES: readonly { key: string; fallback: string }[] = [
   { key: 'TEMPLE_OF_ZUKULKAN', fallback: 'TEMPLE DE ZUKULKAN' },
-  { key: 'QUETZAL_QUATL', fallback: 'TEMPLE DE QUETZAL QUATL' },
-  { key: 'POPO_POYOLLI', fallback: 'TEMPLE DE POPO POYOLLI' },
+  { key: 'QUETZAL_QUATL', fallback: 'QUETZAL QUATL' },
+  { key: 'POPO_POYOLLI', fallback: 'POPO POYOLLI' },
   { key: 'SECRET_SHRINE_OF_ZUMA', fallback: 'TEMPLE SECRET DE ZUMA' },
 ];
 

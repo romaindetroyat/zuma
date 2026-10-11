@@ -217,8 +217,8 @@ test('welcomeHit: stone boxes (masks not consulted), the frog, the welcome line,
 });
 
 test('bundle: welcome after progress in MODULES, precached by the worker shell, copied to dist/js, no DOM at module level', () => {
-  assert.match(read('tools/build.mjs'), /'progress', 'welcome', 'main'/);
-  assert.match(read('public/sw.js'), /'\.\/js\/progress\.js', '\.\/js\/welcome\.js', '\.\/js\/main\.js'/);
+  assert.match(read('tools/build.mjs'), /'progress', 'welcome', 'adventure', 'main'/); // R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04)
+  assert.match(read('public/sw.js'), /'\.\/js\/progress\.js', '\.\/js\/welcome\.js', '\.\/js\/adventure\.js', '\.\/js\/main\.js'/); // R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04)
   assert.ok(fs.existsSync('dist/js/welcome.js'));
   const src = read('.compiled/welcome.js');
   assert.doesNotMatch(src, /^[^\s}][^\n(]*\b(document|window)\./m, 'no top-level DOM access');
