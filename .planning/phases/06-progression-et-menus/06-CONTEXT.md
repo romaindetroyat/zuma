@@ -38,3 +38,11 @@ Couvre PROG-01 (aventure par temples, transitions), PROG-02 (meilleurs scores ; 
 - **D-08:** « Comment imaginer 10 niveaux de plus ? » : procédure décrite à l'utilisateur, rien n'est lancé (voir `.planning/notes/niveaux-supplementaires.md`).
 
 </decisions>
+
+<decisions-after-research>
+## Décisions après la recherche 06 (2026-10-11)
+
+- **D-09:** Difficulté (D-06/D-07 révisés, accord explicite de l'utilisateur) : la règle originale est appliquée telle quelle — l'arrêt du pousseur (40 maj, reprise depuis 0) n'a lieu que lorsque la bille la plus en arrière (celle que pousse le pousseur) est détruite, jamais à une insertion (0x423a10, stop 0x423ac7–0x423ad6). Correction supérieure aux « petits pourcentages », acceptée parce qu'elle restitue l'original ; aucune autre accélération (pas d'accélération par temple en aventure). `colors` inchangé.
+- **D-10:** Écran de fin : image `happyending`, « Félicitations », score final et tableau des 10 meilleurs scores avec la place de la partie, puis retour à l'écran d'accueil ; pas de crédits (noms PopCap non recopiés).
+- **D-11:** Écran d'accueil : boutons Aventure et Options actifs ; Gauntlet, Plus de jeux, Quitter affichés mais désactivés ; Aide dans le dialogue Options comme l'original ; animations et sons selon la recherche 06 (soleil, yeux, survol `choral1`, OVNI). Meilleurs scores : 10 entrées « adventure » (nom du profil saisi une fois au premier lancement, score), enregistrées à la fin de partie et après le STATS final ; valeurs initiales de démonstration sans noms PopCap.
+</decisions-after-research>
