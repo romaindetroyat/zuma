@@ -89,6 +89,8 @@ class Game {
   private fx: Fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
   private message: { text: string; sub: string | null; until: number } | null = null;
   private endAt: number | null = null;
+  /** Engine tick until which the reserve frogs blink after an extra life (150 maj × 0.6 = 90 ticks, board+0x178). */
+  private livesBlinkUntil = 0;
   private seed = Date.now() >>> 0;
   private pointer: Point = { x: WIDTH / 2, y: HEIGHT };
   private loading = true;
@@ -204,7 +206,7 @@ class Game {
   // ----------------------------------------------------------------- assets
 
   private async loadAssets(pack: OriginalPack): Promise<RenderAssets> {
-    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, pitcover, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, titleFont, textFont, floatFont] = await Promise.all([
+    const [balls, ballShadow, bomb, slow, backwards, accuracy, hole, pitcover, grey, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, menuButton, coin, sparkle, titleFont, textFont, floatFont] = await Promise.all([
       pack.ballSheets(),
       pack.shadow('_ballshadow'),
       pack.powerIcons('bomb'),
@@ -221,6 +223,7 @@ class Game {
       pack.masked('gauge'),
       pack.masked('gaugegreen', '_gauge'),
       pack.masked('toadlives'),
+      pack.masked('menubutton'),
       pack.sheet('coin', 36, '_coin'),
       pack.image('sparkle'),
       loadBitmapFont(pack, 'nativealienextended18'),
@@ -229,7 +232,7 @@ class Game {
     ]);
     const explosions = grey ? EXPLOSION_RGB.map(rgb => tintSheet(grey, rgb)) : EXPLOSION_RGB.map(() => null);
     const fonts = titleFont || textFont || floatFont ? { title: titleFont, text: textFont, float: floatFont } : null;
-    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, coin, sparkle, fonts, pixelScale: 1 };
+    return { balls, ballShadow, powers: { bomb, slow, backwards, accuracy }, hole, pitcover, explosions, frogPad, tongue, eyeblink, menubar, gauge, gaugeGreen, lives, menuButton, coin, sparkle, fonts, pixelScale: 1 };
   }
 
   // ----------------------------------------------------------------- levels
@@ -309,6 +312,7 @@ class Game {
     // Coin spots of the pack level (D-07); an empty list keeps the engine free of extra RNG draws.
     engine.setTreasure(this.level.graphics?.treasure ?? []);
     this.engine = engine;
+    this.livesBlinkUntil = 0;
     this.fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
     this.endAt = null;
     this.paused = false;
@@ -411,6 +415,9 @@ class Game {
     return {
       levelLabel: this.level?.label ?? '',
       lives: Math.max(0, engine.lives),
+      // plateau+0xf4 = 2 from the loss (0x428391): the frog in play is counted with the reserve while the chain drains.
+      dying: engine.state === 'draining' || engine.state === 'lost' || engine.state === 'gameover',
+      livesBlink: Math.max(0, this.livesBlinkUntil - engine.tick),
       score: engine.score,
       progress: engine.zumaMode ? 1 : Math.min(1, engine.levelScore / engine.config.target),
       zuma: engine.zumaMode,
@@ -500,9 +507,12 @@ class Game {
         case 'lost':
           this.showMessage('Perdu…', engine.lives > 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
           break;
+        case 'extra-life':
+          // No text (spike 03 Q3: the original only plays `extralife` three times); the reserve frogs blink 1.5 s
+          // (board+0x178 = 150 maj at each life, 0x4173e8 → 90 ticks) and the HUD reads engine.lives at the next frame.
+          this.livesBlinkUntil = engine.tick + 90;
+          break;
         // `won`: no message — the time bonus is counted up inside the STATS dialog (D-15 → count-up, §8).
-        // `extra-life`: no text either (spike 03 Q3: the original only plays `extralife` three times); the HUD
-        // reads engine.lives at the next frame.
       }
     }
   }

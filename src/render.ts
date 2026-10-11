@@ -24,6 +24,8 @@ export interface RenderAssets {
   gauge: Bitmap | null;
   gaugeGreen: Bitmap | null;
   lives: Bitmap | null;
+  /** MenuButton: three 99 × 25 states side by side (normal, hover, pressed) masked by _Menubutton; the word MENU is in the picture. */
+  menuButton: Bitmap | null;
   /** COIN: 30 frames 36×36 (one every 3 ticks) masked by _COIN (D-08). */
   coin: Sheet | null;
   /** sparkle: 14 horizontal frames 20×20 on black, composited `lighter` over the coin (D-08). */
@@ -55,7 +57,12 @@ export interface Fx { bursts: ColorBurst[]; floats: FloatingText[]; tongueStart:
 
 export interface HudState {
   levelLabel: string;
+  /** Frogs of the game, the one in play included (engine.lives). */
   lives: number;
+  /** A life is being lost (`plateau+0xf4 == 2`, 0x428391): the frog in play is counted with the reserve. */
+  dying: boolean;
+  /** Ticks left of the blink after an extra life (0 = none), see livesHidden. */
+  livesBlink: number;
   score: number;
   progress: number;
   zuma: boolean;
@@ -83,9 +90,24 @@ const VECTOR_BUTTONS: Record<'menu' | 'stats', HudButtonBox> = {
   menu: { x: 8, y: 8, w: 76, h: 28, label: 'MENU' },
   stats: { x: WIDTH - 84, y: 8, w: 76, h: 28, label: 'STATS' },
 };
-/** Slots of the original menubar artwork (green/red/black ovals along the top edge). */
+/**
+ * Slots of the original top bar (Board::Draw → 0x40fa90, spike 04 Q3), on the ovals of Menubar.jpg (green 22–125,
+ * red 168–230, black 272–368, red 408–470, green 518–615): reserve frogs `ToadLives` (24 × 23) at x 28 + 35 i, y 3,
+ * three at most, « x%d » at (67, baseline 22) beyond (0x40fbe7–0x40fca2); level label yellow centred on x 200,
+ * baseline 15; score right-aligned on x 360, baseline 17; gauge at (409, 2); MENU button `Resize(0x207, 3, 297 / 3,
+ * h)` (0x41c9a6–0x41c9bd).
+ */
+export const HUD_LAYOUT = {
+  lives: { x: 28, y: 3, step: 35, max: 3, label: { x: 67, baseline: 22 } },
+  level: { cx: 200, baseline: 15 },
+  score: { right: 360, baseline: 17 },
+  gauge: { x: 409, y: 2 },
+  menu: { x: 519, y: 3, w: 99, h: 25 },
+} as const;
+
+/** Buttons of the original artwork; the MENU touch zone follows its picture (D-26: mouse clicks still shoot). */
 const ORIGINAL_BUTTONS: Record<'menu' | 'stats', HudButtonBox> = {
-  menu: { x: 22, y: 4, w: 104, h: 26, label: 'MENU' },
+  menu: { ...HUD_LAYOUT.menu, label: 'MENU' },
   stats: { x: WIDTH - 86, y: HEIGHT - 30, w: 76, h: 24, label: 'STATS' },
 };
 export type HudButton = 'menu' | 'stats';
@@ -672,28 +694,40 @@ export class Renderer {
       // Original artwork: MENU slot, lives slot, score slot, level slot, gauge slot (2 × copy drawn at 640 × 480, D-19).
       const k = this.assets.pixelScale;
       ctx.drawImage(this.assets.menubar, 0, 0, this.assets.menubar.width / k, this.assets.menubar.height / k);
-      ctx.fillStyle = '#f3e4b8';
-      ctx.font = font(15);
-      ctx.textAlign = 'center';
-      ctx.fillText('MENU', 74, 18);
-      // The menubar slot holds three frogs at x 172 (20 px each); beyond, « +N » (display cap only — no cap on lives, D-27).
-      const frogs = lifeIcons(hud.lives, 3);
-      for (let i = 0; i < frogs.icons; i++) {
-        if (this.assets.lives) ctx.drawImage(this.assets.lives, 172 + i * 20, 6, 20, 19);
+      const L = HUD_LAYOUT;
+      // Reserve frogs (0x40fa90): N = lives − 1 (+1 while dying), three icons at most, one icon and « xN » beyond;
+      // hidden in alternation for 1.5 s after an extra life (board+0x178 & 0x10).
+      const frogs = lifeIcons(hud.lives, hud.dying);
+      if (!livesHidden(hud.livesBlink)) {
+        for (let i = 0; i < frogs.icons; i++) {
+          if (this.assets.lives) ctx.drawImage(this.assets.lives, L.lives.x + L.lives.step * i, L.lives.y, 24, 23);
+        }
+        if (frogs.label) {
+          // 0xFFFF00 in FONT_FLOAT (CancunFloat14), left-aligned at (67, 22).
+          const floatFont = this.assets.fonts?.float ?? null;
+          if (floatFont) {
+            floatFont.draw(ctx, frogs.label, L.lives.label.x, L.lives.label.baseline, { align: 'left', tint: '#ffff00', multiply: '#ffff00' });
+          } else {
+            ctx.textBaseline = 'alphabetic';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#ffff00';
+            ctx.font = font(14);
+            ctx.fillText(frogs.label, L.lives.label.x, L.lives.label.baseline);
+          }
+        }
       }
-      if (frogs.extra > 0) {
-        ctx.font = font(11);
-        ctx.fillText(`+${frogs.extra}`, 236, 18);
-      }
+      ctx.textBaseline = 'alphabetic';
       ctx.font = font(17);
       ctx.textAlign = 'right';
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(String(hud.score), 362, 18);
+      ctx.fillText(String(hud.score), L.score.right, L.score.baseline);
       ctx.textAlign = 'center';
       ctx.font = font(14);
-      ctx.fillText(hud.levelLabel, 440, 18);
-      const gx = 536;
-      const gy = 8;
+      ctx.fillStyle = '#ffff00';
+      ctx.fillText(hud.levelLabel, L.level.cx, L.level.baseline);
+      ctx.textBaseline = 'middle';
+      const gx = HUD_LAYOUT.gauge.x;
+      const gy = HUD_LAYOUT.gauge.y;
       if (this.assets.gauge) ctx.drawImage(this.assets.gauge, gx, gy);
       const fill = Math.max(0, Math.min(1, hud.progress));
       if (this.assets.gaugeGreen && fill > 0) {
@@ -709,6 +743,17 @@ export class Renderer {
         ctx.font = font(11);
         ctx.fillStyle = `hsl(${(frame * 6) % 360},90%,70%)`;
         ctx.fillText('ZUMA !', gx + 31, gy + 9);
+      }
+      // MENU button: first state of MenuButton (99 × 25), the word is part of the picture; text fallback without it.
+      const m = HUD_LAYOUT.menu;
+      const button = this.assets.menuButton;
+      if (button) {
+        const sw = button.width / 3;
+        ctx.drawImage(button, 0, 0, sw, button.height, m.x, m.y, m.w, m.h);
+      } else {
+        ctx.fillStyle = '#f3e4b8';
+        ctx.font = font(15);
+        ctx.fillText('MENU', m.x + m.w / 2, m.y + m.h / 2 + 1);
       }
       const b = ORIGINAL_BUTTONS.stats;
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -740,8 +785,9 @@ export class Renderer {
         ctx.textAlign = 'center';
         ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
       }
-      const frogs = lifeIcons(hud.lives, 6);
-      for (let i = 0; i < frogs.icons; i++) {
+      const frogs = lifeIcons(hud.lives, hud.dying);
+      const shown = livesHidden(hud.livesBlink) ? 0 : frogs.icons;
+      for (let i = 0; i < shown; i++) {
         const x = 98 + i * 24;
         ctx.fillStyle = '#6fd34a';
         ctx.beginPath();
@@ -751,11 +797,11 @@ export class Renderer {
         ctx.fillRect(x + 6, 17, 2, 2);
         ctx.fillRect(x + 12, 17, 2, 2);
       }
-      if (frogs.extra > 0) {
-        ctx.fillStyle = '#f7ecc8';
+      if (frogs.label && shown > 0) {
+        ctx.fillStyle = '#ffff00';
         ctx.font = font(11);
         ctx.textAlign = 'left';
-        ctx.fillText(`+${frogs.extra}`, 98 + frogs.icons * 24, 22);
+        ctx.fillText(frogs.label, 98 + frogs.icons * 24, 22);
       }
       ctx.fillStyle = '#f7ecc8';
       ctx.font = font(15);
@@ -876,14 +922,24 @@ export function fitScale(innerWidth: number, innerHeight: number, dpr: number, p
 }
 
 /**
- * Frogs drawn in the HUD lives slot (D-27): `icons` = min(lives, cap), `extra` = lives − icons shown as « +N ».
- * Negative or non-finite → nothing. The cap is a display limit; the engine has none.
+ * Reserve frogs of the top bar (0x40fa90, D-33): N = max(0, ⌊lives⌋ − 1) — the frog in play is not counted — or
+ * ⌊lives⌋ while `dying` (`plateau+0xf4 == 2` at the loss, 0x428391). N ≤ 3 → N icons; beyond, one icon and « xN »
+ * (`"x%d"`, 0x54c93c). Negative or non-finite → nothing; at most 3 icons whatever the count (T-05-41).
  */
-export function lifeIcons(lives: number, cap = 3): { icons: number; extra: number } {
-  if (!Number.isFinite(lives) || lives <= 0) return { icons: 0, extra: 0 };
-  const n = Math.floor(lives);
-  const icons = Math.min(n, Math.max(0, Math.floor(cap)));
-  return { icons, extra: n - icons };
+export function lifeIcons(lives: number, dying = false): { icons: number; count: number; label: string | null } {
+  if (!Number.isFinite(lives)) return { icons: 0, count: 0, label: null };
+  const count = Math.max(0, Math.floor(lives) - (dying ? 0 : 1));
+  if (count <= HUD_LAYOUT.lives.max) return { icons: count, count, label: null };
+  return { icons: 1, count, label: `x${count}` };
+}
+
+/**
+ * Blink after an extra life (board+0x178 = 150 maj at each life, 0x4173e8, counted down every maj 0x401e35): the
+ * frogs are hidden while the counter has bit 0x10 — `left` ticks → ⌊left × 5 / 3⌋ maj. 0 or non-finite → visible.
+ */
+export function livesHidden(left: number): boolean {
+  if (!Number.isFinite(left) || left <= 0) return false;
+  return (Math.floor((left * 5) / 3) & 16) !== 0;
 }
 
 /** Pit cover frame for a threat level 0..1: 0 → closed lid (frame 0), 1 → last frame (open). */
