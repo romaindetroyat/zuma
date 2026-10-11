@@ -2,7 +2,7 @@
 
 Reconstruction web/PWA d'un jeu de billes de type Zuma, développée à partir d'un audit comportemental et de tests de non-régression.
 
-Baseline : **R2.0.21**.
+Baseline : **R2.0.22**.
 
 ## Contenu du dépôt
 
@@ -15,12 +15,13 @@ Baseline : **R2.0.21**.
 | `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
 | `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu ou hors partie). |
 | `src/progress.ts` | Règles pures de la progression : étages, temples, portes, textes du dieu, meilleurs scores, profil, sauvegarde de partie, machine d'états des écrans (accueil, aventure, niveau, temple, fin). |
+| `src/records.ts` | Règles pures des records partagés de la version hébergée : file d'envoi « le meilleur gagne », bornes, vues « TOUS » / « MOI », reprise des records locaux, échange avec `api/records` sans jamais bloquer. |
 | `src/welcome.ts` | Menu principal original (ciel, soleil, yeux, pierres, OVNI), dialogues de nom et de reprise. |
 | `src/adventure.ts` | Écran d'aventure original (temples, portes, plaque des scores, arrivée d'un temple), dialogue du dieu, écran de fin. |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
 | `src/main.ts` | Boucle de jeu, écrans (exécution des effets de la machine d'états), entrées (souris, clavier, toucher), menu de jeu, carte d'installation, bandeau de mise à jour. |
 | `src/pwa.ts` | Service worker (enregistrement, mise à jour confirmée), stockage hors ligne, consignes d'installation par plateforme, rotation et marges sûres. |
-| `tools/` | Build (`build.mjs`, service worker généré par `swgen.mjs`, icônes PNG par `icons.mjs`), serveur local, garde-fou de publication, extraction et import des ressources originales, mesure de la difficulté (`sim-difficulty.mjs`), hébergement privé (`deploy.mjs`, `d1worker.mjs`). |
+| `tools/` | Build (`build.mjs`, service worker généré par `swgen.mjs`, icônes PNG par `icons.mjs`), serveur local, garde-fou de publication, extraction et import des ressources originales, mesure de la difficulté (`sim-difficulty.mjs`), hébergement privé (`deploy.mjs`, `d1worker.mjs`, `recordsapi.mjs` pour les records partagés). |
 | `tests/` | Suite de non-régression (`node --test`). |
 
 ## Démarrage
@@ -67,7 +68,17 @@ Depuis R2.0.21, le jeu suit le parcours de l'aventure de Zuma Deluxe, écran par
 
 **Reprise de partie.** La partie est sauvegardée au début de chaque niveau (étage, niveau, score, vies). MENU › « Retour au menu principal » (avec confirmation) mène à l'écran d'aventure sans perdre la partie. Au lancement suivant, « Aventure » propose **« Continuer »** (reprendre au début du niveau sauvegardé) ou **« Rejouer »** (effacer la sauvegarde et choisir une porte).
 
-**Meilleurs scores.** Le tableau garde les **dix meilleurs scores** de l'aventure (nom du profil et score), avec trois valeurs de démonstration au départ. Il est **local à cet appareil et à ce navigateur** : il n'est pas synchronisé entre appareils, et effacer les données du site efface le profil, la sauvegarde et les scores. Clés `localStorage` : `zuma.profile.v1`, `zuma.save.v1`, `zuma.highscores.v1`.
+**Meilleurs scores.** Le tableau garde les **dix meilleurs scores** de l'aventure (nom du profil et score), avec trois valeurs de démonstration au départ. Sur cet appareil, il est gardé localement ; effacer les données du site efface le profil, la sauvegarde et les scores. Clés `localStorage` : `zuma.profile.v1`, `zuma.save.v1`, `zuma.highscores.v1`, et `zuma.records.v1` sur la version hébergée.
+
+**Records** (depuis R2.0.22).
+
+- **Version hébergée** : les records sont communs à tous les invités **et** personnels.
+  - La plaque RECORDS de l'écran d'aventure et de l'écran de fin montre le **tableau commun** (« TOUS ») ; **toucher ou cliquer la plaque RECORDS** bascule sur **vos records** (« MOI »), les mêmes sur tous vos appareils. Chaque lancement repart sur « TOUS ».
+  - Le STATS de fin de niveau montre le **meilleur temps du niveau avec le prénom de son auteur** (« (PRÉNOM) » sous la ligne RECORD) et, s'il est différent, votre meilleur temps (« MOI »).
+  - Le prénom est celui de votre adresse de connexion (voir « Ajouter un joueur ») ; le jeu ne l'envoie jamais lui-même.
+  - **Hors ligne**, le jeu continue normalement : les records attendent sur l'appareil et partent au retour du réseau (au lancement suivant, ou dès que la connexion revient). Le jeu n'attend jamais le serveur.
+  - Au premier lancement de R2.0.22 sur un appareil, ses meilleurs temps et ses scores inscrits à votre prénom rejoignent les records partagés, une seule fois (jamais les valeurs de démonstration).
+- **Standalone et `npm run dev`** : records de cet appareil seulement, comme avant ; le STATS montre le nom du profil à côté du meilleur temps.
 
 Pas encore de musique sur ces écrans (phase 7).
 
@@ -144,6 +155,12 @@ node tools/deploy.mjs --dry-run   # répétition complète sur un compte simulé
 
 Le contenu de `dist/` est rangé dans une base D1 (`zuma-assets`) et servi par un worker Pages généré à chaque déploiement, qui vérifie la connexion Access de chaque requête (sauf `/public/`). Le déploiement fonctionne donc aussi depuis la session cloud ; `--direct` garde l'ancien envoi direct de Pages (depuis le Mac).
 
+**Records partagés** (R2.0.22) : une **seconde base D1, `zuma-scores`**, liée au projet sous le nom **`SCORES_DB`**, garde les records de tous les joueurs. Le worker y répond à `api/records` (lecture et envoi des records, même contrôle Access que le reste). Elle ne contient **aucune donnée personnelle hors les prénoms** : chaque joueur y est identifié par l'empreinte SHA-256 de son adresse, jamais par l'adresse elle-même. Le déploiement la crée, crée ses deux tables (`scores`, `times`) et la lie au projet ; il ne supprime jamais rien et n'y écrit aucune ligne lui-même.
+
+- **Premier déploiement de R2.0.22** : `node tools/deploy.mjs --plan` doit annoncer `create-d1-scores-database`, `create-scores-tables`, `bind-d1` et `deploy-worker`, avec la ligne « records : base « zuma-scores » absente ; tables : aucune ». Après `npm run deploy:private`, un nouveau `--plan` annonce « actions prévues : 0 » et `--verify` indique la base et la liaison `SCORES_DB` en place.
+- Une liaison ne s'applique qu'aux nouveaux déploiements : le script redéploie toujours le worker après avoir changé les liaisons.
+- Le jeton n'a besoin d'aucune permission de plus (*D1 : Edit* couvre les deux bases).
+
 - **Configuration privée** `private_assets/deploy.json` (dossier ignoré par Git) :
 
   ```json
@@ -179,7 +196,7 @@ Le contenu de `dist/` est rangé dans une base D1 (`zuma-assets`) et servi par u
 
 #### Ajouter un joueur
 
-Sur la version hébergée, le jeu connaît le prénom du joueur par son adresse de connexion : le worker répond à `api/me` par `{ "name": "<prénom>" }` pour l'adresse authentifiée par Access, et rien (404) pour une adresse sans prénom. Le jeu utilise ce prénom pour l'accueil et les meilleurs scores, sans demander de nom. Un nom saisi à la main sur un appareil n'est jamais remplacé. Le worker ne contient que les empreintes SHA-256 des adresses, jamais les adresses elles-mêmes. Le standalone et l'usage local gardent la saisie du nom.
+Sur la version hébergée, le jeu connaît le prénom du joueur par son adresse de connexion : le worker répond à `api/me` par `{ "name": "<prénom>" }` pour l'adresse authentifiée par Access, et rien (404) pour une adresse sans prénom. Le jeu utilise ce prénom pour l'accueil et les meilleurs scores, sans demander de nom. **Depuis R2.0.22, ce prénom apparaît aussi sur ses records partagés** : le worker l'appose lui-même à chaque record envoyé. Une adresse de `allow` sans prénom joue sous **« Joueur »** dans les records communs. Le prénom est figé au moment où le record est écrit : changer un prénom dans `players` ne renomme pas les records déjà enregistrés, et retirer un joueur laisse ses records sous son prénom. Un nom saisi à la main sur un appareil n'est jamais remplacé. Le worker ne contient que les empreintes SHA-256 des adresses, jamais les adresses elles-mêmes. Le standalone et l'usage local gardent la saisie du nom.
 
 1. Dans `private_assets/deploy.json`, ajoutez une ligne `"adresse": "Prénom"` dans `players`, par exemple `"joueur@example.org": "Prénom"`. L'adresse est alors autorisée, sans autre liste à tenir.
 2. Ajoutez la même adresse à la politique Access existante : Zero Trust › Access › Policies › « Zuma — joueurs » › règle e-mail. Le script ne réécrit jamais un objet existant : sans cette étape, il signale un conflit et s'arrête sans rien modifier.
@@ -211,12 +228,13 @@ Si la page du code revient sans fin, ou si elle s'ouvre dans Safari pendant que 
 
 #### Retirer l'hébergement
 
-`node tools/deploy.mjs --rollback-plan` affiche les étapes de retrait sans rien exécuter : **rien n'est supprimé automatiquement**. L'ordre compte : supprimer d'abord le projet Pages, pour que le jeu ne soit jamais servi sans protection, puis les applications Access. Depuis le tableau de bord :
+`node tools/deploy.mjs --rollback-plan` affiche les étapes de retrait sans rien exécuter : **rien n'est supprimé automatiquement**. L'ordre compte : retirer d'abord le contenu (bases D1, puis projet Pages), pour que le jeu ne soit jamais servi sans protection, puis les applications Access. Depuis le tableau de bord :
 
-1. Workers & Pages › zuma › Settings › Delete project ;
-2. Zero Trust › Access › Applications › Zuma › Delete, puis « Zuma — fichiers publics » ;
-3. les politiques « Zuma — joueurs » et « Zuma — fichiers publics », si plus aucune application ne les utilise ;
-4. la méthode « One-time PIN » peut rester. Si vous la retirez, vos autres applications peuvent ensuite retrouver leur réglage de fournisseur d'origine (liste vide).
+1. les bases D1, après le retrait de leurs liaisons (étapes 2 à 5 du `--rollback-plan`) : Storage & Databases › D1 › `zuma-assets`, puis `zuma-scores` › Settings › Delete. **Supprimer `zuma-scores` efface les records communs et personnels de tous les joueurs** : exportez-la d'abord depuis la même page si vous voulez les garder ;
+2. Workers & Pages › zuma › Settings › Delete project ;
+3. Zero Trust › Access › Applications › Zuma › Delete, puis « Zuma — fichiers publics » ;
+4. les politiques « Zuma — joueurs » et « Zuma — fichiers publics », si plus aucune application ne les utilise ;
+5. la méthode « One-time PIN » peut rester. Si vous la retirez, vos autres applications peuvent ensuite retrouver leur réglage de fournisseur d'origine (liste vide).
 
 ## Ressources originales (optionnelles, jamais publiées)
 
@@ -378,7 +396,8 @@ Le jeu est simulé et dessiné en 640×480 logiques ; le canvas est mis à l'éc
 - décodage CURV aligné (tunnel, priorité 0..3), priorité d'une bille aux deux bords, projectile qui traverse une bille en tunnel, cinq passes de dessin sans bille omise ; vies tous les 50 000 points (sans plafond, aussi pendant le compte à rebours) avec triple `extralife` et compteur de grenouilles ; cadence originale des pièces (10 s, 13 s, 1/180 par tick, rien après ZUMA, `dist` en %), `coinappear` à 0,40 et panoramique ; décompte simultané sur plusieurs chaînes ; menu de jeu (disposition, aide, confirmation, composition, pause, volume) ; visée et tir sur toute la fenêtre, liaisons clavier, `stagePoint`, `fitScale` ; roulement 0,35 / 50 ms / 500 ms (`tests/r218*.test.mjs`) ;
 - destruction en 24 ticks sans mouvement ; attraction `v = 10` après la destruction et `v = 1` après un tir sans alignement (⌊v/8⌋ px par maj, sans plafond) ; rebond au contact (18 ticks à max(50, 150 × profondeur) px/s, toute la chaîne, pousseur arrêté ≥ 12 ticks) ; recul ZUMA par chaîne depuis la tête (100 px/s, 180 ticks au plus, arrêt sous 50 px) et `ball-exit` sous 1 px ; pièce à 36 px qui consomme le tir ; trois grenouilles par partie et un seul `lost` par perte ; sons du contact et de l'impact, anti-rafale 250 ms, `power-spawn` muet ; réserve de grenouilles, « xN », clignotement, barre du haut recalée (`tests/r219*.test.mjs`) ;
 - bouton OK du STATS selon la règle du pied du `Dialog` original, dessin en trois tranches partagé avec le menu, zone cliquable alignée ; service worker généré (deux caches, seules les ressources absentes téléchargées, routage hors ligne, mise à jour sur confirmation, `api/` jamais intercepté), artefact `--deploy`, icônes PNG, manifeste, métadonnées Apple, consignes d'installation par plateforme (aucune hors http(s)) ; toucher la grenouille = échange, rotation, marges sûres, plein écran conditionnel, audio iOS ; astuce complète en `Arial12Bold` pour les sept astuces du pack (`tests/r220*.test.mjs`) ;
-- arrêt du pousseur au retrait de la bille arrière, jamais à l'insertion ; outil de simulation de la difficulté ; progression par étages et temples, portes, textes du dieu, tableau des dix meilleurs scores, profil, sauvegarde, machine d'états des écrans, revue sans écriture, prénom de l'hébergement ; menu principal original (composition, animations, sons, OVNI, OPTIONS hors partie, dialogues de nom et de reprise) ; écran d'aventure (portes, plaque, arrivée des temples), dialogue du dieu, écran de fin et routage après un niveau ; route `api/me` du worker (`tests/r221*.test.mjs`).
+- arrêt du pousseur au retrait de la bille arrière, jamais à l'insertion ; outil de simulation de la difficulté ; progression par étages et temples, portes, textes du dieu, tableau des dix meilleurs scores, profil, sauvegarde, machine d'états des écrans, revue sans écriture, prénom de l'hébergement ; menu principal original (composition, animations, sons, OVNI, OPTIONS hors partie, dialogues de nom et de reprise) ; écran d'aventure (portes, plaque, arrivée des temples), dialogue du dieu, écran de fin et routage après un niveau ; route `api/me` du worker (`tests/r221*.test.mjs`) ;
+- records partagés : file « le meilleur gagne », bornes communes au client et au worker, lectures défensives, vues « TOUS » / « MOI », reprise des records locaux, échange jamais bloquant ; route `api/records` (prénom apposé par le serveur, portées, refus, débit, SQL fermé sur un vrai SQLite) ; base `zuma-scores`, liaison `SCORES_DB` et redéploiement après liaison ; ligne du STATS et libellés des plaques (écrans R2.0.21 inchangés sans données) ; câblage de bout en bout et insertion du standalone par fonctions de remplacement ; baseline 2.0.22 (`tests/r222*.test.mjs`).
 
 ## Fournir ses propres graphismes de niveau
 
@@ -393,7 +412,9 @@ Ces fichiers vont dans `private_assets/pack/` ; `npm run dev` les charge sans au
 
 ## Statut
 
-R2.0.21 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Elle ajoute à R2.0.20 le parcours de l'aventure de l'original, composé à partir du pack : menu principal (animations, sons, OVNI), écran d'aventure (temples, portes, plaque des scores, arrivée des temples), dialogue du dieu entre les temples, écran de fin après 13-1 avec le tableau des dix meilleurs scores (sans crédits, D-10), profil saisi une fois ou fourni par l'hébergement privé (D-12), reprise de partie. Elle corrige surtout la difficulté : l'arrêt du pousseur suit la règle originale (retrait de la bille arrière, jamais une insertion, D-09), mesurable par `tools/sim-difficulty.mjs`. Sont vérifiés par analyse statique depuis R2.0.21 : cette règle, l'absence d'accélération par étage en aventure, la composition et les animations du menu principal, la composition de l'écran d'aventure (portes, plaque, textes, boutons, arrivée), les transitions de temple, les clés et la taille (10) du tableau des scores et ses soumissions (game over, fin du STATS final).
+R2.0.22 est une baseline jouable, pas une revendication de reproduction bit-à-bit. Elle ajoute à R2.0.21 les **records partagés** de la version hébergée : un tableau commun à tous les invités et les records personnels de chacun sur tous ses appareils, le meilleur temps de chaque niveau avec le prénom de son auteur (apposé par le serveur), l'envoi différé hors ligne et la reprise des records locaux, affichés dans le STATS et sur les plaques RECORDS avec la bascule « TOUS » / « MOI ». Ils vivent dans une seconde base D1 (`zuma-scores`, liaison `SCORES_DB`) créée par le déploiement. Le moteur de jeu ne change pas ; le standalone reste local, avec le nom du profil à côté du meilleur temps. Les hypothèses propres à R2.0.22 (mise en page de la sixième ligne du STATS, position de « TOUS » / « MOI », portée remise à « TOUS », meilleur temps par plateau, nom figé à l'écriture) sont listées dans `R222_RELEASE_NOTES.md` et à confirmer dans `06.1-UAT.md`.
+
+R2.0.21 ajoutait à R2.0.20 le parcours de l'aventure de l'original, composé à partir du pack : menu principal (animations, sons, OVNI), écran d'aventure (temples, portes, plaque des scores, arrivée des temples), dialogue du dieu entre les temples, écran de fin après 13-1 avec le tableau des dix meilleurs scores (sans crédits, D-10), profil saisi une fois ou fourni par l'hébergement privé (D-12), reprise de partie. Elle corrige surtout la difficulté : l'arrêt du pousseur suit la règle originale (retrait de la bille arrière, jamais une insertion, D-09), mesurable par `tools/sim-difficulty.mjs`. Sont vérifiés par analyse statique depuis R2.0.21 : cette règle, l'absence d'accélération par étage en aventure, la composition et les animations du menu principal, la composition de l'écran d'aventure (portes, plaque, textes, boutons, arrivée), les transitions de temple, les clés et la taille (10) du tableau des scores et ses soumissions (game over, fin du STATS final).
 
 R2.0.20 ajoutait à R2.0.19 le bouton OK du STATS posé par la règle du pied du `Dialog` original (lue dans l'exécutable : `Dialog::Resize` 0x4ac160, marges de 0x43ef30), une PWA installable qui est exactement le jeu local avec ses ressources, jouable hors ligne après la première visite et mise à jour sur confirmation, l'installation et le jeu au toucher sur iPhone / iPad (à vérifier sur appareils réels une fois l'hébergement privé en place), et l'astuce du STATS toujours complète en `Arial12Bold`. Le standalone reste maintenu et livré à chaque version ; l'hébergement privé est en place (Pages, D1, Access) ; la synchronisation des scores entre appareils viendra ensuite. Sont vérifiés par analyse statique de l'exécutable original : la cadence (100 Hz) et les unités de `speed` / `firespeed`, la rampe et l'arrêt du pousseur, la zone lente et la ligne de danger, l'arrivée rapide calculée depuis `start`, la génération des couleurs (`repeat`, `single`, `colors`), le seuil `score` et la condition du recul ZUMA (`zumaslow` / `zumaback` × 0,25 au-delà de 50 % de couverture), le décompte de fin de niveau (60 px / 4 maj / +100, pops toutes les 10 maj), la formule ACE TIME et son comptage dans l'écran STATS, la valeur des pièces, les couleurs du dialogue STATS ; depuis R2.0.17 le score des matches (`10 × n + 100 × combo`), l'enchaînement `(chain + 5) × 10`, le barème et le moment de paiement du bonus de saut, les textes et sons de score, l'absence de mode rapide du compte à rebours dans l'original ; et depuis R2.0.18 le format CURV (tunnel et priorité de dessin), l'ordre de dessin du plateau en cinq passes, la collision qui ignore les billes en tunnel, la composition du menu de jeu (dialogue OPTIONS en jeu, jeu en pause dessous), les vies tous les 50 000 points sans plafond avec le triple `extralife`, la cadence des pièces (`treasurefreq`, 10 s visibles, 13 s entre deux apparitions, rien après ZUMA, `dist` en pourcentage), le volume de `jewelappear` et le fondu linéaire du roulement ; et depuis R2.0.19 (spike 04) la durée de destruction (40 maj), l'attraction accélérée à la fin de la destruction et après un tir sans alignement, le rebond au contact (et l'absence de recul à l'alignement), le recul ZUMA par chaîne depuis la tête avec arrêt sous 50 px et la perte des billes qui repassent l'entrée, la prise de la pièce à 36 px qui consomme le tir, les trois grenouilles par partie, le dessin de la réserve de vies (seuil 3, « xN », clignotement) et la disposition de la barre du haut, les sons du contact et de l'impact (et leur anti-rafale), l'absence de son à l'apparition d'un power-up.
 
