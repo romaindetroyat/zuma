@@ -16,6 +16,7 @@ provides:
   - "tools/cfsim.mjs: simulated Cloudflare account (Pages, Access, D1 SQL subset) for --dry-run"
   - "tools/deploy.mjs: D1 default method, --dry-run, --direct, extended --rollback-plan, D1 line in --verify, UUID redaction"
   - "tests r220-d1 (20), r220-deploy (29 → 32) — 342 tests total"
+  - "Access JWT validation in the generated worker (deviation 7): accessSettings, generateWorker({ access: { team, aud } }), DRY_RUN_AUD; r220-d1 20 → 27, r220-deploy 32 → 33 — 350 tests total"
 affects: [real deployment by the orchestrator (Task 4), UAT 9 (05-16 Task 6), README hosting section (to update after the real deployment)]
 
 tech-stack:
@@ -41,7 +42,7 @@ metrics:
   duration: "~75 min (08:52 → 09:10 UTC, plus the KV → D1 redesign)"
   completed: 2026-10-11 (tasks 1–3; Task 4 = real deployment, pending authorisation)
   tasks: "3 of 4 (Task 4 checkpoint)"
-  commits: 8 (+ this summary)
+  commits: 8 (+ this summary) + 2 (deviation 7: 9285f75 RED, ffc8a68 GREEN)
 ---
 
 # Phase 5 Plan 17: Hébergement privé, option B (Pages `_worker.js` + D1) Summary
@@ -57,8 +58,9 @@ Le jeu complet peut maintenant être publié depuis la session avec le seul jeto
 | 2 | Client D1, liaison, déploiement (TDD) | 8d1890c (RED), 954c3c5 (GREEN) | tools/d1deploy.mjs, tools/pagesupload.mjs, tests/r220-d1.test.mjs |
 | 3 | Intégration CLI + `--dry-run` (TDD) | 309275d (RED), 58ac42a (GREEN) | tools/deploy.mjs, tools/cfsim.mjs, tools/d1deploy.mjs, tests/r220-deploy.test.mjs |
 | 4 | Déploiement réel par l'orchestrateur | **en attente d'autorisation** | — |
+| — | Écart 7 : validation du JWT Access dans le worker (TDD) | 9285f75 (RED), ffc8a68 (GREEN) | tools/d1worker.mjs, tools/deploy.mjs, tests/r220-d1.test.mjs, tests/r220-deploy.test.mjs |
 
-**Tests :** 342 + garde (319 + 20 `r220-d1` + 3 nouveaux dans `r220-deploy`), verts à chaque commit GREEN. `npm run check` propre. Aucune dépendance d'exécution ajoutée.
+**Tests :** 342 + garde (319 + 20 `r220-d1` + 3 nouveaux dans `r220-deploy`), verts à chaque commit GREEN. Après l'écart 7 : **350** + garde (7 nouveaux dans `r220-d1`, 1 dans `r220-deploy`), verts à ffc8a68. `npm run check` propre. Aucune dépendance d'exécution ajoutée.
 
 ## Worker généré (vérifié dans node:vm avec une D1 simulée)
 
@@ -132,6 +134,34 @@ Commandes : `node tools/build.mjs --deploy`, puis `node tools/deploy.mjs --dry-r
 - Permission « D1 : Edit » nommée sur un refus.
 - `pollDeployment` factorisé dans `pagesupload.mjs`, sans changement de comportement.
 
+**7. [Rule 2 - Sécurité] Le worker valide lui-même le JWT Cloudflare Access (défense en profondeur)**
+- **Constat :** le parseur d'URL WHATWG, celui du runtime Workers pour `request.url`, normalise `/public/%2e%2e/assets/pack.json` en `/assets/pack.json`. Si la périphérie Cloudflare évalue Access sur le chemin brut, l'application Bypass « Zuma — fichiers publics » (`host/public`) laisserait passer le pack privé. Le worker ne voit jamais le chemin brut : il doit donc authentifier chaque requête lui-même.
+- **Règle :** seuls GET / HEAD des fichiers exacts du manifeste sous `/public/` (manifeste PWA, icônes, `style.css`) passent sans jeton. Tout le reste exige un JWT Access valide : renvoi de navigation vers `index.html`, 404, 405 et 304 compris (aucun oracle d'existence). Le jeton est lu dans `Cf-Access-Jwt-Assertion`, sinon dans le cookie `CF_Authorization` ; un en-tête invalide n'est pas rattrapé par le cookie. Refus → 403 « Accès refusé. », `cache-control: no-store`, sans détail, sans tampon de build, sans journal, sans requête D1.
+- **Validation (WebCrypto, zéro dépendance) :**
+  - signature RS256 (`RSASSA-PKCS1-v1_5`, SHA-256) seulement ; `alg` `none` ou `HS256` refusés ; `kid` obligatoire ;
+  - clés du JWKS de l'équipe `https://<auth_domain>/cdn-cgi/access/certs` ;
+  - `iss` = `https://<auth_domain>` ; `aud` (chaîne ou liste) contient l'AUD de l'application « Zuma » ;
+  - `exp` obligatoire et > maintenant ; `nbf` / `iat` numériques et ≤ maintenant ; tolérance de 60 s sur les trois ;
+  - jeton de 8 192 caractères au plus, base64url strict, JSON objet, UTF-8 strict.
+- **Cache JWKS :**
+  - conservé 1 h par isolat ;
+  - nouvel essai sur un `kid` inconnu, une fois par requête et au plus toutes les 10 s ;
+  - après un rafraîchissement manqué, les clés précédentes restent utilisées 24 h au plus (Access garde une clé retirée valide 7 jours) ;
+  - JWKS injoignable sans clé en cache → 403 (fermé par défaut).
+  - La promesse de chargement n'est **pas** partagée entre requêtes : une requête annulée laisserait les autres suspendues, car les E/S Workers sont liées à la requête qui les lance. Des requêtes froides simultanées chargent donc chacune le JWKS une fois.
+- **Injection :** `generateWorker(manifest, { build, access: { team, aud } })` refuse de générer sans configuration valide (domaine `<équipe>.cloudflareaccess.com`, AUD de 64 chiffres hexadécimaux). `tools/deploy.mjs` génère le worker **après** la lecture de l'organisation (`auth_domain`) et la relecture de l'application « Zuma » par `GET /accounts/:id/access/apps`. Ni le domaine d'équipe ni l'AUD ne sont dans le code ou les tests. Un AUD absent ou mal formé arrête le script avant toute écriture D1 ou tout déploiement. `--dry-run` utilise `DRY_RUN_AUD` (64 zéros), jamais l'AUD réel ni celui du compte simulé. Un AUD différent (application recréée) donne un nouveau worker : `--plan` annonce alors exactement `deploy-worker`.
+- **Durcissement lié :** les fichiers protégés immuables passent de `public, max-age=31536000, immutable` à `private, …`, pour qu'aucun cache partagé ne conserve le pack servi à un joueur authentifié.
+- **Tests (node:vm, paire RSA WebCrypto, faux JWKS, horloge simulée) :**
+  - jeton valide → 200 ; cookie seul → 200 ;
+  - 403 pour : absent, vide, expiré, sans `exp`, `exp` texte, `nbf` / `iat` futurs, mauvais `aud` / `iss`, `iss` avec `/` final, autre clé sous le même `kid`, charge modifiée, `kid` inconnu ou absent, `alg: none`, `HS256`, 2 ou 4 segments, base64 invalide, JSON invalide, jeton trop long ;
+  - `/public/manifest.webmanifest` sans jeton → 200 ;
+  - `/public/%2e%2e/assets/pack.json`, normalisé par le constructeur `Request`, → 403, comme 12 autres variantes de traversée ;
+  - JWKS : un seul chargement pour plusieurs requêtes ; nouvel essai sur `kid` inconnu ; délai minimal entre essais ; TTL ; retrait de clé ; clés périmées ; reprise après une panne.
+- **`--plan` réel** (GET + SELECT, artefact `2.0.20+20261011T090925` rétabli dans `dist/`) : `actions prévues : 1` / `- deploy-worker` (worker `worker:623fb3c38acbb757`). Aucun appel en écriture vers Cloudflare.
+- **Non vérifiable d'ici :**
+  - le sous-appel du worker vers `https://falling-sun-db70.cloudflareaccess.com/cdn-cgi/access/certs` en production. S'il échoue, tout sauf `/public/` répond 403 (fermé par défaut) ; retour : redéployer le worker précédent ;
+  - la présence effective de `Cf-Access-Jwt-Assertion` sur les requêtes servies par le worker Pages.
+
 ### Non vérifiable depuis la session (sans écriture)
 
 - Acceptation réelle par l'API :
@@ -150,6 +180,7 @@ Aucun.
 | Flag | File | Description |
 |------|------|-------------|
 | threat_flag: new-serving-path | tools/d1worker.mjs | Le pack est désormais servi par un worker (mode avancé) au lieu des fichiers statiques Pages. Access reste devant (même hôte, mêmes applications) ; T-05-66 à T-05-71 dans le plan |
+| threat_flag: auth-path | tools/d1worker.mjs | Écart 7 : le worker valide le JWT Access (sous-appel sortant vers le JWKS de l'équipe) ; refus 403 sans détail, fermé par défaut |
 | threat_flag: config-change-existing | tools/deploy.mjs | `PATCH` du projet Pages `zuma` (liaison D1, date de compatibilité), relu après écriture ; seul PATCH du code, verrouillé par test |
 
 ## Point de contrôle (Task 4) — déploiement réel par l'orchestrateur
@@ -179,4 +210,5 @@ node tools/deploy.mjs --plan      # attendu : « actions prévues : 0 »
 
 - Fichiers : tools/d1worker.mjs, tools/d1deploy.mjs, tools/cfsim.mjs, tests/r220-d1.test.mjs, 05-17-PLAN.md — présents.
 - Commits : bcb0c05, 11c0aee, 92494ba, f5f9da7, 8d1890c, 954c3c5, 309275d, 58ac42a — présents dans `git log`.
+- Écart 7 : commits 9285f75 (RED) et ffc8a68 (GREEN) présents ; `npm test` : 350 / 350 + garde à ffc8a68.
 - `npm test` : 342 / 342 + garde ; aucun `dist/`, `standalone/`, `private_assets/` suivi ; aucun appel en écriture vers Cloudflare depuis ce plan.
