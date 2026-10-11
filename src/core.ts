@@ -28,7 +28,12 @@
  * colour the front segment is attracted back by a counter v (⌊v/8⌋ px per maj, then v + 1, no cap), also armed
  * (v = 1) by a shot ball that lands without a match against a gap of its colour; only the contact of an attraction
  * makes the chain recoil (the most advanced ball of the arrived segment rolls back for 30 maj at max(0.5, 1.5 ×
- * depth) px/maj, pushing the whole chain behind it and stopping the pusher) — no recoil at match time.
+ * depth) px/maj, pushing the whole chain behind it and stopping the pusher) — no recoil at match time. D-35: at
+ * ZUMA mode only the chains whose head covers more than half of their track roll back — the head at 100 px/s for
+ * 300 maj at most, pushing the balls behind it, the pusher stopped, a ×0.25 slowdown per chain, all reset once the
+ * head is under 50 px — and in ZUMA mode a ball passing below s = 1 is deleted (`ball-exit`). D-31: a coin is
+ * grabbed within 36 px and consumes the projectile. A game has `lives` frogs: a loss does lives − 1 and the game is
+ * over at 0.
  *
  * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
  * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
@@ -37,7 +42,7 @@
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.18';
+export const ENGINE_VERSION = '2.0.19';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {
@@ -323,8 +328,12 @@ export interface EngineConfig {
   dangerDistance: number;
   /** Target divisor at and beyond the danger line (original `slowfactor`, default 4). Not the SLOW power-up (`slowFactor`). */
   endSlowFactor: number;
-  /** ZUMA: rollback / slowdown only when the head covers more than this share of the track (original: > 50 %). */
+  /** ZUMA: rollback / slowdown only on the chains whose head covers more than this share of their track (original: > 50 %). */
   zumaCoverage: number;
+  /** ZUMA pushback speed of the head of a chain, px/s (0x40abde: 1 px/maj × 100); distinct from `backwardsSpeed` (power-up). */
+  zumaBackSpeed: number;
+  /** ZUMA pushback, slowdown and pusher stop of a chain reset once its head is under this many px (0x54c690, 0x423c73). */
+  zumaBackMinHead: number;
   /** Target multiplier while the ZUMA slowdown runs (original 0.25). */
   zumaSlowFactor: number;
   drainSpeed: number;
@@ -384,8 +393,13 @@ export interface EngineConfig {
   coinRetryTicks: number;
   /** Per-tick probability of an attempt (`Rand() % treasurefreq == 0`: 1/300 per maj ≈ 1/180 per tick). */
   coinChance: number;
-  /** Projectile centre to coin centre distance that grabs the coin (D-09). */
+  /** Projectile centre to coin centre distance that grabs the coin (0x4233b6–0x4233e5: ball radius 16 + 20 = 36). */
   coinRadius: number;
+  /**
+   * The original destroys the grabbing projectile and removes it from the list (0x4236a9–0x4236eb): no insertion,
+   * no miss. false keeps the R2.0.18 fly-on behaviour (the projectile goes on to the chain or off the board).
+   */
+  coinConsumesShot: boolean;
   /** End-of-level tally (0x421550): step length, px. */
   cleanupStepPx: number;
   /** Ticks between two tally steps (4 maj × 0.6 = 2.4). */
@@ -400,7 +414,7 @@ export interface EngineConfig {
   cleanupPoints: number;
   /** Expert time in seconds (original `partime`); 0 = no time bonus. */
   parTime: number;
-  /** Ticks the chain rolls back when ZUMA mode starts with the head past `zumaCoverage` (original `zumaback` 300 maj × 0.6 = 180). */
+  /** Ticks a chain rolls back when ZUMA mode starts with its head past `zumaCoverage` (original `zumaback` 300 maj × 0.6 = 180). */
   zumaBackTicks: number;
   /** Ticks the target is multiplied by `zumaSlowFactor` after such a ZUMA (original `zumaslow` 1100 maj × 0.6 = 660). */
   zumaSlowTicks: number;
@@ -429,6 +443,8 @@ export const CANDIDATE: EngineConfig = {
   endSlowFactor: 4,
   zumaCoverage: 0.5,
   zumaSlowFactor: 0.25,
+  zumaBackSpeed: 100, // 1 px/maj × 100, 0x40abde
+  zumaBackMinHead: 50, // px, 0x54c690
   drainSpeed: 520,
   projectileSpeed: 12,
   muzzleOffset: 16,
@@ -459,7 +475,8 @@ export const CANDIDATE: EngineConfig = {
   coinFirstTicks: 180, // 300 maj × 0.6
   coinRetryTicks: 780, // 1 300 maj × 0.6
   coinChance: 1 / 180, // 1/300 per maj ≈ 1/180 per tick
-  coinRadius: 18,
+  coinRadius: 36, // 16 + 20, 0x4233b6–0x4233e5
+  coinConsumesShot: true, // 0x4236a9–0x4236eb
   cleanupStepPx: 60,
   cleanupStepTicks: 2.4, // 4 maj × 0.6
   cleanupStartTicks: 12, // 20 maj × 0.6
@@ -577,6 +594,10 @@ export class Chain {
   speed: number | null = null;
   /** Ticks left of the pusher stop armed by an insertion into the rear segment (original counter ≥ 40 maj). */
   stopTicks = 0;
+  /** Ticks of ZUMA pushback left (curve+0x5c): the head rolls back `zumaBackSpeed` px/s. */
+  zumaBackLeft = 0;
+  /** Ticks of ZUMA slowdown left (curve+0x58): the pusher target × `zumaSlowFactor`. */
+  zumaSlowLeft = 0;
   constructor(readonly track: Track, readonly index: number) {}
 }
 
@@ -617,8 +638,6 @@ export class ZumaEngine {
   slowTicks = 0;
   backwardsTicks = 0;
   accuracyTicks = 0;
-  /** ZUMA slowdown countdown (target × zumaSlowFactor), distinct from the SLOW power-up `slowTicks`. */
-  zumaSlowLeft = 0;
   aim: Point;
   /** Coin spots of the level (empty = no coins, no extra RNG draws). */
   treasure: readonly TreasurePoint[] = [];
@@ -732,6 +751,8 @@ export class ZumaEngine {
     chain.recoils = [];
     chain.speed = null;
     chain.stopTicks = 0;
+    chain.zumaBackLeft = 0;
+    chain.zumaSlowLeft = 0;
     if (fixture.current !== undefined) this.current = fixture.current;
     if (fixture.next !== undefined) this.next = fixture.next;
     this.stream = fixture.stream ?? true;
@@ -830,6 +851,7 @@ export class ZumaEngine {
     this.checkGo();
     this.moveProjectiles();
     this.tickCoin();
+    this.exitBalls();
     this.tickCleanup();
     this.processRemovals();
     if (this.state === 'playing') this.refreshAmmo(); // D-14: every tick, from the tick a destruction is marked
@@ -896,7 +918,6 @@ export class ZumaEngine {
     if (this.slowTicks > 0) this.slowTicks--;
     if (this.backwardsTicks > 0) this.backwardsTicks--;
     if (this.accuracyTicks > 0) this.accuracyTicks--;
-    if (this.zumaSlowLeft > 0) this.zumaSlowLeft--;
     for (const b of this.allBalls()) {
       if (b.power && b.powerUntil !== undefined && b.powerUntil <= this.tick) {
         delete b.power;
@@ -1014,13 +1035,13 @@ export class ZumaEngine {
   }
 
   /**
-   * Pusher target (0x418780): `speed`, × zumaSlowFactor while the ZUMA slowdown runs, ÷ slowFactor
+   * Pusher target (0x418780): `speed`, × zumaSlowFactor while the chain's ZUMA slowdown runs, ÷ slowFactor
    * under the SLOW power-up, × the end-of-track slow zone for the most advanced alive ball.
    */
   private pusherTarget(chain: Chain, alive: Ball[]): number {
     const { speed, slowFactor, slowDistance, dangerDistance, endSlowFactor, zumaSlowFactor } = this.config;
     let target = speed;
-    if (this.zumaSlowLeft > 0) target *= zumaSlowFactor;
+    if (chain.zumaSlowLeft > 0) target *= zumaSlowFactor;
     if (this.slowTicks > 0) target /= slowFactor;
     let head = -Infinity;
     for (const b of alive) if (b.s > head) head = b.s;
@@ -1062,7 +1083,10 @@ export class ZumaEngine {
     if (this.state !== 'playing') return;
     const alive = this.alive(chain);
     const n = alive.length;
-    if (n === 0) return;
+    if (n === 0) {
+      this.zumaEarlyStop(chain, alive);
+      return;
+    }
     // Landed balls open their slot a little more each tick; the rest of the tick
     // (components, recoil, pusher, attraction, contacts) sees the updated widths.
     const settled: Ball[] = [];
@@ -1092,13 +1116,19 @@ export class ZumaEngine {
     if (this.backwardsTicks > 0) {
       for (const b of alive) b.s -= this.config.backwardsSpeed * dt;
     } else {
-      // Order of one curve update (0x423c50): attraction 0x421800 → pusher 0x418780 → recoil 0x40ab60.
+      // Order of one curve update (0x423c50): attraction 0x421800 → pusher 0x418780 → recoil / ZUMA pushback 0x40ab60.
       this.attractSegments(alive, before, first, last, compCount);
-      // The pusher does not advance on a tick where a recoil moves balls: the recoil stops it (0x40ad04).
-      const recoiling = chain.recoils.some(r => chain.balls.some(b => b.id === r.id));
-      if (!recoiling) shift(0, (chain.speed ?? 0) * dt);
-      if (recoiling) this.applyRecoils(chain);
+      // The pusher does not advance on a tick where a recoil or the pushback moves balls: they stop it (0x40ad04).
+      const pushback = chain.zumaBackLeft > 0;
+      const recoiling = !pushback && chain.recoils.some(r => chain.balls.some(b => b.id === r.id));
+      if (!pushback && !recoiling) shift(0, (chain.speed ?? 0) * dt);
+      if (pushback) this.zumaPushback(chain, alive);
+      else if (recoiling) this.applyRecoils(chain);
     }
+    // ZUMA counters, once per tick (0x423cc7: 300 maj = 180 ticks of pushback, 1 100 maj = 660 ticks of slowdown).
+    if (chain.zumaBackLeft > 0) chain.zumaBackLeft--;
+    if (chain.zumaSlowLeft > 0) chain.zumaSlowLeft--;
+    this.zumaEarlyStop(chain, alive);
 
     this.resolveForward(alive);
 
@@ -1157,6 +1187,38 @@ export class ZumaEngine {
     }
     chain.recoils = chain.recoils.filter(r => r.ticks > 0 && list.some(b => b.id === r.id));
     if (moved) this.stopPusher(chain);
+  }
+
+  /**
+   * ZUMA pushback (0x40ab60 with the head's recoil forced to 1 px/maj, 0x40abde): the most advanced alive ball rolls
+   * back `zumaBackSpeed` px/s at a constant speed and pushes the balls behind it it overlaps — a gap closes from the
+   * front before the rear segment moves; the pusher is stopped every tick. Contact recoils only count down meanwhile.
+   */
+  private zumaPushback(chain: Chain, alive: Ball[]): void {
+    let head: Ball | undefined;
+    for (const b of alive) if (!head || b.s > head.s) head = b;
+    if (!head) return;
+    const list = chain.balls;
+    head.s -= this.config.zumaBackSpeed / this.config.tickHz;
+    this.pushBehind(list, list.indexOf(head));
+    this.stopPusher(chain);
+    for (const r of chain.recoils) r.ticks--;
+    chain.recoils = chain.recoils.filter(r => r.ticks > 0);
+  }
+
+  /**
+   * Early end of the ZUMA phases (0x423c73–0x423cd8, 50.0 at 0x54c690): while a pushback or a slowdown runs, an empty
+   * chain or a head under `zumaBackMinHead` px resets the pushback, the slowdown and the pusher stop of the chain.
+   * (Applied only while a ZUMA phase runs, so an ordinary pusher stop near the entrance is left alone.)
+   */
+  private zumaEarlyStop(chain: Chain, alive: Ball[]): void {
+    if (chain.zumaBackLeft <= 0 && chain.zumaSlowLeft <= 0) return;
+    let head = -Infinity;
+    for (const b of alive) if (b.s > head) head = b.s;
+    if (alive.length > 0 && head >= this.config.zumaBackMinHead) return;
+    chain.zumaBackLeft = 0;
+    chain.zumaSlowLeft = 0;
+    chain.stopTicks = 0;
   }
 
   /** Pusher stop of a recoil or of the ZUMA pushback (0x40ad04–0x40ad15): ≥ 20 maj, then restarting from 0. */
@@ -1341,11 +1403,11 @@ export class ZumaEngine {
 
   /**
    * Every point gained in the level fills the gauge; ZUMA mode starts once, at `target` points
-   * (0x428a69–0x428b09). The original then checks each curve (0x40a980): when the head covers more
-   * than `zumaCoverage` of the track it rolls back `zumaBackTicks` and the target is multiplied by
-   * `zumaSlowFactor` for `zumaSlowTicks`. The engine evaluates the maximum coverage over the chains
-   * and applies both to every chain (hypothesis, 05-07 notes); a longer rollback or slowdown already
-   * running is kept and the SLOW power-up (`slowTicks`) is never touched.
+   * (0x428a69–0x428b09). The original then checks each curve (0x40a980, D-35): a chain whose head covers
+   * more than `zumaCoverage` of its track gets `zumaBackTicks` of pushback and `zumaSlowTicks` of slowdown,
+   * both at once (a longer phase already running is kept); the other chains get nothing. The RECUL power-up
+   * (`backwardsTicks`) and the SLOW power-up (`slowTicks`) are never touched. `zuma` carries the maximum
+   * coverage and the indices of the chains that roll back.
    */
   private addScore(points: number): void {
     const old = this.score;
@@ -1355,13 +1417,16 @@ export class ZumaEngine {
     if (!this.zumaMode && this.levelScore >= this.config.target) {
       this.zumaMode = true;
       let coverage = 0;
-      for (const chain of this.chains) coverage = Math.max(coverage, this.coverage(chain));
-      const pushback = coverage > this.config.zumaCoverage;
-      if (pushback) {
-        this.backwardsTicks = Math.max(this.backwardsTicks, this.config.zumaBackTicks);
-        this.zumaSlowLeft = Math.max(this.zumaSlowLeft, this.config.zumaSlowTicks);
+      const chains: number[] = [];
+      for (const chain of this.chains) {
+        const c = this.coverage(chain);
+        coverage = Math.max(coverage, c);
+        if (!(c > this.config.zumaCoverage)) continue;
+        chain.zumaBackLeft = Math.max(chain.zumaBackLeft, this.config.zumaBackTicks);
+        chain.zumaSlowLeft = Math.max(chain.zumaSlowLeft, this.config.zumaSlowTicks);
+        chains.push(chain.index);
       }
-      this.emit('zuma', { coverage, pushback });
+      this.emit('zuma', { coverage, pushback: chains.length > 0, chains });
     }
   }
 
@@ -1525,13 +1590,15 @@ export class ZumaEngine {
         this.emit('miss', { id: p.id });
         continue;
       }
-      // Coin grab (D-09): scores, keeps the streak and lets the projectile fly on.
+      // Coin grab (0x423330, tested before the chain): scores and keeps the streak; the original then destroys the
+      // projectile — no insertion, no miss (D-31, coinConsumesShot) — while `false` lets it fly on (R2.0.18).
       const coin = this.coin;
       if (coin && Math.hypot(p.x - coin.x, p.y - coin.y) < coinRadius) {
         this.coin = null;
         this.stats.coins++;
         this.addScore(coinPoints);
-        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints }); // the retry deadline is not moved (0x4233fb)
+        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints, shotId: p.id }); // the retry deadline is not moved (0x4233fb)
+        if (this.config.coinConsumesShot) continue;
       }
       let hit: Ball | undefined;
       let hitChain: Chain | undefined;
@@ -1612,6 +1679,26 @@ export class ZumaEngine {
   // --------------------------------------------------------------- removals
 
   /**
+   * Balls leaving through the entrance (0x423b60 → 0x423970): in ZUMA mode every ball — alive or exploding — whose
+   * position is below 1 px is deleted, with its pending removal and recoil, and `ball-exit` is emitted: no score, no
+   * statistic, no explosion, no sound. The queue of balls not yet in (s < 1) goes at the passage. Outside ZUMA mode
+   * the balls rolled below the entrance are kept (the original puts them back in its queue).
+   */
+  private exitBalls(): void {
+    if (!this.zumaMode || this.state !== 'playing') return;
+    for (const chain of this.chains) {
+      const out = chain.balls.filter(b => b.s < 1);
+      if (out.length === 0) continue;
+      const ids = new Set(out.map(b => b.id));
+      chain.balls = chain.balls.filter(b => !ids.has(b.id));
+      for (const r of chain.removals) r.ids = r.ids.filter(id => !ids.has(id));
+      chain.removals = chain.removals.filter(r => r.ids.length > 0);
+      chain.recoils = chain.recoils.filter(r => !ids.has(r.id));
+      for (const b of out) this.emit('ball-exit', { chain: chain.index, id: b.id, color: b.color });
+    }
+  }
+
+  /**
    * End of destruction (0x423a10): the due balls are removed; for every block of removed balls whose two curve
    * neighbours are alive, not exploding and of one colour, the front one gets the attraction counter
    * `attractStartAfterMatch` (0x423a6b–0x423aa8) — whatever opened the gap (match or bomb). The colour is not
@@ -1680,7 +1767,9 @@ export class ZumaEngine {
       const empty = this.chains.every(c => c.balls.length === 0 && c.removals.length === 0);
       if (this.zumaMode && empty) this.startClearing();
     } else if (this.state === 'draining' && this.chains.every(c => c.balls.length === 0)) {
-      this.state = this.lives < 0 ? 'gameover' : 'lost';
+      // 0x428383–0x4283a5: lives − 1 at the loss, game over when the count is ≤ 0 — `lives` frogs per game, the one
+      // in play included (the HUD shows lives − 1 in reserve, D-33).
+      this.state = this.lives <= 0 ? 'gameover' : 'lost';
       this.emit(this.state);
     }
   }

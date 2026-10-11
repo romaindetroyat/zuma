@@ -490,7 +490,7 @@ class Game {
           this.showMessage(this.strings?.ZUMA ?? 'ZUMA !', null, 120);
           break;
         case 'lost':
-          this.showMessage('Perdu…', engine.lives >= 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
+          this.showMessage('Perdu…', engine.lives > 0 ? 'La chaîne a atteint le crâne' : 'Partie terminée', 180);
           break;
         // `won`: no message — the time bonus is counted up inside the STATS dialog (D-15 → count-up, §8).
         // `extra-life`: no text either (spike 03 Q3: the original only plays `extralife` three times); the HUD
