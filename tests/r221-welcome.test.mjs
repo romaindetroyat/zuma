@@ -441,7 +441,7 @@ test('main.js: boot through initialApp, every transition through reduceApp, the 
   assert.match(main, /writeJson\([^)]*SAVE_KEY/);
   assert.match(main, /writeJson\([^)]*PROFILE_KEY/);
   assert.match(main, /writeJson\([^)]*HIGHSCORE_KEY, \{ adventure: /);
-  // Transitional pass-through until plan 06-04 draws the adventure, temple and ending screens.
+  // R2.0.21 (D-02/D-03): the adventure, temple and ending screens are drawn (plan 06-04); their widgets send these events.
   assert.match(main, /kind: 'temple-done'/);
   assert.match(main, /kind: 'ending-done'/);
   assert.match(main, /kind: 'play'/);

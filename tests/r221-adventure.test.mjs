@@ -417,12 +417,12 @@ test('main.js: doors select (kind: select, stage), the selected door again = Jou
   assert.match(main, /kind: 'select', stage/);
   assert.match(main, /doorAt\(/);
   assert.match(main, /advButtonAt\(/);
-  const activate = method(main, '    adventureButton(id) {');
+  const activate = method(main, '    adventureButton(id, sound = true) {');
   assert.match(activate, /key: 'button', gain: 1, rate: 1/);
   assert.match(activate, /kind: 'play'/);
   assert.match(activate, /kind: 'main-menu'/);
   const down = method(main, '    adventureDown(p, button) {');
-  assert.match(down, /this\.adventureButton\('play'\)|adventureButton\('play'\)/, 'a press on the selected door plays (0x440e06)');
+  assert.match(down, /adventureButton\('play', false\)/, 'a press on the selected door plays (0x440e06), without the button sound');
   assert.doesNotMatch(down, /key: 'button'/, 'selecting a door is silent (0x440db0)');
 });
 

@@ -1,5 +1,5 @@
 /** Browser entry point: game flow, input, HUD/STATS panels and PWA wiring. */
-import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
+import { CANDIDATE, ENGINE_VERSION, SeededRandom, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
 import { EXPLOSION_RGB, ballCss, cueAllowed, makeColorBurst, makeSparks, soundCues, type ColorBurst, type SoundCue } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
@@ -11,6 +11,7 @@ import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCou
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, LONG_PRESS_IDLE, LONG_PRESS_MS, Renderer, WIDTH, HEIGHT, fitScale, frogHit, longPress, stagePoint, type FloatingText, type LongPressInput, type LongPressState, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
 import { HIGHSCORE_KEY, PROFILE_KEY, SAVE_KEY, initialApp, parseProfile, parseSave, parseScores, readJson, reduceApp, sanitizeName, writeJson, type AppEffect, type AppEvent, type AppScreen, type AppState, type RunState, type StorageLike } from './progress.js';
+import { ADV, advArrivalMaj, advButtonAt, advDoorOpaque, advDoorSizes, advShakeStep, doorAt, drawAdventure, drawEnding, drawGodDialog, endingWidgets, godDialogWidgets, godPages, loadAdventureKit, revealProgress, revealTemple, upscaleAdventureKit, type AdvButtonId, type AdvTempleId, type AdventureKit, type AdventureView } from './adventure.js';
 import { MM, continueDialogWidgets, drawContinueDialog, drawNameDialog, drawWelcome, loadWelcomeKit, mmHoverSequence, mmUfo, nameDialogWidgets, upscaleWelcomeKit, welcomeHit, welcomeLineWidth, type EyeMode, type MmStone, type MmStoneId, type PromptView, type UfoState, type WelcomeKit, type WelcomeView } from './welcome.js';
 
 declare const __BUILD__: string;
@@ -50,6 +51,21 @@ interface WelcomeUi {
   seq: { expect: number; laps: number };
   /** Last stone entered for the hover sequence (moving across the empty space between two stones is not a new entry). */
   lastSeqStone: MmStoneId | null;
+}
+
+/**
+ * Presentation state of the adventure screen: hovered door (0x440d50), hovered / pressed button, and the arrival after
+ * a finished stage (0x43e3f0: reveal of the opening temple, doors locked for advArrivalMaj, temple 4 shaking).
+ */
+interface AdventureUi {
+  hover: number | null;
+  button: { hover: AdvButtonId | null; pressed: AdvButtonId | null };
+  arrival: { temple: AdvTempleId | null; lock: number } | null;
+  shake: number[];
+  /** Last maj whose shake step was applied, and whether the earthquake sounded. */
+  shakeAt: number;
+  quake: boolean;
+  rng: SeededRandom;
 }
 
 function freshWelcomeUi(): WelcomeUi {
@@ -153,6 +169,14 @@ class Game {
   private welcomeKitHd: WelcomeKit | null = null;
   private welcomeKit: WelcomeKit | null = null;
   private welcome: WelcomeUi = freshWelcomeUi();
+  /** Adventure screen kit (1 × and its 2 × EPX copy, like the welcome kit); null → vector adventure screen. */
+  private adventureKitBase: AdventureKit | null = null;
+  private adventureKitHd: AdventureKit | null = null;
+  private adventureKit: AdventureKit | null = null;
+  private adventure: AdventureUi = this.freshAdventureUi();
+  /** God dialogue (temple screen): current page and the reply button state; ending screen: its OK button state. */
+  private god = { page: 0, hover: false, pressed: false };
+  private endingUi = { hover: false, pressed: false };
   /** Rename dialog opened from the welcome line (the machine's prompt stays null). */
   private renaming = false;
   /** Dialog shown last (to reset its hover / focus when another opens) and its widget state; `text` = sanitised field. */
@@ -221,6 +245,8 @@ class Game {
     this.menuKit = menu && hd && statsHd ? (this.menuKitHd ??= upscaleMenuKit(menu, statsHd)) : menu;
     const welcome = this.welcomeKitBase;
     this.welcomeKit = welcome && hd ? (this.welcomeKitHd ??= upscaleWelcomeKit(welcome, this.statsKitHd)) : welcome;
+    const adventure = this.adventureKitBase;
+    this.adventureKit = adventure && hd ? (this.adventureKitHd ??= upscaleAdventureKit(adventure, this.statsKitHd)) : adventure;
   }
 
   private bindScaling(): void {
@@ -282,7 +308,10 @@ class Game {
       const pack = this.pack;
       const kit = await loadStatsKit(pack);
       this.statsKitBase = kit;
-      this.welcomeKitBase = await loadWelcomeKit(pack, kit);
+      // R2.0.21 (D-02): the adventure screen kit loads with the welcome kit (after the STATS kit: its dialog pieces).
+      const [welcomeKit, adventureKit] = await Promise.all([loadWelcomeKit(pack, kit), loadAdventureKit(pack, kit)]);
+      this.welcomeKitBase = welcomeKit;
+      this.adventureKitBase = adventureKit;
       this.applyHd();
       if (kit) {
         void loadMenuKit(pack, kit).then(menu => {
@@ -468,10 +497,14 @@ class Game {
 
   private loop(time: number): void {
     requestAnimationFrame(t => this.loop(t));
-    // R2.0.21 (D-01): off the level screen the main menu is drawn; no engine exists or steps.
+    // R2.0.21 (D-01, D-02, D-03): off the level screen the main menu, the adventure screen, the god dialogue over the
+    // frozen board or the ending is drawn; no engine steps.
     if (this.app.screen !== 'level') {
       this.lastTime = time;
-      this.drawWelcomeFrame(time);
+      if (this.app.screen === 'adventure') this.drawAdventureFrame(time);
+      else if (this.app.screen === 'temple') this.drawTempleFrame();
+      else if (this.app.screen === 'ending') this.drawEndingFrame();
+      else this.drawWelcomeFrame(time);
       return;
     }
     const engine = this.engine;
@@ -725,7 +758,7 @@ class Game {
       if (this.menuOpen || this.statsOpen || this.installOpen) return;
       this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       if (this.app.screen !== 'level') {
-        this.welcomeMove(this.pointer, ev.pointerType === 'touch');
+        this.screenMove(this.pointer, ev.pointerType === 'touch');
         return;
       }
       this.engine?.command({ kind: 'aim', ...this.pointer });
@@ -737,7 +770,7 @@ class Game {
       if (ev.pointerType === 'mouse') ev.preventDefault(); // no text selection while playing
       const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       if (this.app.screen !== 'level') {
-        this.welcomeDown(p, ev.button);
+        this.screenDown(p, ev.button);
         return;
       }
       if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
@@ -771,7 +804,7 @@ class Game {
     window.addEventListener('pointerup', ev => {
       if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'up', id: ev.pointerId, t: performance.now(), inside: this.overMenuButton(ev) });
       if (this.app.screen === 'level' || this.loading || this.menuOpen || this.installOpen || this.rotateOpen || ev.target === this.nameInput) return;
-      this.welcomeUp(stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect()));
+      this.screenUp(stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect()));
     });
     window.addEventListener('pointercancel', ev => {
       if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'cancel', id: ev.pointerId });
@@ -788,7 +821,7 @@ class Game {
         return;
       }
       if (this.app.screen !== 'level') {
-        if (this.welcomeKey(ev.code)) ev.preventDefault();
+        if (this.screenKey(ev.code)) ev.preventDefault();
         return;
       }
       const dialogKey = ev.code === 'Space' || ev.code === 'Enter' || ev.code === 'NumpadEnter' || ev.code === 'Escape' || ev.code === 'Tab';
@@ -870,10 +903,8 @@ class Game {
   // ------------------------------------------------- application state and main menu (R2.0.21, D-01, D-11)
 
   /**
-   * One transition of the state machine (plan 06-02): the new state, the screen entry, the effects, the dialogs.
-   * Transitional until plan 06-04 Task 3 draws them: the adventure, temple and ending screens are passed through —
-   * « Aventure », « Rejouer » or a finished stage go straight to the level of the selected door (D-02 « directly to the
-   * level »), leaving a level (« Retour au menu principal », game over) comes back to the main menu.
+   * One transition of the state machine (plan 06-02): the new state, the screen entry, the effects, the dialogs. Every
+   * screen is drawn (R2.0.21, plan 06-04): welcome, adventure, level, the god dialogue (temple) and the ending.
    */
   private dispatch(event: AppEvent): void {
     const before = this.app;
@@ -883,9 +914,6 @@ class Game {
     if (state.screen !== before.screen) this.enterScreen(state.screen);
     for (const effect of effects) this.applyEffect(effect);
     this.syncPrompt();
-    if (state.screen === 'temple') this.dispatch({ kind: 'temple-done' });
-    else if (state.screen === 'ending') this.dispatch({ kind: 'ending-done' });
-    else if (state.screen === 'adventure') this.dispatch(event.kind === 'leave' ? { kind: 'main-menu' } : { kind: 'play' });
   }
 
   /** Effects of the machine: level start, storage (T-06-06: writeJson never throws), sounds. */
@@ -917,15 +945,32 @@ class Game {
       this.canvas.style.cursor = '';
       return;
     }
-    this.engine = null;
-    this.level = null;
+    // The god dialogue is drawn over the last board, frozen (no engine step off the level screen).
+    if (screen !== 'temple') {
+      this.engine = null;
+      this.level = null;
+    }
+    this.god = { page: 0, hover: false, pressed: false };
+    this.endingUi = { hover: false, pressed: false };
     this.paused = false;
     this.pausedByRotation = false;
     this.message = null;
     this.endAt = null;
     this.welcome = freshWelcomeUi();
+    this.adventure = this.freshAdventureUi();
     this.renaming = false;
     this.canvas.style.cursor = 'default';
+  }
+
+  /** Adventure screen state at its entry: an arrival animation when a finished stage opened a door (app.opening). */
+  private freshAdventureUi(): AdventureUi {
+    const opening = this.app?.screen === 'adventure' ? this.app.opening : null;
+    const temple = revealTemple(opening);
+    return {
+      hover: null, button: { hover: null, pressed: null },
+      arrival: opening === null ? null : { temple, lock: advArrivalMaj(temple) },
+      shake: [0, 0, 0, 0], shakeAt: -1, quake: false, rng: new SeededRandom(this.seed ^ 0x5a1018),
+    };
   }
 
   /** Welcome counter c in maj of 10 ms (the original updates at 100 Hz). */
@@ -1198,6 +1243,231 @@ class Game {
     }
     if (code === 'KeyM') this.toggleSound();
     return false;
+  }
+
+  // ------------------------------------------------- screens off the level: pointer and keyboard routing
+
+  private screenMove(p: Point, touch: boolean): void {
+    switch (this.app.screen) {
+      case 'adventure': this.adventureMove(p, touch); break;
+      case 'temple': this.dialogMove(p, touch, 'god'); break;
+      case 'ending': this.dialogMove(p, touch, 'ending'); break;
+      default: this.welcomeMove(p, touch);
+    }
+  }
+
+  private screenDown(p: Point, button: number): void {
+    switch (this.app.screen) {
+      case 'adventure': this.adventureDown(p, button); break;
+      case 'temple': if (button === 0) this.god.pressed = this.dialogHit(p, 'god'); break;
+      case 'ending': if (button === 0) this.endingUi.pressed = this.dialogHit(p, 'ending'); break;
+      default: this.welcomeDown(p, button);
+    }
+  }
+
+  private screenUp(p: Point): void {
+    switch (this.app.screen) {
+      case 'adventure': this.adventureUp(p); break;
+      case 'temple': {
+        const pressed = this.god.pressed;
+        this.god.pressed = false;
+        if (pressed && this.dialogHit(p, 'god')) this.godNext();
+        break;
+      }
+      case 'ending': {
+        const pressed = this.endingUi.pressed;
+        this.endingUi.pressed = false;
+        if (pressed && this.dialogHit(p, 'ending')) this.endingDone();
+        break;
+      }
+      default: this.welcomeUp(p);
+    }
+  }
+
+  /** Keys off the level: welcome, adventure; Enter / Space = the reply of the god dialogue; Enter / Space / Escape = OK of the ending. */
+  private screenKey(code: string): boolean {
+    const activate = code === 'Enter' || code === 'NumpadEnter' || code === 'Space';
+    switch (this.app.screen) {
+      case 'adventure': return this.adventureKey(code);
+      case 'temple':
+        if (activate) this.godNext();
+        return activate;
+      case 'ending':
+        if (activate || code === 'Escape') this.endingDone();
+        return activate || code === 'Escape';
+      default: return this.welcomeKey(code);
+    }
+  }
+
+  /** The single button of the god dialogue / of the ending under a logical point. */
+  private dialogHit(p: Point, which: 'god' | 'ending'): boolean {
+    const temple = this.app.temple ?? 1;
+    const r = which === 'god' ? godDialogWidgets(this.promptStrings(), temple)[0].rect : endingWidgets()[0].rect;
+    return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+  }
+
+  private dialogMove(p: Point, touch: boolean, which: 'god' | 'ending'): void {
+    const over = this.dialogHit(p, which);
+    this.canvas.style.cursor = over ? 'pointer' : 'default';
+    if (touch) return;
+    if (which === 'god') this.god.hover = over;
+    else this.endingUi.hover = over;
+  }
+
+  /** The frog's reply: the next page of the god's speech, then the end of the dialogue (temple-done). */
+  private godNext(): void {
+    if (this.app.screen !== 'temple') return;
+    this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    const temple = this.app.temple ?? 1;
+    if (this.god.page + 1 < godPages(temple)) {
+      this.god = { page: this.god.page + 1, hover: this.god.hover, pressed: false };
+      return;
+    }
+    this.dispatch({ kind: 'temple-done' });
+  }
+
+  /** OK of the ending → the welcome screen (0x44b3e0); the run is over. */
+  private endingDone(): void {
+    if (this.app.screen !== 'ending') return;
+    this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    this.dispatch({ kind: 'ending-done' });
+  }
+
+  /** God dialogue over the last board, frozen: the board as it was at the end of the level, then the dialogue. */
+  private drawTempleFrame(): void {
+    const engine = this.engine;
+    if (engine && this.level) this.renderer.draw(engine, this.fx, this.hud(engine), this.frame);
+    const temple = this.app.temple ?? 1;
+    const view = { temple, page: this.god.page, hover: this.god.hover, pressed: this.god.pressed };
+    this.renderer.drawScene(ctx => {
+      if (!engine) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+      }
+      drawGodDialog(ctx, this.statsKit, view, this.promptStrings());
+    });
+  }
+
+  /** Ending: happyending, FÉLICITATIONS, the final score and the table with the run's rank (D-10). */
+  private drawEndingFrame(): void {
+    const ending = this.app.ending;
+    const view = { score: ending?.score ?? 0, rank: ending?.rank ?? null, scores: this.app.scores, hover: this.endingUi.hover, pressed: this.endingUi.pressed, strings: this.promptStrings() };
+    this.renderer.drawScene(ctx => drawEnding(ctx, this.adventureKit, view));
+  }
+
+  // ----------------------------------------------------- adventure screen (R2.0.21, D-02, research 06 Q2)
+
+  /** Doors ignore the pointer during the arrival animation (+0x204, 0x440d65 / 0x440dc9). */
+  private adventureLocked(): boolean {
+    const a = this.adventure.arrival;
+    return a !== null && this.welcomeCounter() < a.lock;
+  }
+
+  private adventureMaxStage(): number {
+    return this.app.profile?.maxStage ?? 0;
+  }
+
+  /** Unlocked door under a logical point: cel rectangle, then the alpha of cel 0 (0x440c90). */
+  private adventureDoorAt(p: Point): number | null {
+    const kit = this.adventureKit;
+    const { widths, heights } = advDoorSizes(kit);
+    return doorAt(p.x, p.y, this.adventureMaxStage(), widths, heights, (i, lx, ly) => advDoorOpaque(kit, i, lx, ly));
+  }
+
+  /** Pointer over the adventure screen: hovered door (hand cursor) and button; a finger has no hover. */
+  private adventureMove(p: Point, touch: boolean): void {
+    const door = this.adventureLocked() ? null : this.adventureDoorAt(p);
+    const button = advButtonAt(p.x, p.y);
+    this.canvas.style.cursor = door !== null || button ? 'pointer' : 'default';
+    if (touch) return;
+    this.adventure.hover = door;
+    this.adventure.button.hover = button;
+  }
+
+  /**
+   * Press on the adventure screen (0x440db0): a button is pressed (activation on release); an unlocked door other than
+   * the selected one is selected, silently; the selected door again plays it (ButtonDepress(1), 0x440e06).
+   */
+  private adventureDown(p: Point, button: number): void {
+    if (button !== 0) return;
+    const id = advButtonAt(p.x, p.y);
+    if (id) {
+      this.adventure.button.pressed = id;
+      return;
+    }
+    if (this.adventureLocked()) return;
+    const door = this.adventureDoorAt(p);
+    if (door === null) return;
+    if (door === this.app.selected) this.adventureButton('play', false);
+    else this.dispatch({ kind: 'select', stage: door });
+  }
+
+  private adventureUp(p: Point): void {
+    const pressed = this.adventure.button.pressed;
+    this.adventure.button.pressed = null;
+    if (pressed && advButtonAt(p.x, p.y) === pressed) this.adventureButton(pressed);
+  }
+
+  /** « Jouer » → the selected stage (resumed when it is the saved run's); « Menu principal » → the welcome screen. */
+  private adventureButton(id: AdvButtonId, sound = true): void {
+    if (sound) this.audio.play({ key: 'button', gain: 1, rate: 1 });
+    if (id === 'play') this.dispatch({ kind: 'play' });
+    else this.dispatch({ kind: 'main-menu' });
+  }
+
+  /**
+   * Keys on the adventure screen (the original has none): Left / Right walk the unlocked doors, Enter / Space = « Jouer »,
+   * Escape = « Menu principal », M mutes. Returns true when the key was handled.
+   */
+  private adventureKey(code: string): boolean {
+    if (code === 'ArrowLeft' || code === 'ArrowRight') {
+      const last = Math.max(0, Math.min(this.adventureMaxStage(), 11, this.app.sizes.length - 1));
+      const current = Math.min(this.app.selected, last);
+      const step = code === 'ArrowRight' ? 1 : -1;
+      const next = this.app.selected > last && step < 0 ? last : (current + step + last + 1) % (last + 1);
+      this.dispatch({ kind: 'select', stage: next });
+      return true;
+    }
+    if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+      this.adventureButton('play');
+      return true;
+    }
+    if (code === 'Escape') {
+      this.adventureButton('main-menu');
+      return true;
+    }
+    if (code === 'KeyM') this.toggleSound();
+    return false;
+  }
+
+  /**
+   * One frame of the adventure screen: the arrival animation advances with the counter (temple 2 / 3 crossfade, temple 4
+   * rising with the earthquake once at n = 1 and the shake every 4 maj, 0x43e470), then the screen is painted.
+   */
+  private drawAdventureFrame(time: number): void {
+    const c = Math.max(0, Math.floor((time - this.screenT0) / 10));
+    const ui = this.adventure;
+    const temple = ui.arrival?.temple ?? null;
+    let reveal: AdventureView['reveal'] = null;
+    if (temple !== null && c < advArrivalMaj(temple)) reveal = { temple, progress: revealProgress(c, temple) };
+    if (temple === 4) {
+      const delay = ADV.reveal.delayMaj;
+      if (!ui.quake && c - delay >= 1) {
+        ui.quake = true;
+        this.audio.play({ key: 'earthquake', gain: 1, rate: 1 });
+      }
+      const end = Math.min(c, delay + ADV.reveal.riseMaj + 4);
+      for (let m = Math.max(ui.shakeAt + 1, delay); m <= end; m++) {
+        if (m % 4 === 0) ui.shake = advShakeStep(ui.shake, m - delay, () => ui.rng.next());
+      }
+      ui.shakeAt = Math.max(ui.shakeAt, c);
+    }
+    const locked = this.adventureLocked();
+    const view: AdventureView = {
+      c, maxStage: this.adventureMaxStage(), selected: this.app.selected, hover: locked ? null : ui.hover, button: { ...ui.button },
+      reveal, shake: ui.shake, scores: this.app.scores, strings: this.promptStrings(),
+    };
+    this.renderer.drawScene(ctx => drawAdventure(ctx, this.adventureKit, view));
   }
 
   /**
