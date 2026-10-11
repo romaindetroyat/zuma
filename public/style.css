@@ -58,13 +58,13 @@ dd { margin: 0; font-weight: bold; }
    (R2.0.15, plan 05-03): main.ts paints dialogbox (9-slice), GodHead, DialogButton and the
    bitmap fonts on a 640×480 canvas and lays it as the inline background of .zuma-stats.
    Every text of the structure is hidden (the picture carries them); the transparent OK
-   control sits on the painted button (260/640, 382/480, 120/640, 48/480) whose three
-   states are painted, so no CSS highlight. No superimposed panel; the stylesheet never references the picture. */
+   control sits on the painted button (R2.0.20, D-36: the original Dialog footer button 138/640, 373/480,
+   364/640, 48/480 — statsdialog.ts STATS_OK_RULE) whose three states are painted, so no CSS highlight. No superimposed panel; the stylesheet never references the picture. */
 #stats.stats-original{background:transparent}
 #stats.stats-original .zuma-stats{position:absolute;inset:0;min-width:0;max-width:none;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;background-size:100% 100%;background-repeat:no-repeat;overflow:hidden;animation:statsIn .32s ease-out}
 #stats.stats-original .zuma-stats h2,#stats.stats-original .stats-columns span,#stats.stats-original .stats-columns strong,#stats.stats-original .stats-tip,#stats.stats-original .stats-rule,#stats.stats-original .stats-gap,#stats.stats-original .stats-idol{opacity:0;pointer-events:none}
 #stats.stats-original .stats-columns{position:absolute;inset:0;display:block;margin:0}
-#stats.stats-original .stats-ok{position:absolute;left:40.625%;top:79.58%;width:18.75%;height:10%;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:transparent;font-size:0;box-shadow:none;cursor:pointer;outline-offset:2px}
+#stats.stats-original .stats-ok{position:absolute;left:21.5625%;top:77.7083%;width:56.875%;height:10%;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:transparent;font-size:0;box-shadow:none;cursor:pointer;outline-offset:2px}
 #stats.stats-original .stats-ok:hover,#stats.stats-original .stats-ok:active,#stats.stats-original .stats-ok:focus-visible{background:transparent}
 @keyframes statsIn{from{opacity:0}to{opacity:1}}
 

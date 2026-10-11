@@ -509,9 +509,8 @@ test('one `lost` event per loss: emitted at the loss, not again at the end of th
 
 // ------------------------------------------------------------ baseline
 
-test('baseline 2.0.19: ENGINE_VERSION and package.json agree', () => {
+test('R2.0.20: the baseline moved on (r220 locks \'2.0.20\')', () => {
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  assert.equal(ENGINE_VERSION, '2.0.19');
-  assert.equal(pkg.version, '2.0.19');
-  assert.match(pkg.description, /R2\.0\.19/);
+  assert.ok(ENGINE_VERSION > '2.0.19', ENGINE_VERSION);
+  assert.equal(pkg.version, ENGINE_VERSION, 'package and engine agree');
 });

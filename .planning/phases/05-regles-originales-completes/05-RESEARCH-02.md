@@ -168,3 +168,36 @@ Repli : aligner les **valeurs numériques sur un bord droit commun** par colonne
 
 **Confiance :** formules de score et de saut HAUTE ; unité de largeur MOYENNE ; mode `+0x186` MOYENNE ; géométrie BASSE.
 **Date :** 2026-10-10 — valable tant que l'exécutable de référence ne change pas.
+
+## Q5. Bouton de pied du STATS (05-14)
+
+**Ajouté le :** 2026-10-11 (plan 05-14, D-36, constat U39). Même PE interne, même `dis.txt` ; lecture ≈ 35 min. **Confiance : HAUTE** sur la règle et les constantes, MOYENNE sur la conversion vers notre cadre (dépend de la transparence des marges du masque, voir plus bas).
+
+### Ce qui est lu
+
+- **Constructeur du STATS** 0x446ec0 (le « 0x4478xx » de Q4 en est la fin) : appelle 0x43ef30 avec `(DIALOG_BOX ds:0x5a1084, DIALOG_BUTTON ds:0x5a122c, id 0xe, modal 1, en-tête, lignes, pied, mode 3, drapeau 1)` (0x446fb9–0x446fdd). Mode 3 = `BUTTONS_FOOTER` : un seul bouton (`mYesButton`, +0x90), pas de second (0x4b3317–0x4b33b8).
+- **0x43ef30** (couche Zuma au-dessus de `Dialog::Dialog` 0x4b31a0) : après le constructeur de base (marges de contenu 24 / 24 / 24 / 24, 0x4b3256–0x4b3296), si le drapeau « tête » (`+0x14c`, dessin de `GodHead` dans 0x43f0b0) est levé : `mBackgroundInsets` (+0x108) = **(0, 80, 0, 0)** et `mContentInsets` (+0x118) = **(36, 52, 36, 36)** (gauche, haut, droite, bas ; `Insets` 0x452650 range ses quatre arguments dans cet ordre) ; sans tête : fond inchangé, contenu (36, 28, 36, 36) (0x43efa9–0x43f010).
+- **`mButtonHeight`** (+0x104) = hauteur de l'image du bouton (`image+0x8`), 24 sans image (0x4b34b0–0x4b34be) → **48** pour `DialogButton` (360 × 48).
+- **`Dialog::Resize`** = entrée 25 de la vtable 0x554554 (0x4ac160 ; le STATS 0x550194 y renvoie par 0x440a60). Branche « un seul bouton » (0x4ac23e–0x4ac291) :
+  `x = mX + fond.g + contenu.g`, `y = mY + mHeight − contenu.b − fond.b − mButtonHeight`, `largeur = mWidth − contenu.d − fond.d − fond.g − contenu.g`, `hauteur = mButtonHeight` — exactement le `Dialog::Resize` de SexyAppFramework.
+- **Taille du dialogue** (0x434540, appelée par 0x44ae1b avec 460) : largeur `W = max(460, largeur de l'en-tête + marges + 20)`, centré `x = (640 − W) / 2` ; `y = 90 − fond.haut = 10` ; hauteur = hauteur préférée (0x440a70 : base 0x4b0290 + 220, ou + 170 en mode « totaux »), ramenée à `y = 10` si elle dépasse 470. La boîte dessinée (0x4b0410 : rectangle intérieur aux marges de fond) commence donc à **y = 90** et occupe **x 90–550** (460 px).
+
+### Règle et conversion vers notre cadre
+
+Dans le repère de la boîte dessinée : bouton à **36 px** des bords gauche, droit et bas, hauteur 48, pleine largeur intérieure (W − 72).
+
+Notre `STATS_LAYOUT.frame` (109, 91, 422 × 355, mesuré sur la photo R2.0.12) est la partie **opaque** de `dialogbox` : le masque `_dialogbox` laisse 11 px transparents à gauche, 3 à droite et 11 en bas (`STATS_LAYOUT.source`). Vus depuis le bord opaque, les 36 px deviennent 25 (gauche), 33 (droite) et 25 (bas). La boîte originale étant centrée sur 320 comme notre cadre, l'asymétrie horizontale de 4 px est partagée : **règle retenue `STATS_OK_RULE` = gauche 29, droite 29, bas 25, hauteur 48** (largeur = boîte − 72 conservée). OK = **{ x 138, y 373, w 364, h 48 }** (avant : 260, 382, 120 × 48, une seule tranche de 120 px).
+
+Écart de taille relevé, cadre conservé (per D-36) : la boîte lue fait 460 px de large (opaque 446 si les marges du masque sont transparentes) contre 422 mesurés sur la photo ; le haut de la boîte (y = 90) concorde avec notre cadre (91) ; le bas dépend de la hauteur de l'en-tête (non chiffrée), cohérent avec 446 + 11 si l'en-tête ajoute ≈ 3 px.
+
+Conséquence de mise en page : l'encart de l'astuce garde son haut (320, les lignes restent au-dessus pour toute hauteur de ligne permise) et se termine 2 px au-dessus de l'OK (hauteur 60 → 51), texte recentré (ligne de base 350 → 348). Le pied du menu (MENU_LAYOUT, R2.0.18 : 30 / 30 / 22) n'est pas modifié : 1 px d'écart horizontal et 3 px vertical avec la règle du STATS.
+
+### Non établi
+
+| Sujet | État | Repli |
+|---|---|---|
+| Transparence réelle des marges du masque dans le dessin de la boîte (0x46ae30) | lue côté pack seulement | si elles étaient opaques, la règle serait 36 / 36 / 36 depuis notre cadre (OK 145, 362, 350 × 48) |
+| Hauteur exacte du dialogue (métriques de la police d'en-tête dans 0x4b0290) | non chiffrée | cadre mesuré conservé |
+| Marges du dialogue MENU (OPTIONS 0x445310) | non relues | règle R2.0.18 conservée |
+
+Preuve : `scratchpad/shots-r220/stats-ok.log` (zone DOM `#result-continue` = rectangle dessiné à 0,05 px près, survol limité au bouton) et captures `stats-ok-3-3-dpr2.png`, `menu-footer-dpr2.png`.

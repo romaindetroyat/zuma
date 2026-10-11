@@ -28,7 +28,8 @@ test('STATS_LAYOUT: frame, columns, rules, button and head follow the R2.0.12 re
   }
   const r = statsRows(19).right;
   assert.ok(r.time < r.objective && r.objective < r.rule && r.rule < r.bonus && r.bonus < r.record, 'right column order');
-  assert.deepEqual(STATS_LAYOUT.ok, { x: 260, y: 382, w: 120, h: 48 }, 'OK = one DialogButton state, centred');
+  // R2.0.20 (D-36): the OK is the original Dialog footer button (r220-presentation locks { 138, 373, 364, 48 }), no longer one 120 px state.
+  assert.equal(STATS_LAYOUT.ok.h, 48, 'OK = DialogButton height');
   assert.equal(STATS_LAYOUT.ok.x + STATS_LAYOUT.ok.w / 2, 320);
   assert.equal(STATS_LAYOUT.head.x, 320 - 78, 'GodHead (156 px) centred');
   assert.ok(STATS_LAYOUT.head.y < f.y, 'the head overlaps the top edge');

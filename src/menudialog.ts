@@ -9,7 +9,7 @@
  * The geometry is a reading of the original (vertical order sure, `LAY_*` margins not decoded — proportions of
  * the STATS, hypothesis to confirm). Nothing here touches the DOM at module level: Node tests import it.
  */
-import { STATS_COLORS, drawNineSlice, STATS_LAYOUT, wrapText, type Point, type Rect, type StatsKit } from './statsdialog.js';
+import { STATS_COLORS, drawDialogButton, drawNineSlice, STATS_LAYOUT, wrapText, type Point, type Rect, type StatsKit } from './statsdialog.js';
 import type { Bitmap, OriginalPack } from './original.js';
 import type { BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
@@ -324,17 +324,10 @@ class NativeMenuPainter implements MenuPainter {
   button(w: MenuWidget, state: MenuButtonState): void {
     const { ctx, kit, k } = this;
     const r = w.rect;
-    const i = state === 'hover' ? 1 : state === 'pressed' ? 2 : 0;
-    const bw = STATS_LAYOUT.ok.w;
-    const bh = STATS_LAYOUT.ok.h;
-    const e = MENU_LAYOUT.button.edge;
-    // DialogButton (three 120 × 48 states) stretched over the rectangle in three horizontal slices.
-    const sx = i * bw;
-    ctx.drawImage(kit.stats.button, sx * k, 0, e * k, bh * k, r.x, r.y, e, r.h);
-    ctx.drawImage(kit.stats.button, (sx + e) * k, 0, (bw - 2 * e) * k, bh * k, r.x + e, r.y, r.w - 2 * e, r.h);
-    ctx.drawImage(kit.stats.button, (sx + bw - e) * k, 0, e * k, bh * k, r.x + r.w - e, r.y, e, r.h);
-    const nudge = i === 2 ? 1 : 0;
-    // Same label baseline as the STATS OK (okLabelBaseline − ok.y = 30).
+    // DialogButton (three 120 × 48 states) stretched over the rectangle in three horizontal slices (shared with the STATS OK).
+    drawDialogButton(ctx, kit.stats.button, state, r, k, MENU_LAYOUT.button.edge);
+    const nudge = state === 'pressed' ? 1 : 0;
+    // Same label baseline as the STATS OK (okLabelBaseline − ok.y = 30 for a 48 px button).
     this.text.draw(ctx, w.label, r.x + r.w / 2 + nudge, r.y + (STATS_LAYOUT.okLabelBaseline - STATS_LAYOUT.ok.y) + nudge, { tint: STATS_COLORS.value, align: 'center' });
   }
 }

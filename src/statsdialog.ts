@@ -34,12 +34,34 @@ export interface StatsValues { points: string; combos: string; coins: string; ga
 /** Reveal order: left column top to bottom, then the right column (D-05). */
 export const STATS_ORDER: ReadonlyArray<keyof StatsValues> = ['points', 'combos', 'coins', 'gaps', 'chain', 'comboMax', 'time', 'objective', 'bonus', 'record'];
 
+/** Margins of a single footer button inside a dialog frame (left, right, bottom) and its height. */
+export interface FooterRule { left: number; right: number; bottom: number; height: number }
+
+/**
+ * Footer button of the original `Dialog` (D-36, spike 02 Q5). `Dialog::Resize` (0x4ac160, vtable slot 25) places a
+ * single button at x = background.left + content.left, y = height − content.bottom − background.bottom − mButtonHeight,
+ * width = width − the four horizontal insets, height = `mButtonHeight` (0x4b34b2: `DialogButton` height, 48). The STATS
+ * (0x446ec0 → 0x43ef30 with the head flag) has background insets 0 / 80 / 0 / 0 and content insets 36 / 52 / 36 / 36
+ * (left / top / right / bottom). Those apply to the drawn box, whose `_dialogbox` mask leaves 11 px left, 3 px right
+ * and 11 px bottom transparent around our opaque `frame`: 25 / 33 / 25 px from the opaque edges. Our frame is centred
+ * on 320 like the original box (x = (640 − W) / 2, 0x434642), so the 4 px horizontal asymmetry is shared: 29 / 29.
+ */
+export const STATS_OK_RULE: FooterRule = { left: 29, right: 29, bottom: 25, height: 48 };
+
+/** Rectangle of a single footer button inside `frame` (pure). */
+export function statsOkRect(frame: Rect, rule: FooterRule): Rect {
+  return { x: frame.x + rule.left, y: frame.y + frame.h - rule.bottom - rule.height, w: frame.w - rule.left - rule.right, h: rule.height };
+}
+
+const STATS_FRAME: Rect = { x: 109, y: 91, w: 422, h: 355 };
+const STATS_OK = statsOkRect(STATS_FRAME, STATS_OK_RULE);
+
 /**
  * Pixel layout in the 640×480 stage, measured on the R2.0.12 reference picture
- * (frame x 17 %–83 %, y 19 %–93 %; baselines = top of the digits + 11).
+ * (frame x 17 %–83 %, y 19 %–93 %; baselines = top of the digits + 11). The OK follows `STATS_OK_RULE`.
  */
 export const STATS_LAYOUT = {
-  frame: { x: 109, y: 91, w: 422, h: 355 } as Rect,
+  frame: STATS_FRAME,
   /** Opaque part of `dialogbox.jpg` (the gif mask leaves transparent margins left and bottom). */
   source: { x: 11, y: 0, w: 229, h: 231 } as Rect,
   /** 9-slice corner size, in source pixels (the carved corner blocks are ≈ 34 px). */
@@ -54,10 +76,13 @@ export const STATS_LAYOUT = {
   /**
    * Tip inset (D-20): « ASTUCE : » at `labelX`, the text left-aligned `gap` px after the label on `maxLines`
    * lines at most, wrapped on the room left in the box (never more than `maxWidth`).
+   * R2.0.20 (D-36): the box keeps its top (the rows stay above it for every line height) and ends 2 px above the
+   * OK (h 60 → 51, as before: 380 / 382); the text is re-centred in it (baseline 350 → 348).
    */
-  tip: { labelX: 150, baseline: 350, gap: 6, maxWidth: 270, lineHeight: 14, maxLines: 2, align: 'left' as const, box: { x: 133, y: 320, w: 374, h: 60 } as Rect },
-  ok: { x: 260, y: 382, w: 120, h: 48 } as Rect,
-  okLabelBaseline: 412,
+  tip: { labelX: 150, baseline: 348, gap: 6, maxWidth: 270, lineHeight: 14, maxLines: 2, align: 'left' as const, box: { x: 133, y: 320, w: 374, h: STATS_OK.y - 2 - 320 } as Rect },
+  ok: STATS_OK,
+  /** Label baseline: 30 px under the top of a 48 px button, centred for another height. */
+  okLabelBaseline: STATS_OK.y + (STATS_OK.h - 48) / 2 + 30,
 };
 
 /**
@@ -343,12 +368,29 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
   const firstBaseline = L.tip.baseline - (tip.lines.length > 1 ? Math.round(L.tip.lineHeight / 2) : 0);
   tip.lines.slice(0, L.tip.maxLines).forEach((line, i) => lineFont.draw(ctx, line, textX, firstBaseline + i * L.tip.lineHeight, { tint: C.value, align: 'left' }));
 
-  // OK button: one of the three painted states, label centred (nudged when pressed).
-  const state = options.button === 'hover' ? 1 : options.button === 'pressed' ? 2 : 0;
-  ctx.drawImage(kit.button, state * L.ok.w * k, 0, L.ok.w * k, L.ok.h * k, L.ok.x, L.ok.y, L.ok.w, L.ok.h);
-  const nudge = state === 2 ? 1 : 0;
+  // OK button: the footer button of the original Dialog (D-36), one painted state in three slices, label centred
+  // (nudged when pressed).
+  drawDialogButton(ctx, kit.button, options.button, L.ok, k);
+  const nudge = options.button === 'pressed' ? 1 : 0;
   text.draw(ctx, str('DIALOG_BUTTON_OK', str('OK', 'OK')), L.ok.x + L.ok.w / 2 + nudge, L.okLabelBaseline + nudge, { tint: C.value, align: 'center' });
   return out;
+}
+
+/** One `DialogButton` state: 120 × 48 source px, normal / hover / pressed side by side. */
+export const DIALOG_BUTTON = { w: 120, h: 48, edge: 22 };
+
+/**
+ * `DialogButton` over `rect` in three horizontal slices (D-36, shared with the menu): the `edge`-px ends unscaled, the
+ * centre stretched; the state picks the 120 px column. `sourceScale` (2 for an upscaled picture) multiplies the source.
+ */
+export function drawDialogButton(ctx: Pick<CanvasRenderingContext2D, 'drawImage'>, image: Bitmap, state: ButtonState, rect: Rect, sourceScale = 1, edge = DIALOG_BUTTON.edge): void {
+  const { w: bw, h: bh } = DIALOG_BUTTON;
+  const k = sourceScale;
+  const e = Math.max(0, Math.min(edge, Math.floor(rect.w / 2), Math.floor(bw / 2)));
+  const sx = (state === 'hover' ? 1 : state === 'pressed' ? 2 : 0) * bw;
+  ctx.drawImage(image, sx * k, 0, e * k, bh * k, rect.x, rect.y, e, rect.h);
+  ctx.drawImage(image, (sx + e) * k, 0, (bw - 2 * e) * k, bh * k, rect.x + e, rect.y, rect.w - 2 * e, rect.h);
+  ctx.drawImage(image, (sx + bw - e) * k, 0, e * k, bh * k, rect.x + rect.w - e, rect.y, e, rect.h);
 }
 
 /**
