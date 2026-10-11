@@ -1,13 +1,24 @@
 /**
- * Private hosting of the full game on Cloudflare Pages behind Cloudflare Access (R2.0.20, plan 05-16, D-42, D-43).
+ * Private hosting of the full game on Cloudflare Pages behind Cloudflare Access (R2.0.20, plans 05-16 / 05-17, D-42,
+ * D-43).
+ *
+ * Content method (05-17, « option B »): the files of dist/ are stored in the D1 database `zuma-assets` (table
+ * `blobs`, base64 chunks, keys `sha256:<hex>`) and served by a generated Pages `_worker.js` (advanced mode) bound to
+ * it as ASSETS_DB — every call uses the account token only (the Pages upload JWT never reaches Cloudflare from the
+ * cloud session, whose proxy replaces `Authorization`). `--direct` keeps the former Pages direct upload (from a Mac).
  *
  * Modes:
- *   node tools/deploy.mjs                  provision (idempotent) + deploy dist/ on `main` + verify
- *   node tools/deploy.mjs --plan           GET only: prints « actions prévues : N » and one « - <action> » per action
+ *   node tools/deploy.mjs                  provision Access (idempotent), then D1 database / table / missing rows,
+ *                                          project binding, worker deployment on `main`, then verify
+ *   node tools/deploy.mjs --plan           GET (and D1 SELECT) only: « actions prévues : N », one « - <action> » each
+ *   node tools/deploy.mjs --dry-run        the whole default pipeline against a simulated account (tools/cfsim.mjs,
+ *                                          state left by 05-16), no network; lists the writes in order and writes
+ *                                          dist/_d1/_worker.js + dist/_d1/manifest.json for inspection
+ *   node tools/deploy.mjs --direct         former method: Pages direct upload (needs the upload JWT: from the Mac)
  *   node tools/deploy.mjs --verify         Access configuration through the API, then HTTP: 0 protected, 1 exposed,
  *                                          2 hosts unreachable from here (the HTTP proof is then done in a browser)
- *   node tools/deploy.mjs --rollback-plan  GET only: prints the removal steps (Pages project first, Access next);
- *                                          nothing is ever deleted by this tool
+ *   node tools/deploy.mjs --rollback-plan  GET only: prints the removal steps (deployments, D1 binding and database,
+ *                                          Pages project, then Access); nothing is ever deleted by this tool
  *
  * Authentication: in the cloud session the egress proxy injects the API token on api.cloudflare.com (no header is
  * sent); elsewhere CLOUDFLARE_API_TOKEN (and CLOUDFLARE_ACCOUNT_ID with several accounts) is read from the environment.
@@ -26,10 +37,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkArtifact, uploadAndDeploy } from './pagesupload.mjs';
+import { blobFiles, D1_BINDING, generateWorker, workerManifest } from './d1worker.mjs';
+import {
+  bindingBody, bindingOk, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
+  productionDeployment, queryPath, readBlobs, ROW_BUDGET, SCHEMA, uploadBlobs, workerMarker,
+} from './d1deploy.mjs';
+import { simulatedCloudflare } from './cfsim.mjs';
 
 const API = 'https://api.cloudflare.com/client/v4';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SESSION = '730h';
+/** Size cap of the generated worker (the free Workers plan allows 3 MB compressed; ours is ≈ 60 KB). */
+const WORKER_MAX_BYTES = 1024 * 1024;
 const APP_NAME = 'Zuma';
 const ALLOW_POLICY = 'Zuma — joueurs';
 const BYPASS_NAME = 'Zuma — fichiers publics';
@@ -47,12 +66,16 @@ const LABELS = {
 
 // ------------------------------------------------------------ pure helpers
 
-/** Masks JWTs, Authorization values and hex identifiers of 32+ digits (account id, AUD), keeping the last 4 chars. */
+/**
+ * Masks JWTs, Authorization values, hex identifiers of 32+ digits (account id, AUD) and UUIDs (D1 database ids),
+ * keeping the last 4 chars.
+ */
 export function redact(text) {
   const keep = v => `[masqué]${v.slice(-4)}`;
   return String(text)
     .replace(/eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, keep)
     .replace(/(Authorization:\s*)(?:Bearer\s+)?([^\s,;"']+)/gi, (_, h, v) => h + keep(v))
+    .replace(/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g, keep)
     .replace(/\b[0-9a-fA-F]{32,}\b/g, keep);
 }
 
@@ -216,6 +239,7 @@ export function makeApi({ fetch = globalThis.fetch, token = null } = {}) {
 
 /** Token permission most likely missing for a refused write on `p`. */
 function permissionFor(p) {
+  if (p.includes('/d1/')) return 'D1 : Edit';
   if (p.includes('/pages/')) return 'Cloudflare Pages : Edit';
   if (p.includes('/access/identity_providers')) return 'Access: Organizations, Identity Providers, and Groups : Edit';
   if (p.includes('/access/')) return 'Access: Apps and Policies : Edit';
@@ -243,43 +267,116 @@ const hostOf = (project, name) => {
   return sd.endsWith('.pages.dev') ? sd : `${sd}.pages.dev`;
 };
 
+/** The account state 05-16 left (project on `main`, One-time PIN, both policies and apps): seed of --dry-run. */
+export function provisionedState(cfg) {
+  const host = `${cfg.project}.pages.dev`;
+  return {
+    project: { name: cfg.project, subdomain: host, production_branch: 'main', deployment_configs: { production: {}, preview: {} }, latest_deployment: null, canonical_deployment: null },
+    idps: [{ id: 'idp-cloudflare', type: 'cloudflare', name: '' }, { id: 'idp-otp', type: 'onetimepin', name: OTP.name, config: {} }],
+    policies: [
+      { id: 'pol-allow', name: ALLOW_POLICY, decision: 'allow', include: cfg.allow.map(email => ({ email: { email } })), exclude: [], require: [], session_duration: SESSION },
+      { id: 'pol-bypass', name: BYPASS_NAME, decision: 'bypass', include: [{ everyone: {} }], exclude: [], require: [] },
+    ],
+    apps: [
+      { id: 'app-zuma', type: 'self_hosted', name: APP_NAME, domain: host, destinations: [{ type: 'public', uri: host }, { type: 'public', uri: `*.${host}` }], session_duration: SESSION, allowed_idps: ['idp-otp'], policies: [{ id: 'pol-allow', precedence: 1 }] },
+      { id: 'app-public', type: 'self_hosted', name: BYPASS_NAME, domain: `${host}/public`, destinations: [{ type: 'public', uri: `${host}/public` }], policies: [{ id: 'pol-bypass', precedence: 1 }] },
+    ],
+  };
+}
+
+/** Planned D1 actions, one « - <action> » line each. */
+function d1Actions(p) {
+  const out = [];
+  if (p.createDatabase) out.push('create-d1-database');
+  if (p.createTable) out.push('create-table');
+  if (p.chunks > 0) out.push(`d1-insert ${p.chunks} morceau(x), ${p.missing.length} fichier(s), ${p.rows} lignes écrites estimées`);
+  if (p.bind) out.push('bind-d1');
+  if (p.deploy) out.push('deploy-worker');
+  return out;
+}
+
+const budgetRefusal = (rows, budget) => `D1 : ${rows} lignes écrites estimées, au-delà du budget de ${budget} par passage (plan gratuit : 100 000 par jour) ; rien n'est écrit.`;
+
+/** One line per write of a simulated run (account and database ids replaced by placeholders, bodies summarised). */
+function describeWrites(calls, accountId, dbIds) {
+  const anon = text => dbIds.reduce((t, id) => t.split(id).join('{base}'), String(text).split(`/accounts/${accountId}`).join('/accounts/{compte}'));
+  const out = [];
+  for (const c of calls) {
+    const isQuery = c.path.endsWith('/query');
+    if (c.method === 'GET' || (isQuery && /^SELECT /.test(c.body?.sql ?? ''))) continue;
+    const head = `${c.method} ${anon(c.path)}`;
+    if (isQuery && c.body.batch) {
+      const kinds = [...new Set(c.body.batch.map(q => q.sql.split(' (')[0]))].join(' + ');
+      out.push(`${head} batch de ${c.body.batch.length} ${kinds} (${Buffer.byteLength(JSON.stringify(c.body))} octets)`);
+    } else if (isQuery) out.push(`${head} ${c.body.sql.startsWith('INSERT') ? `${c.body.sql.split(' (')[0]} (1 morceau)` : c.body.sql}`);
+    else if (c.form) {
+      const worker = c.form.get('_worker.js');
+      out.push(`${head} multipart : manifest ${c.form.get('manifest')}, branch ${c.form.get('branch')}, commit_message « ${c.form.get('commit_message')} », _worker.js (${worker ? worker.size : 0} octets)`);
+    } else if (c.path.includes('/access/')) out.push(`${head} (champs : ${Object.keys(c.body ?? {}).join(', ')})`);
+    else out.push(`${head} ${anon(JSON.stringify(c.body ?? {}))}`);
+  }
+  return out;
+}
+
 /** Runs one mode; resolves to the exit code. Dependencies are injected (tests: simulated API and fetch). */
 export async function run(argv, deps = {}) {
   const {
-    api, fetch = globalThis.fetch, env = process.env, root = ROOT,
+    fetch = globalThis.fetch, env = process.env, root = ROOT, rowBudget = ROW_BUDGET,
     sleep = ms => new Promise(r => setTimeout(r, ms)),
   } = deps;
+  let { api } = deps;
   const out = deps.log ?? (m => console.log(m));
   const log = m => out(redact(m));
-  const known = ['--plan', '--verify', '--rollback-plan'];
-  const unknown = argv.filter(a => !known.includes(a));
+  const known = ['--plan', '--verify', '--rollback-plan', '--dry-run'];
+  const unknown = argv.filter(a => !known.includes(a) && a !== '--direct');
   const modes = argv.filter(a => known.includes(a));
-  if (unknown.length || modes.length > 1) {
-    log(`usage : node tools/deploy.mjs [--plan | --verify | --rollback-plan] (option inconnue : ${unknown.join(' ') || modes.join(' ')})`);
+  const direct = argv.includes('--direct');
+  if (unknown.length || modes.length > 1 || (direct && modes.length > 0 && modes[0] !== '--plan')) {
+    log(`usage : node tools/deploy.mjs [--plan | --verify | --rollback-plan | --dry-run] [--direct] (option refusée : ${unknown.join(' ') || modes.join(' ')})`);
     return 1;
   }
-  const mode = { '--plan': 'plan', '--verify': 'verify', '--rollback-plan': 'rollback' }[modes[0]] ?? 'deploy';
+  const mode = { '--plan': 'plan', '--verify': 'verify', '--rollback-plan': 'rollback', '--dry-run': 'dry' }[modes[0]] ?? 'deploy';
   const started = Date.now();
 
-  const cfg = readConfig(root);
-  if (cfg.error) { log(cfg.error); return 1; }
+  let cfg = readConfig(root);
+  if (cfg.error) {
+    if (mode !== 'dry') { log(cfg.error); return 1; }
+    cfg = { project: 'zuma', allow: ['joueur@example.org'], pinIdpApps: null };
+    log("configuration privée absente : valeurs d'exemple (simulation seulement).");
+  }
   let version;
   try { version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version; } catch { log('package.json illisible.'); return 1; }
   const dist = path.join(root, 'dist');
   const artefactError = checkArtifact(dist, version);
-  if (mode === 'deploy' && artefactError) { log(artefactError); return 1; }
+  if ((mode === 'deploy' || mode === 'dry') && artefactError) { log(artefactError); return 1; }
 
-  /** A write: a refusal names the token permission most likely missing. */
-  const write = async (method, p, body) => {
+  let sim = null;
+  if (mode === 'dry') {
+    sim = simulatedCloudflare({ state: provisionedState(cfg) });
+    api = sim.api;
+    log("simulation : compte Cloudflare simulé dans l'état laissé par 05-16 (projet Pages et Access en place) ; aucun appel réseau.");
+  }
+
+  /** Same call, but a refusal names the token permission most likely missing (writes only). */
+  const guarded = async (method, p, opts) => {
     try {
-      return await api(method, p, { body });
+      return await api(method, p, opts);
     } catch (e) {
       if (e && (e.status === 401 || e.status === 403)) {
-        throw new Error(`${e.message} — écriture refusée : permission du jeton probablement manquante « ${permissionFor(p)} » ; rien d'autre n'a été tenté.`);
+        throw Object.assign(new Error(`${e.message} — écriture refusée : permission du jeton probablement manquante « ${permissionFor(p)} » ; rien d'autre n'a été tenté.`), { status: e.status });
       }
       throw e;
     }
   };
+  const write = (method, p, body) => guarded(method, p, { body });
+
+  // Artefact → files, worker, marker (D1 method).
+  const info = artefactError ? null : JSON.parse(fs.readFileSync(path.join(dist, 'version.json'), 'utf8'));
+  const files = artefactError || direct ? null : blobFiles(dist);
+  const manifest = files ? workerManifest(files) : null;
+  const worker = files ? generateWorker(manifest, { build: info.build }) : null;
+  const marker = worker ? workerMarker(worker) : null;
+  if (worker && Buffer.byteLength(worker) > WORKER_MAX_BYTES) { log(`_worker.js de ${Buffer.byteLength(worker)} octets : au-delà de ${WORKER_MAX_BYTES} octets.`); return 1; }
 
   try {
     // Preflight: token, account, Zero Trust organisation.
@@ -289,7 +386,7 @@ export async function run(argv, deps = {}) {
       log("jeton Cloudflare absent, expiré ou inactif : dans la session cloud, le proxy l'injecte ; ailleurs, définissez CLOUDFLARE_API_TOKEN.");
       return 1;
     }
-    let account = env.CLOUDFLARE_ACCOUNT_ID || null;
+    let account = mode === 'dry' ? null : env.CLOUDFLARE_ACCOUNT_ID || null;
     if (!account) {
       const accounts = await api('GET', '/accounts');
       if (!Array.isArray(accounts) || accounts.length !== 1) {
@@ -319,21 +416,53 @@ export async function run(argv, deps = {}) {
       log(`conflits : ${conflict.length} (rien n'est réécrit)`);
       for (const c of conflict) log(`! ${c}`);
     };
+    /** D1 state and plan (GET + SELECT only); a refused read names the permission. */
+    const readD1 = async project => {
+      try {
+        const database = await findDatabase(api, A, DATABASE_NAME);
+        const blobs = database ? await readBlobs(api, A, database.uuid) : null;
+        return { database, blobs, plan: planD1({ files, database, blobs, project, marker }) };
+      } catch (e) {
+        if (e && (e.status === 401 || e.status === 403)) throw new Error(`${e.message} — lecture D1 refusée : permission du jeton probablement manquante « ${permissionFor('/d1/')} ».`);
+        throw e;
+      }
+    };
 
-    if (mode === 'plan') {
+    /** --plan (also the second plan of --dry-run): GET and SELECT only. */
+    const printPlan = async () => {
       const state = await readState();
       const host = hostOf(state.project, cfg.project);
       log(`sous-domaine : ${host}${state.project ? '' : ' (supposé : projet absent)'}`);
       log(`artefact : ${artefactError ?? 'build --deploy prêt'}`);
       const p = plan(state);
       if (p.conflict.length) { printConflicts(p.conflict); return 1; }
-      log(`actions prévues : ${p.actions.length}`);
+      let extra = [];
+      let code = 0;
+      if (!direct) {
+        if (!files) log(`D1 : artefact absent, insertions non calculées`);
+        else {
+          const d1 = await readD1(state.project);
+          extra = d1Actions(d1.plan);
+          log(`D1 : base « ${DATABASE_NAME} » ${d1.database ? 'présente' : 'absente'} ; ${new Set(files.map(f => f.key)).size} contenus pour ${files.length} fichiers ; worker ${marker}`);
+          if (d1.plan.rows > rowBudget) { log(budgetRefusal(d1.plan.rows, rowBudget)); code = 1; }
+        }
+      }
+      log(`actions prévues : ${p.actions.length + extra.length}`);
       for (const a of p.actions) log(`- ${a.kind}${a.kind === 'pin-idp' ? ` ${a.name}` : ''}`);
-      return 0;
-    }
+      for (const a of extra) log(`- ${a}`);
+      return code;
+    };
 
-    if (mode === 'rollback') return await rollbackPlan({ readState, cfg, log });
-    if (mode === 'verify') return await verify({ readState, plan, cfg, team, fetch, log });
+    if (mode === 'plan') return await printPlan();
+    if (mode === 'rollback') return await rollbackPlan({ api, A, readState, cfg, log });
+    if (mode === 'verify') return await verify({ api, A, readState, plan, cfg, team, fetch, log });
+
+    // D1 budget first (read-only): nothing at all is written when the run would exceed it.
+    if (!direct) {
+      const pre = await readD1((await readState()).project);
+      if (pre.plan.rows > rowBudget) { log(budgetRefusal(pre.plan.rows, rowBudget)); return 1; }
+    }
+    const firstWrite = sim ? sim.calls.length : 0;
 
     // Provisioning: one action at a time, each one read back before the next.
     const done = new Set();
@@ -358,18 +487,78 @@ export async function run(argv, deps = {}) {
     if (!main) { log(`application « ${APP_NAME} » non relue sur ${host} : aucun contenu envoyé.`); return 1; }
     log(`Access relu : « ${main.name} » couvre ${host} et *.${host} ; « ${BYPASS_NAME} » couvre ${host}/public`);
 
-    // Content: always the production branch.
-    const info = JSON.parse(fs.readFileSync(path.join(dist, 'version.json'), 'utf8'));
-    const res = await uploadAndDeploy(api, { accountId: account, project: cfg.project, dir: dist, branch: 'main', message: `R${version} ${info.build}`, log, sleep });
-    if (res.environment !== 'production') {
-      log(`ALERTE : déploiement ${res.id} en environnement « ${res.environment} » au lieu de « production » : vérifiez le projet avant toute autre action.`);
-      return 1;
+    if (direct) {
+      // Former method (Pages direct upload; needs the upload JWT to reach Cloudflare: from the Mac).
+      const res = await uploadAndDeploy(api, { accountId: account, project: cfg.project, dir: dist, branch: 'main', message: `R${version} ${info.build}`, log, sleep });
+      if (res.environment !== 'production') {
+        log(`ALERTE : déploiement ${res.id} en environnement « ${res.environment} » au lieu de « production » : vérifiez le projet avant toute autre action.`);
+        return 1;
+      }
+      log(`URL de production : https://${host}`);
+      log(`URL du déploiement : ${res.url}`);
+      log(`fichiers : ${res.files}, envoyés : ${res.uploaded}, empreinte du pack : ${info.assetsHash}, état : ${res.ready ? 'en ligne' : 'en cours'}`);
+      log(`durée : ${Math.round((Date.now() - started) / 1000)} s`);
+      return await verify({ api, A, readState, plan, cfg, team, fetch, log });
     }
+
+    // D1: database, table, rows, binding, worker — each step read back.
+    let database = await findDatabase(api, A, DATABASE_NAME);
+    if (!database) {
+      await write('POST', `${A}/d1/database`, { name: DATABASE_NAME });
+      database = await findDatabase(api, A, DATABASE_NAME);
+      if (!database) { log(`base D1 « ${DATABASE_NAME} » non relue après sa création ; arrêt.`); return 1; }
+      log(`créé : base D1 « ${DATABASE_NAME} » (${database.uuid})`);
+    } else log(`déjà présente : base D1 « ${DATABASE_NAME} » (${database.uuid})`);
+    let blobs = await readBlobs(api, A, database.uuid);
+    if (!blobs.table) {
+      await write('POST', queryPath(A, database.uuid), { sql: SCHEMA });
+      blobs = await readBlobs(api, A, database.uuid);
+      if (!blobs.table) { log('table blobs non relue après sa création ; arrêt.'); return 1; }
+      log('créé : table blobs');
+    } else log('déjà présente : table blobs');
+    let project = await api('GET', `${A}/pages/projects/${cfg.project}`);
+    let p = planD1({ files, database, blobs, project, marker });
+    if (p.rows > rowBudget) { log(budgetRefusal(p.rows, rowBudget)); return 1; }
+    log(`D1 : ${files.length} fichiers, ${new Set(files.map(f => f.key)).size} contenus ; à insérer : ${p.missing.length} fichier(s), ${p.chunks} morceau(x), ≈ ${p.rows} lignes écrites`);
+    await uploadBlobs(guarded, { A, uuid: database.uuid, plan: p, log, sleep });
+    blobs = await readBlobs(api, A, database.uuid);
+    p = planD1({ files, database, blobs, project, marker });
+    if (p.missing.length) { log(`D1 relue : ${p.missing.length} fichier(s) encore absents ou incomplets ; arrêt (relancer reprend où il s'est arrêté).`); return 1; }
+    log(`D1 relue : ${new Set(files.map(f => f.key)).size} contenus complets`);
+    if (!bindingOk(project, database.uuid)) {
+      await write('PATCH', `${A}/pages/projects/${cfg.project}`, bindingBody(database.uuid));
+      project = await api('GET', `${A}/pages/projects/${cfg.project}`);
+      if (!bindingOk(project, database.uuid)) { log(`liaison « ${D1_BINDING} » non relue sur le projet ; arrêt.`); return 1; }
+      log(`lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} » (production et aperçu, compatibilité ${COMPATIBILITY_DATE})`);
+    } else log(`déjà lié : « ${D1_BINDING} » → base « ${DATABASE_NAME} »`);
+    let deploymentUrl = productionDeployment(project)?.url ?? null;
+    if (!deployedOk(project, marker)) {
+      const res = await deployWorker(guarded, { A, project: cfg.project, worker, branch: 'main', message: `R${version} ${info.build}`, log, sleep });
+      if (res.environment !== 'production') {
+        log(`ALERTE : déploiement ${res.id} en environnement « ${res.environment} » au lieu de « production » : vérifiez le projet avant toute autre action.`);
+        return 1;
+      }
+      deploymentUrl = res.url;
+      log(`déployé : worker ${marker} (${Buffer.byteLength(worker)} octets), état : ${res.ready ? 'en ligne' : 'en cours'}`);
+    } else log(`worker déjà déployé : ${marker}`);
     log(`URL de production : https://${host}`);
-    log(`URL du déploiement : ${res.url}`);
-    log(`fichiers : ${res.files}, envoyés : ${res.uploaded}, empreinte du pack : ${info.assetsHash}, état : ${res.ready ? 'en ligne' : 'en cours'}`);
+    log(`URL du déploiement : ${deploymentUrl ?? 'inconnue'}`);
+    log(`fichiers : ${files.length}, empreinte du pack : ${info.assetsHash}`);
     log(`durée : ${Math.round((Date.now() - started) / 1000)} s`);
-    return await verify({ readState, plan, cfg, team, fetch, log });
+
+    if (sim) {
+      const outDir = path.join(dist, '_d1');
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, '_worker.js'), worker);
+      fs.writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      const writes = describeWrites(sim.calls.slice(firstWrite), sim.accountId, sim.state.databases.map(d => d.uuid));
+      log(`écritures prévues (${writes.length}, dans l'ordre, sur un compte déjà provisionné par 05-16) :`);
+      writes.forEach((w, i) => log(`${i + 1}. ${w}`));
+      log(`fichiers d'inspection : dist/_d1/_worker.js (${Buffer.byteLength(worker)} octets), dist/_d1/manifest.json (${files.length} chemins)`);
+      log('second plan sur le compte simulé :');
+      return await printPlan();
+    }
+    return await verify({ api, A, readState, plan, cfg, team, fetch, log });
   } catch (e) {
     log(`erreur : ${e && e.message}`);
     return 1;
@@ -423,9 +612,18 @@ async function apply(act, { A, state, cfg, host, api, write, log }) {
 }
 
 /** API configuration, then HTTP from here: 0 protected, 1 exposed or non-conforming, 2 unreachable from the session. */
-async function verify({ readState, plan, cfg, team, fetch, log }) {
+async function verify({ api, A, readState, plan, cfg, team, fetch, log }) {
   const state = await readState();
   const host = hostOf(state.project, cfg.project);
+  // D1 content (information only: GET): database, binding, worker of the production deployment.
+  try {
+    const db = await findDatabase(api, A, DATABASE_NAME);
+    const msg = productionDeployment(state.project)?.deployment_trigger?.metadata?.commit_message ?? '';
+    const worker = msg.split(/\s+/).find(w => w.startsWith('worker:'));
+    log(`D1 : base « ${DATABASE_NAME} » ${db ? 'présente' : 'absente'} ; liaison « ${D1_BINDING} » ${db && bindingOk(state.project, db.uuid) ? 'en place (production et aperçu)' : 'absente'} ; worker en production : ${worker ?? 'aucun'}`);
+  } catch (e) {
+    log(`D1 : état illisible (${e.message})`);
+  }
   const p = plan(state);
   let bad = 0;
   if (p.conflict.length || p.actions.length) {
@@ -478,8 +676,11 @@ async function verify({ readState, plan, cfg, team, fetch, log }) {
   return 0;
 }
 
-/** Prints the removal steps (nothing is called but GET): Pages project first so the pack is never left unprotected. */
-async function rollbackPlan({ readState, cfg, log }) {
+/**
+ * Prints the removal steps (nothing is called but GET): content first (deployments, D1 binding, D1 database, then the
+ * Pages project) so the pack is never left without Access protection, then Access.
+ */
+async function rollbackPlan({ api, A, readState, cfg, log }) {
   const state = await readState();
   const host = hostOf(state.project, cfg.project);
   const h = norm(host);
@@ -487,12 +688,23 @@ async function rollbackPlan({ readState, cfg, log }) {
   const pols = state.policies.filter(p => p.name === ALLOW_POLICY || p.name === BYPASS_NAME);
   const otp = state.idps.find(i => i.type === 'onetimepin');
   const pinned = (cfg.pinIdpApps ?? []).join(', ') || 'aucune';
-  log("plan de retrait (rien n'est exécuté ; ordre : projet Pages d'abord, Access ensuite, pour qu'aucun instant ne laisse le pack sans protection) :");
-  log(`1. supprimer le projet Pages (contenu retiré d'abord) : DELETE /accounts/{compte}/pages/projects/${cfg.project}${state.project ? '' : ' (déjà absent)'} — tableau de bord : Workers & Pages › ${cfg.project} › Settings › Delete project`);
-  log(`2. supprimer l'application principale et l'application Bypass : ${zuma.map(a => `DELETE /accounts/{compte}/access/apps/${a.id} (« ${a.name} »)`).join(' ; ') || 'aucune trouvée'} — tableau de bord : Zero Trust › Access › Applications › ${APP_NAME} › Delete, puis « ${BYPASS_NAME} »`);
-  log(`3. supprimer les politiques « ${ALLOW_POLICY} » / « ${BYPASS_NAME} » si app_count = 0 : ${pols.map(p => `DELETE /accounts/{compte}/access/policies/${p.id} (« ${p.name} », app_count actuel ${p.app_count ?? '?'})`).join(' ; ') || 'aucune trouvée'}`);
-  log(`4. garder la méthode « One-time PIN » (facultatif : la retirer) : ${otp ? `DELETE /accounts/{compte}/access/identity_providers/${otp.id}` : 'absente'} — Zero Trust › Integrations › Identity providers`);
-  log(`5. D-43, seulement après le retrait de la méthode One-time PIN (facultatif) : remettre allowed_idps = [] sur ${pinned} : PUT /accounts/{compte}/access/apps/<id> avec le corps relu par GET, seul allowed_idps changeant`);
+  let deployments = [];
+  if (state.project) {
+    try { deployments = (await api('GET', `${A}/pages/projects/${cfg.project}/deployments`)) ?? []; } catch (e) { log(`déploiements illisibles (${e.message})`); }
+  }
+  let db = null;
+  try { db = await findDatabase(api, A, DATABASE_NAME); } catch (e) { log(`bases D1 illisibles (${e.message})`); }
+  const P = `/accounts/{compte}/pages/projects/${cfg.project}`;
+  const unbind = JSON.stringify({ deployment_configs: { production: { d1_databases: { [D1_BINDING]: null } }, preview: { d1_databases: { [D1_BINDING]: null } } } });
+  log("plan de retrait (rien n'est exécuté ; ordre : contenu d'abord, Access ensuite, pour qu'aucun instant ne laisse le pack sans protection) :");
+  log(`1. supprimer les déploiements du projet Pages (contenu retiré d'abord) : ${deployments.map(d => `DELETE ${P}/deployments/${d.id}?force=true`).join(' ; ') || 'aucun relu'} — le déploiement de production en cours ne part qu'avec le projet (étape 4)`);
+  log(`2. retirer la liaison D1 « ${D1_BINDING} » : PATCH ${P} ${unbind}`);
+  log(`3. supprimer la base D1 « ${DATABASE_NAME} » : ${db ? 'DELETE /accounts/{compte}/d1/database/{base}' : 'absente'} — tableau de bord : Storage & Databases › D1 › ${DATABASE_NAME} › Settings › Delete`);
+  log(`4. supprimer le projet Pages : DELETE ${P} ${state.project ? '' : '(déjà absent) '}— tableau de bord : Workers & Pages › ${cfg.project} › Settings › Delete project`);
+  log(`5. supprimer l'application principale et l'application Bypass : ${zuma.map(a => `DELETE /accounts/{compte}/access/apps/${a.id} (« ${a.name} »)`).join(' ; ') || 'aucune trouvée'} — tableau de bord : Zero Trust › Access › Applications › ${APP_NAME} › Delete, puis « ${BYPASS_NAME} »`);
+  log(`6. supprimer les politiques « ${ALLOW_POLICY} » / « ${BYPASS_NAME} » si app_count = 0 : ${pols.map(p => `DELETE /accounts/{compte}/access/policies/${p.id} (« ${p.name} », app_count actuel ${p.app_count ?? '?'})`).join(' ; ') || 'aucune trouvée'}`);
+  log(`7. garder la méthode « One-time PIN » (facultatif : la retirer) : ${otp ? `DELETE /accounts/{compte}/access/identity_providers/${otp.id}` : 'absente'} — Zero Trust › Integrations › Identity providers`);
+  log(`8. D-43, seulement après le retrait de la méthode One-time PIN (facultatif) : remettre allowed_idps = [] sur ${pinned} : PUT /accounts/{compte}/access/apps/<id> avec le corps relu par GET, seul allowed_idps changeant`);
   return 0;
 }
 

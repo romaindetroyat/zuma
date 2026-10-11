@@ -18,8 +18,8 @@ export const DATABASE_NAME = 'zuma-assets';
 export const ROW_BUDGET = 50000;
 /** Rows written per inserted chunk: the table row and its primary-key index entry. */
 export const ROWS_PER_CHUNK = 2;
-/** Cap on the JSON body of one query request. */
-export const MAX_BODY_BYTES = 900 * 1024;
+/** Cap on the JSON body of one query request (900 000 bytes, below 900 KB in either unit). */
+export const MAX_BODY_BYTES = 900000;
 /** Fixed compatibility date of the Pages worker (production and preview). */
 export const COMPATIBILITY_DATE = '2025-09-01';
 export const SCHEMA = 'CREATE TABLE IF NOT EXISTS blobs (key TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (key, part))';

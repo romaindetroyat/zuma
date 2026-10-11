@@ -685,7 +685,9 @@ test('run (D-43): listed existing apps get allowed_idps = [cloudflare] before OT
 });
 
 test('no mode ever sends DELETE; PATCH only on the Pages project; PUT only on listed existing Access apps; SQL limited', async () => {
-  const cloud = fakeCloud({ apps: [otherApp('Prisme', 'app.example.org')] });
+  // The shared policy exists in the account, so the D-43 read-back matches and the full run reaches the D1 steps.
+  const prisme = otherApp('Prisme', 'app.example.org');
+  const cloud = fakeCloud({ apps: [prisme], policies: [prisme.policies[0]] });
   const dir = root({ config: { project: 'zuma', allow: [ME], pinIdpApps: ['Prisme'] } });
   for (const argv of [['--plan'], [], ['--verify'], ['--rollback-plan'], ['--plan'], ['--direct']]) await exec(argv, cloud, { dir });
   assert.ok(!cloud.calls.some(c => c.method === 'DELETE'));
