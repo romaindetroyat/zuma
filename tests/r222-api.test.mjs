@@ -146,7 +146,7 @@ test('fakeScoresD1: D1 API over SQLite (prepare / bind / all / run / first / bat
   // A failing statement rolls the whole batch back.
   await assert.rejects(d.batch([
     d.prepare(RECORDS_SQL.insertScore).bind('q', '1111111111111111', 'Bruno', 5, 0, 0, '', 2),
-    d.prepare(RECORDS_SQL.insertScore).bind('q', '2222222222222222', null, 5, 0, 0, '', 2),
+    d.prepare(RECORDS_SQL.upsertTime).bind('q', 'spiral', null, 5, 2), // NOT NULL violation
   ]));
   assert.equal(fake.db.prepare('SELECT COUNT(*) AS n FROM scores').get().n, 1, 'rolled back');
 });
