@@ -206,6 +206,27 @@ Version **R2.0.20**. Notes de version : `R220_RELEASE_NOTES.md` ; mode d'emploi 
   - sons dès le premier toucher, après un retour d'arrière-plan, et comportement avec l'interrupteur silencieux (« ambient » les coupe).
 - **STATS (niveau 3-3)** : l'OK occupe la largeur intérieure en bas du dialogue, comme « Retour à la partie » dans le menu ; l'astuce est **complète, en minuscules (Arial12Bold)** — sur deux lignes après « ASTUCE : » pour les courtes, sur trois lignes sous l'étiquette pour les longues (ouvrir le STATS plusieurs fois : l'astuce est tirée au hasard).
 
+### Hébergement privé (05-16)
+
+Adresse à tester : l'adresse de production et celle du déploiement figurent dans `05-16-SUMMARY.md`, pas dans le dépôt. Les applications Access sont en place. **Le contenu est à envoyer une première fois depuis le Mac** (`npm run deploy`, puis `npm run deploy:private` avec `CLOUDFLARE_API_TOKEN`) : depuis la session cloud, le proxy empêche l'envoi. La procédure par appareil est dans le README, « Jeu hébergé en privé (Cloudflare Access) ».
+
+- **Étape 0, le site n'est pas public** (`--verify` a répondu 2 depuis la session), en navigation privée sur le Mac :
+  - l'adresse de production et celle du déploiement affichent la page Cloudflare Access, sans le jeu ;
+  - `<adresse>/public/manifest.webmanifest` affiche le petit fichier JSON.
+- **Mac, Chrome** : connexion par code, jeu avec « ressources originales », « Installer Zuma », « hors ligne : … Mo », relance Wi-Fi coupé avec les sons.
+- **Mac, Safari** : connexion, « Fichier › Ajouter au Dock », code redemandé au plus une fois dans l'app, puis hors ligne.
+- **PC, Chrome / Edge** : mêmes points que Chrome sur Mac.
+- **iPhone, Safari** :
+  - connexion en lisant le code sans quitter Safari ;
+  - « Sur l'écran d'accueil », première ouverture de l'app (code redemandé ?) ;
+  - paysage, niveau joué, « hors ligne : … Mo » ;
+  - mode Avion : le jeu démarre et les sons suivent le premier toucher ;
+  - mode Avion coupé : pas de nouvelle demande de code.
+- **iPad, Safari** : mêmes points, plus le portrait avec bandes.
+- **Applications existantes** (Prisme, ssh, label) : connexion inchangée, par le compte Cloudflare, sans proposition de code par e-mail (D-43).
+- [ ] **Boucle de connexion iOS (R2)** : non / oui (iPhone, iPad) — la page du code revient sans fin, ou s'ouvre dans Safari pendant que l'app reste blanche.
+- [ ] **Code redemandé à la première ouverture de l'app** : attendu au plus une fois par appareil. Noter le nombre (Mac Safari, iPhone, iPad).
+
 ### Hypothèses à confirmer au ressenti
 
 - Règle Q5 du bouton de pied (marges du masque `_dialogbox` transparentes) ; pied du menu à 30 / 30 / 22.

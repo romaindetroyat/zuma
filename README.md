@@ -97,6 +97,82 @@ npm run deploy   # = node tools/build.mjs --deploy → dist/ avec le pack, dist/
 
 Cette commande produit le jeu complet, ressources originales comprises, dans `dist/`. Elle refuse de s'exécuter sans pack et journalise « à héberger uniquement en privé ». **Cet artefact ne doit jamais être publié ni commité** : `dist/` est ignoré par Git, la garde et la CI ne publient que le code. Son hébergement privé (accès réservé à vos adresses) fera l'objet d'une prochaine étape ; aucune commande d'hébergement n'est fournie ici.
 
+### Jeu hébergé en privé (Cloudflare Access)
+
+**Principe.** Le jeu complet (artefact `npm run deploy`, ressources originales comprises) est servi par Cloudflare Pages à une adresse `https://<sous-domaine>.pages.dev`, derrière **Cloudflare Access** :
+
+- seules les adresses e-mail autorisées passent : Access demande l'adresse et envoie un **code à usage unique** par e-mail ;
+- la session dure **un mois par appareil** ;
+- seul le dossier `/public/` (manifeste, icônes, feuille de style : des fichiers déjà publics dans ce dépôt, aucune ressource originale) est lisible sans connexion, pour permettre l'installation ;
+- rien n'est publié par le dépôt ni par la CI : le déploiement se lance à la main, depuis un poste qui possède le pack.
+
+La liste d'accès ne doit contenir que vos adresses : ouvrir le jeu à d'autres personnes reviendrait à leur distribuer les ressources de PopCap. Pour ajouter une de vos adresses : Zero Trust › Access › Policies › « Zuma — joueurs » › ajouter une règle e-mail. Ajoutez-la aussi dans `private_assets/deploy.json`, sinon le déploiement suivant signale un conflit et s'arrête sans rien modifier. Cette politique sert au jeu seul : vos autres applications Access n'en dépendent pas.
+
+#### Déployer
+
+```bash
+npm run deploy           # artefact : dist/ avec le pack (refusé sans pack)
+npm run deploy:private   # Cloudflare : provisionnement (idempotent), envoi sur la production, vérification
+```
+
+- **Configuration privée** `private_assets/deploy.json` (dossier ignoré par Git) :
+
+  ```json
+  { "project": "zuma", "allow": ["votre adresse"], "pinIdpApps": ["…"] }
+  ```
+
+  `pinIdpApps` liste les applications Access déjà présentes sur le compte. Avant d'ajouter la connexion par code, le script leur impose leur fournisseur actuel, pour qu'elles gardent exactement leur mode de connexion. Il refuse de continuer si une application existante sans fournisseur imposé n'est pas listée.
+- **Jeton** : sur le Mac ou le PC, créez un jeton dans le tableau de bord Cloudflare, « Mon profil › Jetons d'API ». Permissions du compte : *Cloudflare Pages : Edit*, *Access: Apps and Policies : Edit*, *Access: Organizations, Identity Providers, and Groups : Edit*, *Account Settings : Read*. Saisissez-le sans le laisser dans l'historique :
+
+  ```bash
+  read -s CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
+  npm run deploy:private
+  ```
+
+  Avec plusieurs comptes, ajoutez `CLOUDFLARE_ACCOUNT_ID`. Dans la session cloud, le jeton est fourni par l'environnement, ce qui suffit pour le provisionnement et les vérifications. L'envoi des fichiers y est en revanche impossible : le proxy de la session remplace l'autorisation d'envoi. Lancez donc le déploiement depuis le Mac ; le provisionnement déjà fait est simplement relu.
+- **Garanties** :
+  - le déploiement va toujours sur la production, jamais sur un aperçu ;
+  - les applications Access sont créées et relues avant l'envoi du moindre fichier ;
+  - un objet existant différent de l'attendu est signalé et jamais réécrit ;
+  - le journal ne contient ni jeton, ni identifiant de compte, ni adresse.
+- **`node tools/deploy.mjs --plan`** affiche les actions prévues sans rien écrire (« actions prévues : 0 » une fois tout en place).
+- **`node tools/deploy.mjs --verify`** vérifie la configuration par l'API puis teste les adresses. Codes de sortie :
+  - 0 : tout est protégé ;
+  - 1 : une ressource est servie sans connexion, à corriger immédiatement ;
+  - 2 : les adresses sont injoignables depuis ce poste ; vérifiez alors dans une fenêtre de navigation privée.
+
+#### Installer le jeu depuis l'adresse privée
+
+0. **Vérifier que le site n'est pas public** : dans une fenêtre de navigation privée, ouvrez l'adresse du jeu. Une page Cloudflare Access doit demander une adresse e-mail, sans afficher le jeu. Faites de même avec l'adresse propre au déploiement (`https://<identifiant>.<sous-domaine>.pages.dev`). En revanche, `<adresse>/public/manifest.webmanifest` affiche un petit fichier JSON : c'est voulu, il ne contient aucune ressource du jeu.
+1. **Mac, Chrome** :
+   1. Ouvrez l'adresse, saisissez votre adresse e-mail, puis « Envoyer le code ». Recopiez le code reçu par e-mail.
+   2. Le jeu démarre ; MENU › Aide indique « ressources originales ».
+   3. Cliquez « Installer Zuma » (ou l'icône d'installation de la barre d'adresse) : l'app s'ouvre dans sa fenêtre.
+   4. Jouez une minute, jusqu'à ce que l'Aide affiche « hors ligne : … Mo ».
+   5. Quittez l'app, coupez le Wi-Fi, puis relancez-la : le jeu démarre et se joue avec les sons.
+2. **Mac, Safari** : ouvrez l'adresse, connectez-vous avec le code, puis « Fichier › Ajouter au Dock ». Ouvrez Zuma depuis le Dock : le code peut être redemandé une fois, car l'app a ses propres données. Faites ensuite le même essai hors ligne.
+3. **PC, Chrome ou Edge** : mêmes étapes que Chrome sur Mac (Edge : menu « … › Applications › Installer Zuma »).
+4. **iPhone, Safari** :
+   1. Ouvrez l'adresse, saisissez votre adresse e-mail, puis « Envoyer le code ».
+   2. **Lisez le code sur un autre appareil, ou dans la notification de l'e-mail, sans quitter Safari**, puis saisissez-le.
+   3. Le jeu s'affiche : touchez Partager › **« Sur l'écran d'accueil »** › « Ajouter ».
+   4. Ouvrez Zuma depuis l'écran d'accueil. **À cette première ouverture, le code peut être redemandé une fois** : l'app de l'écran d'accueil ne partage pas la connexion de Safari. Saisissez-le, de préférence en le lisant sur un autre appareil.
+   5. Tournez l'iPhone en paysage, jouez un niveau et attendez « hors ligne : … Mo » dans MENU › Aide.
+   6. Fermez l'app, activez le mode Avion, puis rouvrez Zuma : le jeu démarre, et les sons fonctionnent après le premier toucher.
+   7. Désactivez le mode Avion et rouvrez l'app : le code ne doit pas être redemandé.
+5. **iPad, Safari** : mêmes étapes que l'iPhone. Le portrait fonctionne aussi, avec des bandes au-dessus et au-dessous du jeu.
+
+Si la page du code revient sans fin, ou si elle s'ouvre dans Safari pendant que l'app reste blanche, notez-le : c'est une limite connue d'iOS avec les apps de l'écran d'accueil. Une variante qui protège seulement les ressources est alors prévue.
+
+#### Retirer l'hébergement
+
+`node tools/deploy.mjs --rollback-plan` affiche les étapes de retrait sans rien exécuter : **rien n'est supprimé automatiquement**. L'ordre compte : supprimer d'abord le projet Pages, pour que le jeu ne soit jamais servi sans protection, puis les applications Access. Depuis le tableau de bord :
+
+1. Workers & Pages › zuma › Settings › Delete project ;
+2. Zero Trust › Access › Applications › Zuma › Delete, puis « Zuma — fichiers publics » ;
+3. les politiques « Zuma — joueurs » et « Zuma — fichiers publics », si plus aucune application ne les utilise ;
+4. la méthode « One-time PIN » peut rester. Si vous la retirez, vos autres applications peuvent ensuite retrouver leur réglage de fournisseur d'origine (liste vide).
+
 ## Ressources originales (optionnelles, jamais publiées)
 
 Le dépôt public ne distribue aucun média, son, police, exécutable ni pack extrait du jeu original. Pour un build local fidèle, fournissez une copie légalement obtenue :

@@ -186,3 +186,79 @@ Retirées (tranchées en 05-14) :
 - géométrie du bouton OK du STATS (lue dans l'exécutable) ;
 - « pas de geste tactile d'échange » (le toucher sur la grenouille échange) ;
 - précache incomplet du service worker (le pack entier est précaché).
+
+## Hébergement privé (plan 05-16)
+
+Premier hébergement privé du jeu complet sur le compte Cloudflare de l'utilisateur : Pages derrière Access, connexion par code à usage unique (D-42, D-43). Aucune règle de jeu n'est touchée et la baseline reste R2.0.20. Il n'y a ni D1, ni Function, ni `_worker.js`.
+
+### Outils
+
+- **`tools/deploy.mjs`** (script `npm run deploy:private`), avec trois options :
+  - `--plan` : lecture seule, « actions prévues : N » ;
+  - `--verify` : configuration Access lue par l'API, puis HTTP, avec les codes 0 (protégé), 1 (exposé) et 2 (injoignable d'ici) ;
+  - `--rollback-plan` : étapes de retrait imprimées, jamais exécutées.
+
+  Fonctions exportées : `planProvision`, `isAccessRedirect`, `redact`, `run`. Le provisionnement est idempotent et suit cet ordre : projet Pages, fournisseur imposé aux applications existantes (D-43), méthode « One-time PIN », politique « Zuma — joueurs », application « Zuma » (hôte et `*.hôte`, 730 h, OTP seul, redirection automatique), politique et application « Zuma — fichiers publics » (Bypass sur `/public` seul).
+- **`tools/pagesupload.mjs`** : `checkArtifact`, `listFiles`, `contentType`, `assetKey`, `buckets`, `pagesManifest`, `uploadAndDeploy`. C'est le téléversement direct de Pages par l'API REST :
+  1. jeton d'envoi ;
+  2. clés manquantes ;
+  3. envoi par lots de 40 Mio et 2 000 fichiers au plus, trois en parallèle, cinq tentatives ;
+  4. mise à jour des empreintes ;
+  5. déploiement multipart sur `main` ;
+  6. relecture de l'étape `deploy`.
+- **`tools/blake3.mjs`** : BLAKE3 en JavaScript pur, sans dépendance. Il sert seulement de clé de contenu exigée par l'API Pages : `blake3(base64(contenu) + extension)`, 32 premiers chiffres hexadécimaux. Il est conforme aux 35 vecteurs officiels, dont 7 sont verrouillés dans les tests. Témoin hors dépôt : `blake3-wasm` du cache npm, avec **291 clés identiques sur 291** fichiers de l'artefact.
+- **Écart à D-42** (REST au lieu de wrangler) : la sonde du 2026-10-11 montre que wrangler exige `CLOUDFLARE_API_TOKEN`, alors que le jeton n'existe dans la session que par injection du proxy. `fetch` natif, aucune dépendance, aucun `npx`.
+
+### Garanties
+
+- Les applications Access sont créées et **relues avant** tout appel d'envoi. Un test verrouille l'ordre des écritures.
+- La branche est toujours `main`, jamais un aperçu ; une autre branche est refusée avant le premier appel. Un déploiement dont l'environnement n'est pas « production » est signalé et arrête le script.
+- Chaque étape lit avant d'écrire et relit après. Un objet existant différent est un conflit imprimé, jamais réécrit. Un second `--plan` annonce « actions prévues : 0 ».
+- Aucun `DELETE` ni `PATCH`. La seule écriture sur un objet existant est l'étape D-43 : `PUT` d'une application listée dans `pinIdpApps`, avec le corps relu par `GET`, où seul `allowed_idps` change. La relecture le confirme et la valeur précédente est journalisée.
+- Le journal passe entièrement par `redact` : JWT, valeur d'`Authorization`, identifiants hexadécimaux de 32 chiffres ou plus. Ni le nom du compte (il contient une adresse) ni les adresses autorisées ne sont journalisés. La liste d'adresses vit dans `private_assets/deploy.json`, ignoré par Git.
+- **Politique dédiée « Zuma — joueurs »** (écart au plan, qui réutilisait « Romain uniquement ») : la politique existante est partagée par les trois applications du compte. Une adresse ajoutée pour le jeu leur aurait donné accès. La nouvelle politique ne contient que l'adresse de l'utilisateur.
+
+### Parades côté app
+
+- **Service worker** : `clean(response)` reconstruit, pour une navigation, une réponse du cache qui a suivi une redirection. Pages redirige `/index.html` vers `/`, et `start_url` vaut `../index.html` : sans cette parade, l'app installée ne démarrerait pas. `passThrough` est inchangé : `/cdn-cgi/` (rappel `/cdn-cgi/access/authorized` qui pose le cookie) et `/api/` restent au réseau.
+- **`index.html`** : `<link rel="manifest" … crossorigin="use-credentials">`, pour que le manifeste parte avec le cookie Access. Le standalone retire toujours la balise.
+- **Bypass `/public`** : manifeste, icônes et feuille de style lisibles sans connexion (installation, icône iOS). `dist/public/` ne contient que des fichiers du dépôt et des icônes générées.
+
+### Tests
+
+- `tests/r220-deploy.test.mjs` (29) :
+  - BLAKE3 (vecteurs officiels), clés, types MIME, exclusions, lots, manifeste ;
+  - contrôle de l'artefact `--deploy` (sept cas de refus) ;
+  - séquence d'envoi sur une API simulée : branche `main` imposée, 401 / 403 sur `/pages/assets/*`, `max_file_count_allowed`, étape en échec ou lente, reprises et JWT expiré ;
+  - `planProvision` (ordre, conflits, D-43) ;
+  - `run` : `--plan` en lecture seule, ordre des écritures et relecture, seconde exécution sans écriture, D-43 sans autre changement, aucun `DELETE` ni `PATCH`, `--rollback-plan`, configuration absente, plusieurs comptes, artefact public, 403 avec la permission nommée, environnement d'aperçu ;
+  - sortie sans JWT, jeton, identifiant ni adresse ; `redact`, `isAccessRedirect` ;
+  - `--verify` à trois issues ; import sans effet.
+- `tests/r220-hosting.test.mjs` (6) :
+  - réponse redirigée nettoyée (navigation et repli hors ligne, à la racine et sous un dossier) ;
+  - réponse non redirigée servie telle quelle ;
+  - `/cdn-cgi/access/*` et `/api/` jamais interceptés ni mis en cache, en navigation comme en sous-ressource ;
+  - `use-credentials` et retrait par le standalone ;
+  - `clean` et `passThrough` présents dans le build public.
+- **Total : 319 tests** + garde de publication.
+
+### Résultat du premier déploiement (depuis la session cloud, 2026-10-11)
+
+- **Provisionnement fait et relu** :
+  - projet Pages `zuma`, branche de production `main`, sous-domaine attribué par Cloudflare ;
+  - fournisseur Cloudflare imposé aux trois applications existantes (D-43, précédemment `[]`) ;
+  - méthode « One-time PIN » ;
+  - politiques « Zuma — joueurs » et « Zuma — fichiers publics » ;
+  - applications « Zuma » et « Zuma — fichiers publics ».
+
+  Les corps Access de l'hypothèse A3 sont acceptés tels quels. La configuration est conforme par l'API et un second `--plan` donne « actions prévues : 0 ».
+- **Envoi du contenu bloqué** : le proxy de la session remplace l'en-tête `Authorization` de toute requête vers `api.cloudflare.com`. Une valeur factice est quand même acceptée par `/user/tokens/verify`, ce qui prouve la substitution. Le jeton d'envoi n'atteint donc jamais Cloudflare : `/pages/assets/check-missing` répond 403, `8000013 Authorization failed`. Aucun fichier n'a été envoyé et le projet n'a aucun déploiement (rien n'est servi). **Repli : `npm run deploy:private` depuis le Mac** avec `CLOUDFLARE_API_TOKEN`, sur un provisionnement déjà en place.
+- **`--verify` = 2** : configuration conforme, mais `*.pages.dev` est injoignable depuis la session (CONNECT refusé par le proxy). La preuve HTTP revient à l'utilisateur, en navigation privée (étape 0 du README).
+- URL et identifiants : dans le résumé du plan 05-16, jamais dans ce fichier.
+
+### Hypothèses
+
+- **A7** : le chemin le plus précis l'emporte (Bypass `/public` dans « Zuma »), à vérifier en navigation privée.
+- **R2** : connexion dans l'app installée sur iOS (stockage séparé de Safari), à vérifier sur l'iPhone et l'iPad réels. En cas de boucle, variante M-A (Access par chemins).
+- **R5** : après expiration de la session, la mise à jour du worker échoue en silence et l'app continue sur sa version en cache jusqu'à la prochaine connexion (accepté).
+- **Clés BLAKE3** : identiques au témoin et aux vecteurs officiels. L'acceptation par Pages sera confirmée au premier envoi depuis le Mac.
