@@ -165,3 +165,112 @@ test('source locks: statsdialog.js draws the sixth row through layoutRecordRow(;
   assert.match(src, /export function recordLabel/);
   for (const file of ['src/statsdialog.ts', 'src/adventure.ts']) assert.doesNotMatch(read(file), /innerHTML|textContent|insertAdjacentHTML/, file);
 });
+
+// ---------------------------------------------------------------- RECORDS plaques: scope and hit tests (Task 2)
+
+const A = () => import('../.compiled/adventure.js');
+const advFont = name => fakeFont(name, 7, 8);
+const DOOR_W = [62, 60, 57, 64, 57, 51, 45, 44, 56, 61, 64, 62];
+const DOOR_H = [58, 90, 56, 57, 43, 35, 34, 38, 41, 50, 49, 49];
+function fakeAdvKit(fonts = true) {
+  const f = name => (fonts ? advFont(name) : null);
+  return {
+    sky: pic('advsky', 640, 116), back: pic('advback', 640, 250), title: pic('advtitle', 185, 73), plaque: pic('advhighscore', 184, 65), stage: pic('advstage', 76, 16),
+    temples: {
+      advtemple1: pic('advtemple1', 640, 292), advtemple2: pic('advtemple2', 228, 208), advtemple2v: pic('advtemple2v', 228, 208), advtemple3: pic('advtemple3', 245, 194),
+      advtemple3v: pic('advtemple3v', 245, 194), advtemple4: pic('advtemple4', 291, 249), advmiddle: pic('advmiddle', 640, 185),
+    },
+    doors: DOOR_W.map((w, i) => pic(`door${i}`, w * 4, DOOR_H[i])),
+    doorMasks: null,
+    play: pic('play', 291, 39), mainMenu: pic('mainmenu', 375, 42), happyEnding: pic('happyending', 640, 480),
+    fonts: { brown: f('brown'), message: f('message'), score: f('score'), number: f('number'), huge: f('huge'), title: f('title') },
+    dialog: null, pixelScale: 1,
+  };
+}
+// Demonstration names only.
+const plaqueScores = [{ name: 'Zuma', score: 10000 }, { name: 'Grenouille', score: 5000 }, { name: 'Têtard', score: 1000 }];
+const advView = { c: 8, maxStage: 4, selected: 4, hover: 3, button: { hover: 'play', pressed: null }, reveal: null, shake: [0, 0, 0, 0], scores: plaqueScores, strings: null, scope: null };
+const endingScores = Array.from({ length: 10 }, (_, i) => ({ name: `N${i}`, score: 90000 - i * 5000, stage: 12, level: 0, date: '' }));
+const endingView = { score: 80000, rank: 2, scores: endingScores, hover: false, pressed: false, strings: { CONGRATULATIONS: 'FÉLICITATIONS !', SCORE: 'Score :' }, scope: null };
+function endingKit() {
+  const kit = fakeAdvKit();
+  kit.dialog = { frame: pic('dialogbox', 243, 242), head: null, button: pic('dialogbutton', 360, 48), fonts: { title: advFont('t'), text: advFont('x'), tip: null, tipSmall: null }, strings: {}, pixelScale: 1 };
+  return kit;
+}
+const drawn = (draw, kit, view) => { const ctx = recorder(); draw(ctx, kit, view); return ctx.calls; };
+
+/** Call sequences of drawAdventure / drawEnding in R2.0.21 (no scope): pack kit and vector stand-in. */
+const SCREENS_R221 = {
+  adventure: '7776c90274781d78162bcd9805feb66924b574a354b04ea74741077f879c9e74', adventureVector: '41e1745f2db7e5b7caa213f18076179d1c4a035836154ada4195f674637c4b29', ending: '3ddb86e84f807764512a51baa908ae4310df9664b2ebcb100f28e4df95888289', endingVector: '1690fa8a29249c68397cc5eda28e9d75eb6e178ff4f47547190026c2ae0e7187',
+};
+
+test('drawAdventure / drawEnding with scope null: the R2.0.21 call sequences, unchanged (references captured before the change)', async () => {
+  const { drawAdventure, drawEnding } = await A();
+  assert.equal(digest(drawn(drawAdventure, fakeAdvKit(), advView)), SCREENS_R221.adventure);
+  assert.equal(digest(drawn(drawAdventure, null, advView)), SCREENS_R221.adventureVector);
+  assert.equal(digest(drawn(drawEnding, endingKit(), endingView)), SCREENS_R221.ending);
+  assert.equal(digest(drawn(drawEnding, null, endingView)), SCREENS_R221.endingVector);
+  assert.equal(digest(drawn(drawAdventure, fakeAdvKit(), { ...advView, scope: '' })), SCREENS_R221.adventure, 'an empty scope draws nothing');
+  assert.equal(digest(drawn(drawEnding, endingKit(), { ...endingView, scope: '' })), SCREENS_R221.ending, 'an empty scope draws nothing');
+});
+
+test('ADV_SCOPE: the scope under the painted RECORDS word (x 497–602, y 16–46) — adventure centred on 548, baseline 58; ending centred on 320, baseline 164', async () => {
+  const { ADV_SCOPE, ADV, ADV_ENDING } = await A();
+  assert.deepEqual(ADV_SCOPE, { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 164 } });
+  assert.equal(ADV_SCOPE.adventure.cx, ADV.plaque.x + ADV.plaque.w / 2, 'plaque centre, inside the RECORDS word span 497–602');
+  assert.ok(ADV_SCOPE.adventure.baseline > 46 && ADV_SCOPE.adventure.baseline < ADV.scores.top, 'between the word and the first score row');
+  assert.ok(ADV_SCOPE.ending.baseline > ADV_ENDING.plaque.y + 65 && ADV_SCOPE.ending.baseline < ADV_ENDING.rows.first, 'between the plaque and the first table row');
+});
+
+test('advPlaqueAt / endingPlaqueAt: the RECORDS plaques (456, 0, 184 × 65) and (228, 84, 184 × 65), left / top included, right / bottom excluded', async () => {
+  const { advPlaqueAt, endingPlaqueAt, advButtonAt } = await A();
+  assert.equal(advPlaqueAt(456, 0), true);
+  assert.equal(advPlaqueAt(639, 64), true);
+  assert.equal(advPlaqueAt(548, 30), true);
+  for (const [x, y] of [[455, 10], [500, 65], [640, 10], [NaN, 10], [500, Infinity]]) assert.equal(advPlaqueAt(x, y), false, `${x}, ${y}`);
+  assert.equal(endingPlaqueAt(228, 84), true);
+  assert.equal(endingPlaqueAt(411, 148), true);
+  for (const [x, y] of [[227, 90], [300, 149], [412, 100], [300, 83], [NaN, 100]]) assert.equal(endingPlaqueAt(x, y), false, `${x}, ${y}`);
+  assert.equal(advButtonAt(548, 30), null, 'no button under the plaque');
+});
+
+test('drawAdventure: scope « TOUS » in the plaque font (outlined, 0xffff4c) centred on 548 at baseline 58, after the three scores; nothing else changes', async () => {
+  const { drawAdventure } = await A();
+  const calls = drawn(drawAdventure, fakeAdvKit(), { ...advView, scope: 'TOUS' });
+  const scope = calls.filter(c => c.op === 'font' && c.text === 'TOUS');
+  const plain = scope.filter(c => c.options.tint !== '#000000');
+  assert.deepEqual(plain.map(c => [c.font, c.x, c.y, c.options.tint, c.options.align]), [['score', 548, 58, '#ffff4c', 'center']]);
+  assert.equal(scope.length, 9, 'eight black outline draws, then the text');
+  assert.equal(digest(calls.filter(c => !scope.includes(c))), SCREENS_R221.adventure, 'every other call is the R2.0.21 one, in the same order');
+  const at = c => calls.indexOf(c);
+  const lastScore = calls.filter(c => c.op === 'font' && c.text === '1000').pop();
+  assert.ok(at(scope[0]) > at(lastScore), 'drawn after the three scores');
+  // Vector stand-in (no pack): the same place, 10 px, outlined.
+  const vec = drawn(drawAdventure, null, { ...advView, scope: 'MOI' });
+  const fill = vec.find(c => c.op === 'fillText' && c.args[0] === 'MOI');
+  assert.deepEqual(fill.args, ['MOI', 548, 58]);
+  assert.ok(vec.some(c => c.op === 'strokeText' && c.args[0] === 'MOI'), 'outlined');
+  assert.ok(vec.some(c => c.op === 'set' && c.prop === 'font' && /\b10px\b/.test(c.value)));
+});
+
+test('drawEnding: scope « MOI » in the table font (0xffff4c) centred on 320 at baseline 164; the run’s row stays highlighted and the run score drawn', async () => {
+  const { drawEnding, ADV_ENDING } = await A();
+  const calls = drawn(drawEnding, endingKit(), { ...endingView, scope: 'MOI' });
+  const scope = calls.filter(c => c.op === 'font' && c.text === 'MOI');
+  assert.deepEqual(scope.map(c => [c.font, c.x, c.y, c.options.tint, c.options.align]), [['x', 320, 164, ADV_ENDING.highlight, 'center']]);
+  assert.equal(digest(calls.filter(c => !scope.includes(c))), SCREENS_R221.ending, 'every other call is the R2.0.21 one');
+  const plaque = calls.findIndex(c => c.op === 'drawImage' && c.args[0].name === 'advhighscore');
+  assert.ok(calls.indexOf(scope[0]) > plaque, 'over the plaque');
+  assert.equal(calls.find(c => c.op === 'font' && c.text === 'N2').options.tint, ADV_ENDING.highlight);
+  assert.ok(calls.some(c => c.op === 'font' && c.text === 'Score : 80000'));
+  const vec = drawn(drawEnding, null, { ...endingView, scope: 'TOUS' });
+  assert.deepEqual(vec.find(c => c.op === 'fillText' && c.args[0] === 'TOUS').args, ['TOUS', 320, 164]);
+});
+
+test('source locks: adventure.js draws view.scope on both screens; no DOM access in the drawing modules', () => {
+  const src = read('src/adventure.ts');
+  assert.ok((src.match(/view\.scope/g) ?? []).length >= 2, 'advTexts and drawEnding');
+  assert.match(src, /export function advPlaqueAt/);
+  assert.match(src, /export function endingPlaqueAt/);
+  assert.doesNotMatch(src, /document\.|window\./);
+});
