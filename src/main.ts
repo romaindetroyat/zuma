@@ -141,6 +141,8 @@ class Game {
   private fx: Fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
   private message: { text: string; sub: string | null; until: number } | null = null;
   private endAt: number | null = null;
+  /** The game over of the current level was submitted (T-06-14: once per level). */
+  private gameoverSent = false;
   /** Engine tick until which the reserve frogs blink after an extra life (150 maj × 0.6 = 90 ticks, board+0x178). */
   private livesBlinkUntil = 0;
   private seed = Date.now() >>> 0;
@@ -481,6 +483,7 @@ class Game {
     this.livesBlinkUntil = 0;
     this.fx = { bursts: [], floats: [], tongueStart: -Infinity, threat: 0 };
     this.endAt = null;
+    this.gameoverSent = false;
     this.paused = false;
     // A level starting under « Tournez votre appareil » stays paused until the device is turned (D-38 §5).
     this.pausedByRotation = this.rotateOpen;
@@ -683,6 +686,12 @@ class Game {
 
   private checkOutcome(engine: ZumaEngine): void {
     if (engine.state === 'playing' || engine.state === 'clearing' || engine.state === 'draining') return;
+    // R2.0.21 (D-04): the last life lost enters the high-score table and clears the saved run at once (0x4283c4),
+    // once per level; the game-over STATS follows and its OK leads to the adventure screen.
+    if (engine.state === 'gameover' && !this.gameoverSent) {
+      this.gameoverSent = true;
+      this.dispatch({ kind: 'gameover', score: engine.score, date: localDate() });
+    }
     // The STATS open at `won` (the engine already waited 50 updates after the last step, §7), 90 frames after a loss.
     if (this.endAt === null) this.endAt = this.frame + (engine.state === 'won' ? 0 : 90);
     if (this.frame < this.endAt) return;
@@ -1817,8 +1826,6 @@ class Game {
     this.statsOutcome = outcome;
     this.statsOpen = true;
     this.audio.stopLoops();
-    // R2.0.21: the last life lost enters the high-score table and clears the save now (0x4283c4); the STATS stays.
-    if (outcome === 'gameover') this.dispatch({ kind: 'gameover', score: engine.score, date: localDate() });
     const kit = this.statsKit;
     const strings = kit?.strings ?? null;
     const won = outcome === 'won';
@@ -1827,7 +1834,8 @@ class Game {
     const key = bestTimeKey(this.level?.id ?? 'unknown');
     const stored = readBestTime(key);
     const best = bestTime(stored, seconds, won);
-    if (won && best !== stored) {
+    // A review session (?level=) leaves the storage untouched (plan 06-04).
+    if (won && best !== stored && !this.app.review) {
       try { localStorage.setItem(key, String(best)); } catch { /* storage unavailable */ }
     }
     // The time bonus is not in the score at `won`: it is counted up here, bounded by what is still uncredited.
@@ -1850,7 +1858,7 @@ class Game {
     const tip = document.getElementById('stats-tip-text');
     if (tip) tip.textContent = this.statsTip;
     const ok = document.getElementById('result-continue');
-    if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : outcome === 'gameover' ? 'Menu principal' : 'OK';
+    if (ok) ok.textContent = outcome === 'won' ? 'Niveau suivant' : outcome === 'lost' ? 'Réessayer' : 'OK'; // game over: the native STATS has only OK (→ adventure screen)
     const panel = document.getElementById('stats');
     panel?.classList.toggle('stats-original', kit !== null);
     if (kit) {
@@ -1969,8 +1977,8 @@ class Game {
     this.statsCanvas?.remove();
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
-    // R2.0.21: the end of a level goes through the state machine (next level / stage / ending, the same level again,
-    // or back to the main menu after a game over); the saved run follows every level start.
+    // R2.0.21: the end of a level goes through the state machine — next level, or the adventure screen / god dialogue
+    // / ending after a stage; the same level again; the adventure screen after the game-over STATS (D-02).
     const engine = this.engine;
     if (!engine) return;
     if (outcome === 'won') this.dispatch({ kind: 'won', score: engine.score, lives: engine.lives, date: localDate() });

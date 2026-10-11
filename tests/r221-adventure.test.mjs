@@ -456,7 +456,7 @@ test('main.js: closeStats sends won (score, lives, local date) / retry (lives) /
   assert.match(close, /kind: 'retry', lives: engine\.lives/);
   assert.match(close, /outcome === 'gameover'\)\s*this\.dispatch\(\{ kind: 'leave' \}\)/);
   assert.doesNotMatch(main, /nextLevel\(|retryLevel\(|newGame\(/);
-  assert.doesNotMatch(main, /progress = \{ stage: 0, level: 0 \}/);
+  assert.doesNotMatch(main, /this\.progress = \{ stage: 0, level: 0 \}/, 'no wrap-around (the class field initialiser is not a restart)');
   assert.match(method(main, '    menuActivate(id) {'), /this\.closeMenu\(\);\s*this\.dispatch\(\{ kind: 'leave' \}\)/, '« Retour au menu principal » confirmed → leave (D-02)');
 });
 
@@ -488,7 +488,7 @@ test('main.js: temple screen = the frozen board under drawGodDialog, pages then 
 test('main.js: vector STATS button after a game over reads « OK » (the native STATS has only OK); a review session (?level=) writes no best time', () => {
   const main = read('.compiled/main.js');
   const open = method(main, '    openStats(outcome) {');
-  assert.match(open, /outcome === 'gameover' \? 'OK'/);
+  assert.match(open, /outcome === 'lost' \? 'Réessayer' : 'OK'/, 'game over → « OK »');
   assert.doesNotMatch(open, /'Menu principal'/);
   assert.match(open, /won && best !== stored && !this\.app\.review/, 'review sessions leave the storage untouched');
 });
