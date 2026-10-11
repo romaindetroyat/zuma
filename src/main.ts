@@ -7,11 +7,12 @@ import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, 
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 import { applyUpdate, fitArea, formatSize, installGuidance, needsRotation, offlineStatus, readInstallEnv, registerServiceWorker, type InstallGuidance, type Insets } from './pwa.js';
-import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
+import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, formatSeconds, loadStatsKit, recordLabel, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsRecordCells, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, LONG_PRESS_IDLE, LONG_PRESS_MS, Renderer, WIDTH, HEIGHT, fitScale, frogHit, longPress, stagePoint, type FloatingText, type LongPressInput, type LongPressState, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
 import { HIGHSCORE_KEY, PROFILE_KEY, SAVE_KEY, initialApp, parseProfile, parseSave, parseScores, readJson, reduceApp, sanitizeName, writeJson, type AppEffect, type AppEvent, type AppScreen, type AppState, type RunState, type StorageLike } from './progress.js';
-import { ADV, advArrivalMaj, advButtonAt, advDoorOpaque, advDoorSizes, advShakeStep, doorAt, drawAdventure, drawEnding, drawGodDialog, endingWidgets, godDialogWidgets, godPages, loadAdventureKit, revealProgress, revealTemple, upscaleAdventureKit, type AdvButtonId, type AdvTempleId, type AdventureKit, type AdventureView } from './adventure.js';
+import { ADV, advArrivalMaj, advButtonAt, advDoorOpaque, advPlaqueAt, advDoorSizes, advShakeStep, doorAt, drawAdventure, drawEnding, drawGodDialog, endingPlaqueAt, endingWidgets, godDialogWidgets, godPages, loadAdventureKit, revealProgress, revealTemple, upscaleAdventureKit, type AdvButtonId, type AdvTempleId, type AdventureKit, type AdventureView } from './adventure.js';
+import { RECORDS_KEY, RECORD_SCOPE_LABEL, emptyRecordsStore, levelRecord, migrationItems, parseRecordsStore, queueScore, queueTime, rankOf, recordLevelId, recordsEnabled, scoresView, syncRecords, type RecordScope, type RecordsStore } from './records.js';
 import { MM, continueDialogWidgets, drawContinueDialog, drawNameDialog, drawWelcome, loadWelcomeKit, mmHoverSequence, mmUfo, nameDialogWidgets, upscaleWelcomeKit, welcomeHit, welcomeLineWidth, type EyeMode, type MmStone, type MmStoneId, type PromptView, type UfoState, type WelcomeKit, type WelcomeView } from './welcome.js';
 
 declare const __BUILD__: string;
@@ -166,6 +167,28 @@ class Game {
   private screenT0 = 0;
   /** Browser storage (null when unavailable); only read / written through readJson / writeJson (T-06-06). */
   private readonly storage: StorageLike | null = openStorage();
+  /**
+   * R2.0.22 (phase 6.1, D-01): shared records only on the hosted build (http(s), not a loopback host, pack present);
+   * computed in start() once the pack is known. Off it (standalone, npm run dev) everything stays local.
+   */
+  private recordsOn = false;
+  /** zuma.records.v1 (D-07): last server copy for the offline display, pending sends, D-08 flag. */
+  private records: RecordsStore = emptyRecordsStore();
+  /** « TOUS » / « MOI » of the RECORDS plaques (D-09), in memory: « TOUS » at each launch. */
+  private recordScope: RecordScope = 'shared';
+  /** One synchronisation at a time; a trigger during an exchange runs a single one more at its end. */
+  private recordsBusy = false;
+  private recordsAgain = false;
+  /** RECORDS plaque pressed (the scope switches on a release over the same plaque, like the buttons). */
+  private recordPlaquePressed: 'adventure' | 'ending' | null = null;
+  /** The only read / write path of zuma.records.v1 (writeJson never throws). */
+  private readonly recordsAccess = {
+    get: (): RecordsStore => this.records,
+    set: (store: RecordsStore): void => {
+      this.records = store;
+      writeJson(this.storage, RECORDS_KEY, store);
+    },
+  };
   /** Main-menu kit (1 × and its 2 × EPX copy, like the STATS); null → vector welcome. */
   private welcomeKitBase: WelcomeKit | null = null;
   private welcomeKitHd: WelcomeKit | null = null;
@@ -296,6 +319,13 @@ class Game {
 
   async start(): Promise<void> {
     this.pack = await OriginalPack.load();
+    // R2.0.22 (D-01, D-07): shared records on the hosted build only; the stored copy is read at once (offline display).
+    this.records = parseRecordsStore(readJson(this.storage, RECORDS_KEY));
+    try {
+      this.recordsOn = recordsEnabled({ protocol: location.protocol, hostname: location.hostname, hasPack: !!this.pack });
+    } catch {
+      this.recordsOn = false;
+    }
     // D-12: the platform first name is asked as soon as the pack is known (only the private host, which always ships
     // the pack, has the endpoint); the boot waits for it at most PLATFORM_NAME_TIMEOUT.
     const deadline = performance.now() + PLATFORM_NAME_TIMEOUT;
@@ -340,6 +370,9 @@ class Game {
     // R2.0.21 (D-01): the app opens on the main menu (or directly on the ?level= review level).
     this.boot(early ?? null);
     if (early === undefined) void platformName.then(name => { if (name) this.dispatch({ kind: 'profile-detected', name }); });
+    // R2.0.22 (D-07): the pending records leave at load and when the network comes back, never awaited.
+    this.syncRecordsNow();
+    window.addEventListener('online', () => this.syncRecordsNow());
     document.getElementById('boot')?.classList.add('hidden');
     requestAnimationFrame(t => this.loop(t));
   }
@@ -943,7 +976,75 @@ class Game {
       case 'sound':
         this.audio.play({ key: effect.key, gain: 1, rate: 1 });
         break;
+      case 'record-score':
+        // R2.0.22 (D-07): the adventure score (game over, final route) joins the shared-records queue, then leaves.
+        // The machine drops this effect in review sessions (WRITE_EFFECTS).
+        if (this.recordsOn) {
+          const entry = effect.entry;
+          const next = queueScore(this.records, { score: entry.score, stage: entry.stage, level: entry.level, day: entry.date }, newRecordId());
+          if (next !== this.records) this.recordsAccess.set(next);
+          this.syncRecordsNow();
+        }
+        break;
     }
+  }
+
+  // ------------------------------------------------------------ shared records (R2.0.22, phase 6.1)
+
+  /** First name of the player as the records know it (D-12 of phase 6: api/me on the hosted build, else the profile). */
+  private recordsPlayer(): string {
+    return this.app.profile?.name ?? 'Joueur';
+  }
+
+  /**
+   * D-07: one synchronisation of zuma.records.v1 with api/records, started and never awaited (syncRecords bounds every
+   * request to 5 s and never rejects); while one runs, further triggers collapse into a single one at its end. Off
+   * the hosted build nothing is sent.
+   */
+  private syncRecordsNow(): void {
+    if (!this.recordsOn) return;
+    if (this.recordsBusy) {
+      this.recordsAgain = true;
+      return;
+    }
+    this.recordsBusy = true;
+    this.recordsAgain = false;
+    void syncRecords(this.recordsAccess, { fetch: (url, init) => fetch(url, init) }, () => this.recordsMigration(), newRecordId)
+      .catch(() => false)
+      .then(() => {
+        this.recordsBusy = false;
+        if (this.recordsAgain) this.syncRecordsNow();
+      });
+  }
+
+  /**
+   * D-08 (once per device, after the first successful exchange): the local adventure scores named like the player
+   * (never the demo entries) and the local best time of every pack level, under its api/records level id.
+   */
+  private recordsMigration(): ReturnType<typeof migrationItems> {
+    const bestTimes: Record<string, number> = {};
+    for (const id of Object.keys(this.pack?.data.graphics ?? {})) {
+      const seconds = readBestTime(bestTimeKey(id));
+      if (seconds !== null) bestTimes[recordLevelId(id)] = seconds;
+    }
+    return migrationItems(this.app.scores, bestTimes, this.recordsPlayer());
+  }
+
+  /** D-09: « TOUS » ↔ « MOI » on a click / tap of a RECORDS plaque (hosted build only), with the screen's button sound. */
+  private toggleRecordScope(): void {
+    if (!this.recordsOn) return;
+    this.recordScope = this.recordScope === 'shared' ? 'mine' : 'shared';
+    this.audio.play({ key: 'button', gain: 1, rate: 1 });
+  }
+
+  /** Table of a RECORDS plaque: the chosen scope of the shared records on the hosted build, else the local table (R2.0.21). */
+  private recordsTable(): AdventureView['scores'] {
+    return this.recordsOn ? scoresView(this.records, this.recordScope, this.app.scores, this.recordsPlayer()) : this.app.scores;
+  }
+
+  /** Scope label drawn under the plaque word, null off the hosted build (screens of R2.0.21). */
+  private recordsScopeLabel(): string | null {
+    return this.recordsOn ? RECORD_SCOPE_LABEL[this.recordScope] : null;
   }
 
   /** Screen change: the counter restarts and the loops stop; off the level no engine is kept (D-01) and the menu is fresh. */
@@ -961,6 +1062,7 @@ class Game {
     }
     this.god = { page: 0, hover: false, pressed: false };
     this.endingUi = { hover: false, pressed: false };
+    this.recordPlaquePressed = null;
     this.paused = false;
     this.pausedByRotation = false;
     this.message = null;
@@ -1269,7 +1371,12 @@ class Game {
     switch (this.app.screen) {
       case 'adventure': this.adventureDown(p, button); break;
       case 'temple': if (button === 0) this.god.pressed = this.dialogHit(p, 'god'); break;
-      case 'ending': if (button === 0) this.endingUi.pressed = this.dialogHit(p, 'ending'); break;
+      case 'ending':
+        if (button !== 0) break;
+        this.endingUi.pressed = this.dialogHit(p, 'ending');
+        // R2.0.22 (D-09): a press on the RECORDS plaque (hosted build) switches the scope on its release.
+        if (!this.endingUi.pressed && this.recordsOn && endingPlaqueAt(p.x, p.y)) this.recordPlaquePressed = 'ending';
+        break;
       default: this.welcomeDown(p, button);
     }
   }
@@ -1285,8 +1392,11 @@ class Game {
       }
       case 'ending': {
         const pressed = this.endingUi.pressed;
+        const plaque = this.recordPlaquePressed === 'ending';
         this.endingUi.pressed = false;
+        this.recordPlaquePressed = null;
         if (pressed && this.dialogHit(p, 'ending')) this.endingDone();
+        else if (plaque && endingPlaqueAt(p.x, p.y)) this.toggleRecordScope();
         break;
       }
       default: this.welcomeUp(p);
@@ -1317,7 +1427,8 @@ class Game {
 
   private dialogMove(p: Point, touch: boolean, which: 'god' | 'ending'): void {
     const over = this.dialogHit(p, which);
-    this.canvas.style.cursor = over ? 'pointer' : 'default';
+    const plaque = which === 'ending' && this.recordsOn && endingPlaqueAt(p.x, p.y);
+    this.canvas.style.cursor = over || plaque ? 'pointer' : 'default';
     if (touch) return;
     if (which === 'god') this.god.hover = over;
     else this.endingUi.hover = over;
@@ -1360,7 +1471,10 @@ class Game {
   /** Ending: happyending, FÉLICITATIONS, the final score and the table with the run's rank (D-10). */
   private drawEndingFrame(): void {
     const ending = this.app.ending;
-    const view = { score: ending?.score ?? 0, rank: ending?.rank ?? null, scores: this.app.scores, hover: this.endingUi.hover, pressed: this.endingUi.pressed, strings: this.promptStrings(), scope: null };
+    // R2.0.22 (D-09): hosted build → the chosen scope of the shared records, the run's row found by name and score.
+    const scores = this.recordsTable();
+    const rank = !ending ? null : this.recordsOn ? rankOf(scores, this.recordsPlayer(), ending.score) : ending.rank;
+    const view = { score: ending?.score ?? 0, rank, scores, hover: this.endingUi.hover, pressed: this.endingUi.pressed, strings: this.promptStrings(), scope: this.recordsScopeLabel() };
     this.renderer.drawScene(ctx => drawEnding(ctx, this.adventureKit, view));
   }
 
@@ -1387,7 +1501,8 @@ class Game {
   private adventureMove(p: Point, touch: boolean): void {
     const door = this.adventureLocked() ? null : this.adventureDoorAt(p);
     const button = advButtonAt(p.x, p.y);
-    this.canvas.style.cursor = door !== null || button ? 'pointer' : 'default';
+    const plaque = this.recordsOn && advPlaqueAt(p.x, p.y);
+    this.canvas.style.cursor = door !== null || button || plaque ? 'pointer' : 'default';
     if (touch) return;
     this.adventure.hover = door;
     this.adventure.button.hover = button;
@@ -1404,6 +1519,11 @@ class Game {
       this.adventure.button.pressed = id;
       return;
     }
+    // R2.0.22 (D-09): the RECORDS plaque (hosted build) switches « TOUS » / « MOI » on its release.
+    if (this.recordsOn && advPlaqueAt(p.x, p.y)) {
+      this.recordPlaquePressed = 'adventure';
+      return;
+    }
     if (this.adventureLocked()) return;
     const door = this.adventureDoorAt(p);
     if (door === null) return;
@@ -1413,8 +1533,11 @@ class Game {
 
   private adventureUp(p: Point): void {
     const pressed = this.adventure.button.pressed;
+    const plaque = this.recordPlaquePressed === 'adventure';
     this.adventure.button.pressed = null;
+    this.recordPlaquePressed = null;
     if (pressed && advButtonAt(p.x, p.y) === pressed) this.adventureButton(pressed);
+    else if (plaque && advPlaqueAt(p.x, p.y)) this.toggleRecordScope();
   }
 
   /** « Jouer » → the selected stage (resumed when it is the saved run's); « Menu principal » → the welcome screen. */
@@ -1474,7 +1597,7 @@ class Game {
     const locked = this.adventureLocked();
     const view: AdventureView = {
       c, maxStage: this.adventureMaxStage(), selected: this.app.selected, hover: locked ? null : ui.hover, button: { ...ui.button },
-      reveal, shake: ui.shake, scores: this.app.scores, strings: this.promptStrings(), scope: null,
+      reveal, shake: ui.shake, scores: this.recordsTable(), strings: this.promptStrings(), scope: this.recordsScopeLabel(),
     };
     this.renderer.drawScene(ctx => drawAdventure(ctx, this.adventureKit, view));
   }
@@ -1807,6 +1930,8 @@ class Game {
   private statsOutcome: 'live' | 'won' | 'lost' | 'gameover' = 'live';
   /** Input of the displayed values, kept so the count-up can refresh POINTS / BONUS. */
   private statsInput: StatsInput | null = null;
+  /** R2.0.22 (D-09): holder's name and differing personal best of the STATS RECORD row, kept for every recomposition. */
+  private statsRecord: StatsRecordCells | null = null;
   /**
    * ACE TIME count-up in the dialog (0x440b00, §8): `total` = the uncredited bonus when the dialog
    * opened, `shown` = the share already credited through engine.creditBonus() (T-05-15), `startedAt`
@@ -1831,19 +1956,32 @@ class Game {
     const won = outcome === 'won';
     const s = engine.stats;
     const seconds = Math.floor(engine.levelTicks / engine.config.tickHz); // D-13: level clock, started at « PARTEZ », frozen at clearing
-    const key = bestTimeKey(this.level?.id ?? 'unknown');
+    const levelId = this.level?.id ?? 'unknown';
+    const key = bestTimeKey(levelId);
     const stored = readBestTime(key);
     const best = bestTime(stored, seconds, won);
     // A review session (?level=) leaves the storage untouched (plan 06-04).
     if (won && best !== stored && !this.app.review) {
       try { localStorage.setItem(key, String(best)); } catch { /* storage unavailable */ }
     }
+    // R2.0.22 (D-07): a won pack level queues its time for the shared records (the server keeps the best one); never in
+    // review, never a procedural level. The queue leaves now, without waiting (also after a game over).
+    if (won && !this.app.review && this.recordsOn && this.level?.graphics) {
+      const next = queueTime(this.records, recordLevelId(levelId), seconds);
+      if (next !== this.records) this.recordsAccess.set(next);
+    }
+    if ((won || outcome === 'gameover') && !this.app.review) this.syncRecordsNow();
+    // D-09 / D-01: RECORD = the best time with its holder's first name (shared records on the hosted build, else this
+    // device's best under the profile's name) and the personal best when it differs; without any time, the current one.
+    const local = stored !== null || won ? best : null;
+    const rec = levelRecord(this.recordsOn ? this.records : emptyRecordsStore(), recordLevelId(levelId), local, this.recordsPlayer());
+    this.statsRecord = { name: rec.best?.name ?? null, personal: rec.personal !== null ? formatSeconds(rec.personal) : null };
     // The time bonus is not in the score at `won`: it is counted up here, bounded by what is still uncredited.
     const total = won ? Math.max(0, engine.timeBonus - engine.timeBonusCredited) : 0;
     this.statsBonus = total > 0 ? { total, shown: 0, startedAt: performance.now(), steps: 0, fast: false } : null;
     this.statsInput = {
       levelScore: engine.levelScore, combos: s.combos, coins: s.coins, gaps: s.gaps, maxStreak: s.maxStreak, maxCombo: s.maxCombo,
-      seconds, parTime: this.level?.parTime ?? 0, timeBonus: total, timeBonusShown: 0, won, bestSeconds: best,
+      seconds, parTime: this.level?.parTime ?? 0, timeBonus: total, timeBonusShown: 0, won, bestSeconds: rec.best?.seconds ?? null,
       noBonusLabel: strings?.NO_TIME_BONUS ?? 'PAS DE BONUS',
     };
     const values = statsValues(this.statsInput);
@@ -1854,6 +1992,9 @@ class Game {
       const el = document.getElementById(id);
       if (el) el.textContent = values[field as keyof StatsValues];
     }
+    // Vector panel: « 1:23 (Alice) » (textContent only, the name is untrusted data).
+    const recordCell = document.getElementById(RESULT_IDS.record);
+    if (recordCell) recordCell.textContent = recordLabel(values.record, this.statsRecord.name);
     this.statsTip = pickTip(strings);
     const tip = document.getElementById('stats-tip-text');
     if (tip) tip.textContent = this.statsTip;
@@ -1939,7 +2080,8 @@ class Game {
     if (!kit || !values || !dialog || !this.statsOpen) return;
     const picture = this.statsCanvas ?? document.createElement('canvas');
     picture.className = 'stats-picture';
-    this.statsCanvas = composeStatsDialog(kit, values, { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip }, picture, this.renderer.scale);
+    const options = { revealed: this.statsRevealed, button: this.statsButton, tip: this.statsTip, ...(this.statsRecord ? { record: this.statsRecord } : {}) };
+    this.statsCanvas = composeStatsDialog(kit, values, options, picture, this.renderer.scale);
     if (picture.parentElement !== dialog) dialog.prepend(picture);
   }
 
@@ -2035,6 +2177,21 @@ const RESULT_IDS: Record<keyof StatsValues, string> = {
   bonus: 'result-expert',
   record: 'result-record',
 };
+
+/**
+ * Random id of a pending shared-records score (16 hex digits, 8 bytes of getRandomValues, which unlike the UUID helper
+ * also exists outside secure contexts); Math.random only when crypto is absent. It only lets the server ignore a resend
+ * (T-061-21).
+ */
+function newRecordId(): string {
+  const bytes = new Uint8Array(8);
+  try {
+    crypto.getRandomValues(bytes);
+  } catch {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, b => (b + 0x100).toString(16).slice(1)).join('');
+}
 
 /** Stored best time (seconds) or null when absent, unreadable or not a positive number (T-05-08). */
 function readBestTime(key: string): number | null {

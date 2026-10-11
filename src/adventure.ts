@@ -154,11 +154,12 @@ export function advButtonAt(x: number, y: number): AdvButtonId | null {
  * Scope of the shared records (phase 6.1, D-09: « TOUS » / « MOI ») under the painted RECORDS word. Adventure: the
  * `advhighscore` plaque (456, 0, 184 × 65) carries the word at ≈ x 497–602, y 16–46 and the first score row starts
  * near y 61, so the scope is centred on the plaque (x 548) on baseline 58 (band y 47–60) in the plaque font. Ending:
- * the same picture at (228, 84), scope centred on 320 on baseline 164, between the plaque (bottom 149) and the first
- * table row (178), in the table font. Planner's values from the R2.0.20 measures, to confirm on the DPR 2 capture of
- * plan 06.1-05 (adjust by 1–3 px if they overlap and record it).
+ * the same picture at (228, 84), scope centred on 320 on baseline 162, between the plaque (bottom 149) and the first
+ * table row (178), in the table font. DPR 2 capture of plan 06.1-05: ending 164 → 162 (the label sat 8 px under the
+ * frame's inner edge, ≈ 144, but only 3.5 px over the first row's glyph top, 166; 162 balances both gaps at ≈ 6 / 5.5
+ * px); adventure 58 kept (the outlined label fills the 47–58 band, centred, touching neither the word nor the row).
  */
-export const ADV_SCOPE = { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 164 } };
+export const ADV_SCOPE = { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 162 } };
 
 /** Point inside the RECORDS plaque of the adventure screen (ADV.plaque); left / top included, right / bottom excluded. */
 export function advPlaqueAt(x: number, y: number): boolean {

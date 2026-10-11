@@ -214,9 +214,9 @@ test('drawAdventure / drawEnding with scope null: the R2.0.21 call sequences, un
   assert.equal(digest(drawn(drawEnding, endingKit(), { ...endingView, scope: '' })), SCREENS_R221.ending, 'an empty scope draws nothing');
 });
 
-test('ADV_SCOPE: the scope under the painted RECORDS word (x 497–602, y 16–46) — adventure centred on 548, baseline 58; ending centred on 320, baseline 164', async () => {
+test('ADV_SCOPE: the scope under the painted RECORDS word (x 497–602, y 16–46) — adventure centred on 548, baseline 58; ending centred on 320, baseline 162 (R2.0.22 DPR 2 check: 164 → 162)', async () => {
   const { ADV_SCOPE, ADV, ADV_ENDING } = await A();
-  assert.deepEqual(ADV_SCOPE, { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 164 } });
+  assert.deepEqual(ADV_SCOPE, { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 162 } });
   assert.equal(ADV_SCOPE.adventure.cx, ADV.plaque.x + ADV.plaque.w / 2, 'plaque centre, inside the RECORDS word span 497–602');
   assert.ok(ADV_SCOPE.adventure.baseline > 46 && ADV_SCOPE.adventure.baseline < ADV.scores.top, 'between the word and the first score row');
   assert.ok(ADV_SCOPE.ending.baseline > ADV_ENDING.plaque.y + 65 && ADV_SCOPE.ending.baseline < ADV_ENDING.rows.first, 'between the plaque and the first table row');
@@ -253,18 +253,18 @@ test('drawAdventure: scope « TOUS » in the plaque font (outlined, 0xffff4c) ce
   assert.ok(vec.some(c => c.op === 'set' && c.prop === 'font' && /\b10px\b/.test(c.value)));
 });
 
-test('drawEnding: scope « MOI » in the table font (0xffff4c) centred on 320 at baseline 164; the run’s row stays highlighted and the run score drawn', async () => {
+test('drawEnding: scope « MOI » in the table font (0xffff4c) centred on 320 at baseline 162; the run’s row stays highlighted and the run score drawn', async () => {
   const { drawEnding, ADV_ENDING } = await A();
   const calls = drawn(drawEnding, endingKit(), { ...endingView, scope: 'MOI' });
   const scope = calls.filter(c => c.op === 'font' && c.text === 'MOI');
-  assert.deepEqual(scope.map(c => [c.font, c.x, c.y, c.options.tint, c.options.align]), [['x', 320, 164, ADV_ENDING.highlight, 'center']]);
+  assert.deepEqual(scope.map(c => [c.font, c.x, c.y, c.options.tint, c.options.align]), [['x', 320, 162, ADV_ENDING.highlight, 'center']]);
   assert.equal(digest(calls.filter(c => !scope.includes(c))), SCREENS_R221.ending, 'every other call is the R2.0.21 one');
   const plaque = calls.findIndex(c => c.op === 'drawImage' && c.args[0].name === 'advhighscore');
   assert.ok(calls.indexOf(scope[0]) > plaque, 'over the plaque');
   assert.equal(calls.find(c => c.op === 'font' && c.text === 'N2').options.tint, ADV_ENDING.highlight);
   assert.ok(calls.some(c => c.op === 'font' && c.text === 'Score : 80000'));
   const vec = drawn(drawEnding, null, { ...endingView, scope: 'TOUS' });
-  assert.deepEqual(vec.find(c => c.op === 'fillText' && c.args[0] === 'TOUS').args, ['TOUS', 320, 164]);
+  assert.deepEqual(vec.find(c => c.op === 'fillText' && c.args[0] === 'TOUS').args, ['TOUS', 320, 162]);
 });
 
 test('source locks: adventure.js draws view.scope on both screens; no DOM access in the drawing modules', () => {
