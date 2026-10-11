@@ -99,11 +99,22 @@ Plans:
 **Plans:** 5 plans (contexte : `phases/06-progression-et-menus/06-CONTEXT.md`, recherche : `06-RESEARCH.md`)
 
 Plans:
-- [ ] 06-01-PLAN.md — Difficulté (D-09) : arrêt du pousseur au seul retrait de la bille arrière, plus jamais à l'insertion (0x423a10), verrous r221, outil `tools/sim-difficulty.mjs` testé sur les niveaux procéduraux, baseline R2.0.21
-- [ ] 06-02-PLAN.md — Progression et état d'application purs (`src/progress.ts`) : étages / temples / fin après 13-1, meilleurs scores (10, clé `adventure`, démonstration sans noms PopCap), profil, sauvegarde et reprise, machine d'états accueil → aventure → niveau → dieu → fin avec effets
-- [ ] 06-03-PLAN.md — Écran principal de l'original (`src/welcome.ts`) : ciel, soleil et lueur, yeux, pierres actives / inactives, survol `choral1`, OVNI, nom du profil, reprise « Continuer / Rejouer », OPTIONS hors partie, chemin 2×, importateur (images et polices des trois écrans)
-- [ ] 06-04-PLAN.md — Écran d'aventure (temples, portes, plaque des scores, STAGE, Jouer / Menu principal), dialogue du dieu avec `chant6`, écran de fin (`happyending`, « Félicitations », tableau des 10 avec la place), routage après niveau, game over, sortie par le menu
-- [ ] 06-05-PLAN.md — Notes R2.0.21, README, CONCERNS, `06-UAT.md` (première session), vérification finale (standalone `file://`, `--deploy` + `--dry-run`, preuves DPR 2), déploiement privé par l'orchestrateur après accord
+- [x] 06-01-PLAN.md — Difficulté (D-09) : arrêt du pousseur au seul retrait de la bille arrière, plus jamais à l'insertion (0x423a10), verrous r221, outil `tools/sim-difficulty.mjs` testé sur les niveaux procéduraux, baseline R2.0.21
+- [x] 06-02-PLAN.md — Progression et état d'application purs (`src/progress.ts`) : étages / temples / fin après 13-1, meilleurs scores (10, clé `adventure`, démonstration sans noms PopCap), profil, sauvegarde et reprise, machine d'états accueil → aventure → niveau → dieu → fin avec effets
+- [x] 06-03-PLAN.md — Écran principal de l'original (`src/welcome.ts`) : ciel, soleil et lueur, yeux, pierres actives / inactives, survol `choral1`, OVNI, nom du profil, reprise « Continuer / Rejouer », OPTIONS hors partie, chemin 2×, importateur (images et polices des trois écrans)
+- [x] 06-04-PLAN.md — Écran d'aventure (temples, portes, plaque des scores, STAGE, Jouer / Menu principal), dialogue du dieu avec `chant6`, écran de fin (`happyending`, « Félicitations », tableau des 10 avec la place), routage après niveau, game over, sortie par le menu
+- [x] 06-05-PLAN.md — Notes R2.0.21, README, CONCERNS, `06-UAT.md` (première session), vérification finale (standalone `file://`, `--deploy` + `--dry-run`, preuves DPR 2), déploiement privé par l'orchestrateur après accord
+
+#### Phase 6.1: Records partagés (INSERTED)
+**Goal**: Records communs à tous les invités (avec le prénom) et records personnels sur tous les appareils
+**Depends on**: Phase 6
+**Requirements**: PROG-02
+**Success Criteria** (what must be TRUE):
+  1. Le meilleur temps d'un niveau s'affiche avec le prénom de son auteur
+  2. Sur la version hébergée, les meilleurs scores et temps sont communs à tous les joueurs invités, et chacun retrouve aussi ses records personnels sur tous ses appareils
+  3. Hors ligne, le jeu fonctionne et envoie les nouveaux records au retour du réseau ; le standalone reste local
+  4. Aucune adresse n'est stockée ni commitée ; le prénom est apposé par le serveur
+**Plans:** TBD (contexte : `phases/06.1-records-partages/06.1-CONTEXT.md`)
 
 #### Phase 7: Finitions audio, visuelles et mobiles
 **Goal**: Musique, animations secondaires, ergonomie tactile, captures automatisées
@@ -122,7 +133,7 @@ Plans:
 
 ## Progress
 
-**Execution Order:** 4 → 5 → 6 → 7
+**Execution Order:** 4 → 5 → 6 → 6.1 → 7
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -131,5 +142,6 @@ Plans:
 | 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
 | 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
 | 5. Règles originales complètes | v1.1 | 15/17 | In progress (05-16 UAT 9, 05-17) | - |
-| 6. Progression et menus | v1.1 | 0/5 | Planned | - |
+| 6. Progression et menus | v1.1 | 5/5 | Complete (déployé R2.0.21 ; UAT utilisateur en attente) | 2026-10-11 |
+| 6.1 Records partagés | v1.1 | 0/TBD | Planning | - |
 | 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |
