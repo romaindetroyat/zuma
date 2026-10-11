@@ -228,34 +228,41 @@ export function fontMetrics(font: FontScript): { ascent: number; height: number 
   return { ascent, height: ascent + descent };
 }
 
-/** dx/dy relative to the pen origin (x = start, y = baseline); glyphs ordered by layer (baseOrder). */
+/**
+ * dx/dy relative to the pen origin (x = start, y = baseline); glyphs ordered by layer (baseOrder). All layers share one
+ * pen that advances, per character, by the widest layer advance (Sexy ImageFont::DrawStringEx: aCurXPos = max of the
+ * layers' aLayerXPos) — a layer with wider spaces (the NativeAlienExtended16 shadow: 15 px against 11) never drifts.
+ */
 export function layoutText(font: FontScript, text: string): TextLayout {
   const chars = Array.from(text, c => font.charMap.get(c) ?? c);
-  const glyphs: GlyphPlacement[] = [];
-  let width = 0;
-  font.layers.forEach((layer, index) => {
-    let pen = 0;
-    let prev: string | null = null;
-    for (const c of chars) {
+  const perLayer: GlyphPlacement[][] = font.layers.map(() => []);
+  let pen = 0;
+  let prev: string | null = null;
+  for (const c of chars) {
+    let next = pen;
+    let known = false;
+    font.layers.forEach((layer, index) => {
       const w = layer.widths.get(c);
       const r = layer.rects.get(c);
-      if (w === undefined && !r) continue; // unknown character: ignored
-      if (prev !== null) pen += layer.kerning.get(prev + c) ?? 0;
+      if (w === undefined && !r) return; // unknown character in this layer: ignored
+      known = true;
+      const at = pen + (prev !== null ? layer.kerning.get(prev + c) ?? 0 : 0);
       if (r) {
         const o = layer.offsets.get(c);
-        glyphs.push({
+        perLayer[index].push({
           layer: index, char: c, sx: r.x, sy: r.y, sw: r.w, sh: r.h,
-          dx: pen + (o?.x ?? 0) + layer.offset.x,
+          dx: at + (o?.x ?? 0) + layer.offset.x,
           dy: -layer.ascent + (o?.y ?? 0) + layer.offset.y,
         });
       }
-      pen += w ?? r?.w ?? 0;
-      prev = c;
-    }
-    width = Math.max(width, pen);
-  });
+      next = Math.max(next, at + (w ?? r?.w ?? 0));
+    });
+    if (!known) continue;
+    pen = next;
+    prev = c;
+  }
   const { ascent, height } = fontMetrics(font);
-  return { width, ascent, height, glyphs };
+  return { width: pen, ascent, height, glyphs: perLayer.flat() };
 }
 
 export function measureText(font: FontScript, text: string): number {
