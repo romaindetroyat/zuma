@@ -83,14 +83,16 @@ test('ramp: the pusher accelerates at 50 px/s² towards its target and decelerat
   assert.equal(fast.chains[0].speed, 50);
 });
 
-test('pusher stop: an insertion into the rear segment halts the pusher 24 ticks, then it restarts from 0', () => {
+// R2.0.21 (D-09): an insertion no longer stops the pusher. The 40 maj stop of 0x423ac7–0x423ad6 belongs to the end
+// of destruction 0x423a10 (rear ball removed, locked by r221), not to the insertion (research 06 Q5c).
+test('R2.0.21 (D-09): an insertion no longer stops the pusher', () => {
   const g = cruise();
   const witness = cruise();
   g.command({ kind: 'shoot', x: 400, y: 240 });
   const insert = stepUntil(g, 'insert', 40);
   run(witness, insert.tick);
-  assert.equal(g.chains[0].stopTicks, 24, 'armed on the insert tick');
-  assert.equal(g.chains[0].speed, 0);
+  assert.equal(g.chains[0].stopTicks, 0, 'R2.0.21 (D-09): nothing armed on the insert tick (was 24)');
+  assert.equal(g.chains[0].speed, 50, 'R2.0.21 (D-09): speed kept (was 0)');
   const inserted = g.balls.find(b => b.color === 3);
   assert.ok(inserted && inserted.s === headS(g), 'the shot landed ahead of the head (new head)');
   const h0 = headS(g);
@@ -98,14 +100,14 @@ test('pusher stop: an insertion into the rear segment halts the pusher 24 ticks,
   for (let i = 0; i < 24; i++) {
     g.step();
     witness.step();
-    assert.equal(g.chains[0].speed, 0, `pusher stopped at tick ${g.tick}`);
-    assert.equal(g.chains[0].stopTicks, 23 - i);
+    assert.equal(g.chains[0].speed, 50, `R2.0.21 (D-09): pusher cruising at tick ${g.tick}`);
+    assert.equal(g.chains[0].stopTicks, 0);
   }
-  assert.ok(headS(g) - h0 < 20, `only the opening slot moved the head (${headS(g) - h0} px)`);
   near(headS(witness) - w0, 20, 1e-6, 'witness: 24 ticks at 50 px/s');
+  assert.ok(Math.abs((headS(g) - h0) - (headS(witness) - w0)) < 20, `R2.0.21 (D-09): the head advances like the witness, up to the opening slot (${headS(g) - h0} px)`);
   run(g, 60);
   assert.equal(g.chains[0].stopTicks, 0);
-  near(g.chains[0].speed, 50, 1, '60 ticks after the stop the pusher is back at +50 px/s² × 1.2 s');
+  assert.equal(g.chains[0].speed, 50, 'still at 50 px/s');
   // An insertion into a segment that is not the pushed one does not arm the stop.
   // (The front segment stays inside the 640 px canvas: projectiles die past its margin.)
   const front = fixture([{ color: 0, s: 300 }, { color: 1, s: 332 }, { color: 2, s: 600 }, { color: 0, s: 632 }], { speed: 50 }, 3, 2000);
