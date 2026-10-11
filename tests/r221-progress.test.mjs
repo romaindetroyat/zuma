@@ -111,3 +111,151 @@ test('bundle: progress after menudialog in MODULES, copied to dist/js, pure (no 
   assert.doesNotMatch(src, /localStorage|window\.|document\./);
   assert.doesNotMatch(fs.readFileSync('.compiled/progress.js', 'utf8'), /^import /m, 'no import: the module stands alone');
 });
+
+// ------------------------------------------------------------ meilleurs scores (Q4, 0x427d60, 0x426f20)
+
+const entry = (name, score, extra = {}) => ({ name, score, stage: 0, level: 0, date: '', ...extra });
+const full = () => Array.from({ length: 10 }, (_, i) => entry(`J${i}`, 20000 - i * 2000)); // 20 000 … 2 000
+
+test('high-score constants: key, ten entries (0x427d8d cmp …, 0xa), profile and save keys', () => {
+  assert.equal(P.HIGHSCORE_KEY, 'zuma.highscores.v1');
+  assert.equal(P.HIGHSCORE_MAX, 10);
+  assert.equal(P.PROFILE_KEY, 'zuma.profile.v1');
+  assert.equal(P.SAVE_KEY, 'zuma.save.v1');
+});
+
+test('defaultScores: three demonstration entries 10 000 / 5 000 / 1 000 with the planner names (no PopCap name)', () => {
+  const d = P.defaultScores();
+  assert.deepEqual(d.map(e => e.score), [10000, 5000, 1000]);
+  assert.deepEqual(d.map(e => e.name), ['Zuma', 'Grenouille', 'Têtard']);
+  for (const e of d) assert.deepEqual([e.stage, e.level, e.date], [0, 0, '']);
+  d[0].score = 1;
+  assert.equal(P.defaultScores()[0].score, 10000, 'a fresh copy each call');
+});
+
+test('insertScore: sorted insertion, rank, after equal scores, at most 10, input never mutated', () => {
+  const base = P.defaultScores();
+  const frozen = structuredClone(base);
+  const a = P.insertScore(base, entry('Romain', 7000));
+  assert.equal(a.rank, 1);
+  assert.deepEqual(a.list.map(e => e.score), [10000, 7000, 5000, 1000]);
+  assert.deepEqual(base, frozen, 'input untouched');
+  const tie = P.insertScore(base, entry('Romain', 5000));
+  assert.equal(tie.rank, 2, 'after the existing 5 000');
+  assert.deepEqual(tie.list.map(e => e.name), ['Zuma', 'Grenouille', 'Romain', 'Têtard']);
+  const last = P.insertScore(base, entry('Romain', 0));
+  assert.equal(last.rank, 3, 'a short list always takes the entry');
+  const f = full();
+  const out = P.insertScore(f, entry('Romain', 1000));
+  assert.equal(out.rank, null, 'fell out of a full table');
+  assert.equal(out.list.length, 10);
+  assert.deepEqual(out.list, f);
+  const equalLast = P.insertScore(f, entry('Romain', 2000));
+  assert.equal(equalLast.rank, null, 'equal to the 10th: placed after it, so out');
+  const top = P.insertScore(f, entry('Romain', 50000));
+  assert.equal(top.rank, 0);
+  assert.equal(top.list.length, 10);
+  assert.equal(top.list[0].name, 'Romain');
+  assert.ok(!top.list.some(e => e.score === 2000), 'the smallest one left');
+  assert.equal(f.length, 10, 'input untouched');
+  let list = [];
+  for (let i = 0; i < 25; i++) list = P.insertScore(list, entry(`n${i}`, i * 100)).list;
+  assert.equal(list.length, 10);
+  assert.deepEqual(list.map(e => e.score), [2400, 2300, 2200, 2100, 2000, 1900, 1800, 1700, 1600, 1500]);
+});
+
+test('parseScores: defaults for missing / corrupt data, empty list kept, invalid entries dropped, 10 at most, names sanitised', () => {
+  const defaults = P.defaultScores();
+  for (const raw of [null, '', '{', '[]', '{"adventure":"x"}', 'null', '42']) assert.deepEqual(P.parseScores(raw), defaults, String(raw));
+  assert.deepEqual(P.parseScores('{"adventure":[]}'), []);
+  const raw = '{"adventure":[' + [
+    '{"name":"Ana","score":3000,"stage":2,"level":1,"date":"2026-10-11"}',
+    '{"name":"Neg","score":-5,"stage":0,"level":0,"date":""}',
+    '{"name":"Big","score":1e309,"stage":0,"level":0,"date":""}',
+    '{"name":"Nan","score":null,"stage":0,"level":0,"date":""}',
+    '{"name":42,"score":100,"stage":0,"level":0,"date":""}',
+    '{"name":"Str","score":"100","stage":0,"level":0,"date":""}',
+    '"junk"',
+    'null',
+    '{"name":"  Bo  b ","score":9000,"stage":500,"level":-2,"date":"far too long a date"}',
+    '{"name":"","score":10,"stage":1,"level":1}',
+  ].join(',') + ']}';
+  const list = P.parseScores(raw);
+  assert.deepEqual(list, [
+    { name: 'Bo b', score: 9000, stage: 99, level: 0, date: '' },
+    { name: 'Ana', score: 3000, stage: 2, level: 1, date: '2026-10-11' },
+    { name: 'Joueur', score: 10, stage: 1, level: 1, date: '' },
+  ]);
+  const many = { adventure: Array.from({ length: 15 }, (_, i) => entry(`p${i}`, (i + 1) * 100)) };
+  const parsed = P.parseScores(JSON.stringify(many));
+  assert.equal(parsed.length, 10);
+  assert.deepEqual(parsed.map(e => e.score), [1500, 1400, 1300, 1200, 1100, 1000, 900, 800, 700, 600]);
+});
+
+// ------------------------------------------------------------ profil et sauvegarde (PROG-02)
+
+test('sanitizeName: trimmed, inner spaces collapsed, control characters dropped, 16 characters, empty → null', () => {
+  assert.equal(P.sanitizeName('  Romain  '), 'Romain');
+  assert.equal(P.sanitizeName('a\u0000b'), 'ab');
+  assert.equal(P.sanitizeName('x'.repeat(40)), 'x'.repeat(16));
+  assert.equal(P.sanitizeName('Zoé  Dupont'), 'Zoé Dupont');
+  assert.equal(P.sanitizeName('tab\there\nnew'), 'tab here new');
+  assert.equal(P.sanitizeName('​‮Ro\u0007main‬'), 'Romain', 'format and control characters dropped');
+  assert.equal([...P.sanitizeName('🐸'.repeat(20))].length, 16, 'counted in characters, never a broken surrogate');
+  for (const bad of ['', '   ', '\u0000\u0001', 42, null, undefined, {}, ['a']]) assert.equal(P.sanitizeName(bad), null, String(bad));
+  assert.equal(P.sanitizeName('<img src=x>'), '<img src=x>', 'inert string: the name is only drawn on the canvas');
+});
+
+test('parseProfile: name and maxStage, bounded 0..12, invalid name → null', () => {
+  assert.deepEqual(P.parseProfile('{"name":"Romain","maxStage":4}'), { name: 'Romain', maxStage: 4 });
+  assert.deepEqual(P.parseProfile('{"name":"Romain","maxStage":40}'), { name: 'Romain', maxStage: 12 });
+  assert.deepEqual(P.parseProfile('{"name":"Romain","maxStage":-1}'), { name: 'Romain', maxStage: 0 });
+  assert.deepEqual(P.parseProfile('{"name":"Romain","maxStage":1e309}'), { name: 'Romain', maxStage: 0 }, 'non-finite → 0');
+  assert.deepEqual(P.parseProfile('{"name":"Romain"}'), { name: 'Romain', maxStage: 0 });
+  assert.deepEqual(P.parseProfile('{"name":" Ro ","maxStage":2.7}'), { name: 'Ro', maxStage: 2 });
+  for (const raw of [null, '', '{', '[]', '{"name":""}', '{"name":5,"maxStage":1}', '{"maxStage":3}']) assert.equal(P.parseProfile(raw), null, String(raw));
+});
+
+test('parseSave: a run inside the stage sizes, lives 1..99, finite non-negative score; anything else → null', () => {
+  const ok = { stage: 2, level: 3, score: 15000, lives: 2 };
+  assert.deepEqual(P.parseSave(JSON.stringify(ok), SIZES), ok);
+  assert.deepEqual(P.parseSave(JSON.stringify({ stage: 12, level: 0, score: 0, lives: 99 }), SIZES), { stage: 12, level: 0, score: 0, lives: 99 });
+  const bad = [
+    { ...ok, level: 5 }, { ...ok, stage: 13 }, { ...ok, stage: -1 }, { ...ok, lives: 0 }, { ...ok, lives: 100 },
+    { ...ok, score: -1 }, { ...ok, score: 'x' }, { ...ok, level: 1.5 }, { stage: 2, level: 3, score: 15000 },
+  ];
+  for (const b of bad) assert.equal(P.parseSave(JSON.stringify(b), SIZES), null, JSON.stringify(b));
+  assert.equal(P.parseSave('{"stage":2,"level":3,"score":1e309,"lives":2}', SIZES), null, 'non-finite score');
+  for (const raw of [null, '', '{', '[]', 'null']) assert.equal(P.parseSave(raw, SIZES), null, String(raw));
+  assert.equal(P.parseSave(JSON.stringify(ok), []), null, 'no stages (procedural): no save');
+});
+
+/** In-memory storage; `failing` throws on every call like a forbidden or full localStorage. */
+const memory = () => {
+  const map = new Map();
+  return { map, getItem: k => (map.has(k) ? map.get(k) : null), setItem: (k, v) => { map.set(k, String(v)); }, removeItem: k => { map.delete(k); } };
+};
+const failing = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('quota'); }, removeItem() { throw new Error('denied'); } };
+
+test('readJson / writeJson: injected storage, null or throwing storage tolerated, null removes the key', () => {
+  assert.equal(P.readJson(null, 'k'), null);
+  assert.equal(P.writeJson(null, 'k', { a: 1 }), false);
+  assert.doesNotThrow(() => P.readJson(failing, 'k'));
+  assert.equal(P.readJson(failing, 'k'), null);
+  assert.equal(P.writeJson(failing, 'k', { a: 1 }), false);
+  assert.equal(P.writeJson(failing, 'k', null), false);
+  const s = memory();
+  assert.equal(P.readJson(s, 'k'), null);
+  assert.equal(P.writeJson(s, 'k', { a: 1 }), true);
+  assert.equal(P.readJson(s, 'k'), '{"a":1}');
+  assert.equal(P.writeJson(s, 'k', null), true);
+  assert.equal(s.map.has('k'), false, 'removeItem called');
+  const scores = P.insertScore(P.defaultScores(), entry('Romain', 7000, { stage: 3, level: 2, date: '2026-10-11' })).list;
+  assert.equal(P.writeJson(s, P.HIGHSCORE_KEY, { adventure: scores }), true);
+  assert.deepEqual(P.parseScores(P.readJson(s, P.HIGHSCORE_KEY)), scores, 'round trip');
+  const save = { stage: 4, level: 1, score: 22000, lives: 3 };
+  P.writeJson(s, P.SAVE_KEY, save);
+  assert.deepEqual(P.parseSave(P.readJson(s, P.SAVE_KEY), SIZES), save);
+  P.writeJson(s, P.PROFILE_KEY, { name: 'Romain', maxStage: 4 });
+  assert.deepEqual(P.parseProfile(P.readJson(s, P.PROFILE_KEY)), { name: 'Romain', maxStage: 4 });
+});
