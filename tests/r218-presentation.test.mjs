@@ -352,18 +352,15 @@ test('cues: coinappear at 0.40 and coinvanish at 1 panned (x − 320) / 320 × 0
   assert.match(body(audio, '    play(cue) {'), /output\(pan\)/, 'samples are panned');
 });
 
-test('lifeIcons: frogs in the HUD slot (three in the menubar, six in the vector HUD), « +N » beyond', () => {
-  assert.deepEqual(lifeIcons(0), { icons: 0, extra: 0 });
-  assert.deepEqual(lifeIcons(3), { icons: 3, extra: 0 });
-  assert.deepEqual(lifeIcons(4), { icons: 3, extra: 1 });
-  assert.deepEqual(lifeIcons(13), { icons: 3, extra: 10 });
-  assert.deepEqual(lifeIcons(7, 6), { icons: 6, extra: 1 });
-  assert.deepEqual(lifeIcons(-2), { icons: 0, extra: 0 });
-  assert.deepEqual(lifeIcons(NaN), { icons: 0, extra: 0 });
-  assert.deepEqual(lifeIcons(Infinity), { icons: 0, extra: 0 });
+test('lifeIcons: frogs in the HUD slot — superseded by the reserve count', () => {
+  // R2.0.19 (D-33): reserve frogs = lives − 1, one icon and « xN » beyond 3 (0x40fa90) — r219-presentation locks
+  // the table and both HUDs; what stays from R2.0.18: no cap on the count, nothing for a non-finite or negative value.
+  assert.deepEqual(lifeIcons(13), { icons: 1, count: 12, label: 'x12' });
+  assert.deepEqual(lifeIcons(-2), { icons: 0, count: 0, label: null });
+  assert.deepEqual(lifeIcons(NaN), { icons: 0, count: 0, label: null });
+  assert.deepEqual(lifeIcons(Infinity), { icons: 0, count: 0, label: null });
   const hud = body(read('.compiled/render.js'), '    drawHud(hud, frame) {');
-  assert.match(hud, /lifeIcons\(hud\.lives, 3\)/);
-  assert.match(hud, /lifeIcons\(hud\.lives, 6\)/);
+  assert.match(hud, /lifeIcons\(hud\.lives, hud\.dying\)/);
 });
 
 test('main.js: the lives won while the STATS counts up sound at once; no in-game text for extra-life (original)', () => {
@@ -374,5 +371,7 @@ test('main.js: the lives won while the STATS counts up sound at once; no in-game
     assert.ok(credit > 0, `${sig.trim()} credits`);
     assert.ok(b.indexOf('drainEvents()', credit) > credit, `${sig.trim()} drains the engine events after the credit`);
   }
-  assert.doesNotMatch(main, /case 'extra-life'/, 'no floating text (spike 03 Q3)');
+  // R2.0.19 (D-33): `case 'extra-life'` now arms the HUD blink — still no floating text (spike 03 Q3).
+  const start = main.indexOf("case 'extra-life'");
+  if (start > 0) assert.doesNotMatch(main.slice(start, main.indexOf('break;', start)), /this\.float\(/, 'no floating text (spike 03 Q3)');
 });
