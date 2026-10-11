@@ -37,7 +37,9 @@ export const SOUND_MAP = {
  * PopCap bitmap fonts copied into the pack (`fonts/<name>.txt` script, `<name>.gif` colour
  * picture when it exists, `_<name>.gif` mask). Consumed by src/bitmapfont.ts.
  */
-export const FONTS = ['NativeAlienExtended18', 'Cancun12', 'Cancun10', 'Arial12Bold', 'CancunFloat14'];
+// R2.0.21: NativeAlienExtended16 (FONT_BROWNTITLE, welcome line of the main menu), NativeAlien48 (FONT_HUGE) and
+// Cancun8 (FONT_MAIN8, fallback of MAIN8OUTLINESCORE) for the adventure and ending screens.
+export const FONTS = ['NativeAlienExtended18', 'Cancun12', 'Cancun10', 'Arial12Bold', 'CancunFloat14', 'NativeAlienExtended16', 'NativeAlien48', 'Cancun8'];
 
 /** Images copied as-is (lower-cased) plus their alpha masks when present. */
 const IMAGES = [
@@ -54,6 +56,22 @@ const IMAGES = [
   'GodHead', '_GodHead', 'dialogbox', '_dialogbox', 'DialogButton', '_Dialogbutton', 'loadingscreen', 'mmscreen',
   // In-game MENU (OPTIONS dialog, D-24): slider track / thumb and check box, with their masks.
   'slidertrack', '_slidertrack', 'SliderThumb', '_SliderThumb', 'checkBUtton', '_checkBUtton',
+  // Main menu (spike 06 Q1, 0x43d1a0): sky behind the screen holed by its mask, sun and additive glow (the mask is the
+  // picture), pupils, eye mask (the lids are a cut of mmscreen), UFO, the five stones (3 states, labels in the picture).
+  // No mmhat: it only shows after the Gauntlet, which the PWA does not have.
+  'mmsky', '_mmscreen', 'mmsun', '_mmsun', '_mmsunglow', 'mmeyeleft', '_mmeyeleft', 'mmeyeright', '_mmeyeright', '_mmeyemask',
+  'mmUFO', '_mmUFO', 'mmARCADEBUTTON', '_mmARCADEBUTTON', 'mmGAUNTLETBUTTON', '_mmGAUNTLETBUTTON', 'mmOPTIONSBUTTON', '_mmOPTIONSBUTTON',
+  'mmMOREGAMESBUTTON', '_mmMOREGAMESBUTTON', 'mmQUITBUTTON', '_mmQUITBUTTON',
+  // Adventure screen (Q2): sky, back, middle, temples, the 12 doors (stage 1..4 × A..C), title, high scores, buttons.
+  'advsky', 'advback', '_advback', 'advmiddle', '_advmiddle',
+  'advtemple1', '_advtemple1', 'advtemple2', '_advtemple2', 'advtemple3', '_advtemple3', 'advtemple4', '_advtemple4',
+  'advtemple2v', '_advtemple2v', 'advtemple3v', '_advtemple3v',
+  'advdoor1A', '_advdoor1A', 'advdoor1B', '_advdoor1B', 'advdoor1C', '_advdoor1C', 'advdoor2A', '_advdoor2A', 'advdoor2B', '_advdoor2B',
+  'advdoor2C', '_advdoor2C', 'advdoor3A', '_advdoor3A', 'advdoor3B', '_advdoor3B', 'advdoor3C', '_advdoor3C', 'advdoor4A', '_advdoor4A',
+  'advdoor4B', '_advdoor4B', 'advdoor4C', '_advdoor4C',
+  'advTitle', '_advTitle', 'advHighscore', '_advHighscore', 'advstage', 'advplaybutton', '_advplaybutton', 'advmainmenubutton', '_advmainmenubutton',
+  // Ending (Q3).
+  'happyending',
 ];
 
 function readText(file) {
