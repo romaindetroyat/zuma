@@ -208,6 +208,12 @@ test('api/ and cdn-cgi/ (future Access / scores) are never intercepted nor cache
     assert.equal((await h.respond(url, 'navigate')).intercepted, false, `${url} (navigation)`);
   }
   assert.equal((await h.respond(SCOPE + 'assets/pack.json', 'cors', 'POST')).intercepted, false, 'POST');
+  // R2.0.22: shared records endpoint (plan 06.1-02) — never answered nor stored by the service worker.
+  for (const url of [SCOPE + 'api/records', SCOPE + 'api/me']) {
+    assert.equal((await h.respond(url)).intercepted, false, url);
+    assert.equal((await h.respond(url, 'navigate')).intercepted, false, `${url} (navigation)`);
+  }
+  assert.equal((await h.respond(SCOPE + 'api/records', 'cors', 'POST')).intercepted, false, 'POST api/records');
   for (const m of h.store.values()) for (const k of m.keys()) assert.doesNotMatch(k, /\/(api|cdn-cgi)\//, k);
 });
 
