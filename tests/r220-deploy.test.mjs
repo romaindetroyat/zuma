@@ -589,6 +589,11 @@ test('run (D1, default) on an empty account: Access read back → database → t
   assert.match(form.get('commit_message'), /^R2\.0\.20 .* worker:[0-9a-f]{16}$/);
   const source = await form.get('_worker.js').text();
   assert.match(source, /export default/);
+  // Access JWT validation: team issuer from the organisation, AUD of the « Zuma » app read back by GET /access/apps.
+  const mainAud = cloud.s.apps.find(a => a.name === 'Zuma').aud;
+  assert.ok(source.includes(JSON.stringify(`https://${AUTH}`)), 'issuer = https://<auth_domain>');
+  assert.ok(source.includes(JSON.stringify(mainAud)), 'AUD of the main app inlined');
+  assert.ok(!out.includes(mainAud), 'AUD never printed in full');
   // Every file of the artefact is stored, and the worker inlines its key.
   const files = (await import('../tools/d1worker.mjs')).blobFiles(path.join(dir, 'dist'));
   for (const f of files) {
@@ -608,6 +613,36 @@ test('run (D1, default) on an empty account: Access read back → database → t
   const plan = await exec(['--plan'], cloud, { dir });
   assert.ok(plan.lines.includes('actions prévues : 0'), plan.out);
   assert.deepEqual(allWrites(cloud.calls.slice(before)), [], '--plan reads only (GET, SELECT)');
+});
+
+test('run (D1): the worker follows the AUD of the « Zuma » app — a new AUD plans exactly deploy-worker; no AUD → nothing deployed', async () => {
+  const cloud = fakeCloud();
+  const dir = root();
+  assert.equal((await exec([], cloud, { dir })).code, 0);
+  const main = cloud.s.apps.find(a => a.name === 'Zuma');
+  main.aud = 'd'.repeat(64);
+  const before = cloud.calls.length;
+  const plan = await exec(['--plan'], cloud, { dir });
+  assert.equal(plan.code, 0, plan.out);
+  const i = plan.lines.indexOf('actions prévues : 1');
+  assert.ok(i >= 0, plan.out);
+  assert.deepEqual(plan.lines.slice(i + 1), ['- deploy-worker']);
+  assert.deepEqual(allWrites(cloud.calls.slice(before)), [], '--plan reads only');
+  const again = await exec([], cloud, { dir });
+  assert.equal(again.code, 0, again.out);
+  const w = allWrites(cloud.calls.slice(before));
+  assert.deepEqual(w.map(c => `${c.method} ${c.path}`), [`POST ${A}/pages/projects/zuma/deployments`], 'only the worker is redeployed');
+  assert.ok((await w[0].form.get('_worker.js').text()).includes(JSON.stringify('d'.repeat(64))));
+  assert.ok((await exec(['--plan'], cloud, { dir })).lines.includes('actions prévues : 0'));
+  // An app whose AUD is unreadable: refused before any D1 or deployment write.
+  for (const aud of [undefined, '', 'pas-un-aud']) {
+    main.aud = aud;
+    const mark = cloud.calls.length;
+    const res = await exec([], cloud, { dir });
+    assert.equal(res.code, 1, res.out);
+    assert.match(res.out, /AUD/);
+    assert.deepEqual(allWrites(cloud.calls.slice(mark)), [], `aud ${aud}: nothing written`);
+  }
 });
 
 test('run (D1): over the row budget → refused before any write, Access included', async () => {
@@ -642,6 +677,11 @@ test('run --dry-run: whole pipeline on the simulated account, no network, writes
     const worker = fs.readFileSync(path.join(dir, 'dist', '_d1', '_worker.js'), 'utf8');
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'dist', '_d1', 'manifest.json'), 'utf8'));
     assert.match(worker, /export default/);
+    // The dry run never reads a real AUD: the worker carries the placeholder, not the simulated app's tag.
+    const { DRY_RUN_AUD } = await import('../tools/deploy.mjs');
+    assert.match(String(DRY_RUN_AUD), /^[0-9a-f]{64}$/);
+    assert.ok(worker.includes(JSON.stringify(DRY_RUN_AUD)), 'placeholder AUD inlined');
+    assert.ok(!worker.includes('a'.repeat(64)), 'simulated AUD not used');
     assert.ok(manifest['/index.html'] && manifest['/assets/pack.json']);
     assert.ok(!text.includes(ME), 'no address printed');
     if (!config) assert.match(text, /configuration privée absente/);

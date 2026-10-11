@@ -100,12 +100,64 @@ test('workerManifest maps "/<path>" to { key, contentType, size }', () => {
 // ------------------------------------------------------------ worker généré (node:vm, D1 simulée)
 
 /** Loads the generated module in a fresh vm context that only has the Web globals a Pages worker gets. */
-function loadWorker(source) {
+function loadWorker(source, { fetch = jwksServer().fetch, clock = { offset: 0 } } = {}) {
   assert.equal(source.match(/^export default /gm)?.length, 1, 'exactly one default export');
   const script = source.replace(/^export default /m, 'globalThis.worker = ');
-  const context = vm.createContext({ Response, Headers, URL, atob });
+  const context = vm.createContext({ Response, Headers, URL, atob, crypto: globalThis.crypto, fetch, TextEncoder, TextDecoder, clock, realNow: Date.now });
+  // The test clock: Date.now() inside the worker = real time + clock.offset (ms).
+  vm.runInContext('Date.now = () => realNow() + clock.offset;', context);
   vm.runInContext(script, context, { filename: '_worker.js' });
   return context.worker;
+}
+
+// ------------------------------------------------------------ Cloudflare Access JWT (RS256, team JWKS)
+
+const TEAM = 'equipe-test.cloudflareaccess.com';
+const ISS = `https://${TEAM}`;
+const CERTS = `${ISS}/cdn-cgi/access/certs`;
+const AUD = 'c0ffee'.repeat(10) + 'c0de';
+const ACCESS = { team: TEAM, aud: AUD };
+const subtle = globalThis.crypto.subtle;
+const RSA = { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' };
+
+/** RSA key pair with its JWKS entry (shape of https://<team>.cloudflareaccess.com/cdn-cgi/access/certs). */
+async function signingKey(kid) {
+  const { privateKey, publicKey } = await subtle.generateKey(RSA, true, ['sign', 'verify']);
+  const { n, e } = await subtle.exportKey('jwk', publicKey);
+  return { kid, privateKey, jwk: { kid, kty: 'RSA', alg: 'RS256', use: 'sig', e, n } };
+}
+const K1 = await signingKey('kid-1');
+const K2 = await signingKey('kid-2');
+const b64u = x => Buffer.from(typeof x === 'string' ? x : JSON.stringify(x)).toString('base64url');
+const nowS = (clock = { offset: 0 }) => Math.floor((Date.now() + clock.offset) / 1000);
+
+/** Claims of an Access application token, valid for one hour at `clock`. */
+const claims = (over = {}, clock) => {
+  const t = nowS(clock);
+  return { aud: [AUD], email: 'joueur@example.org', exp: t + 3600, iat: t - 5, nbf: t - 5, iss: ISS, type: 'app', identity_nonce: 'n', sub: 'u-1', country: 'FR', ...over };
+};
+
+/** Signed JWT; `key` signs, `header` overrides the protected header (kid defaults to the signing key). */
+async function jwt(body = claims(), { key = K1, header = {} } = {}) {
+  const head = b64u({ alg: 'RS256', kid: key.kid, typ: 'JWT', ...header });
+  const payload = b64u(body);
+  const sig = Buffer.from(await subtle.sign('RSASSA-PKCS1-v1_5', key.privateKey, new TextEncoder().encode(`${head}.${payload}`))).toString('base64url');
+  return `${head}.${payload}.${sig}`;
+}
+
+/** Fake team JWKS endpoint: serves `keys` (mutable), counts fetches, can fail. */
+function jwksServer(keys = [K1.jwk]) {
+  const server = {
+    keys, urls: [], fail: false,
+    fetch: async (url, _init) => {
+      server.urls.push(String(url instanceof Request ? url.url : url));
+      assert.equal(String(url instanceof Request ? url.url : url), CERTS, 'only the team certs URL is fetched');
+      if (server.fail === 'throw') throw new TypeError('network');
+      if (server.fail) return new Response('oops', { status: 500 });
+      return new Response(JSON.stringify({ keys: server.keys, public_cert: { kid: 'x', cert: '-' }, public_certs: [] }), { headers: { 'content-type': 'application/json' } });
+    },
+  };
+  return server;
 }
 
 const SELECT = 'SELECT data FROM blobs WHERE key = ? ORDER BY part';
@@ -143,23 +195,32 @@ function fakeD1(list, { drop = [], truncate = [] } = {}) {
   };
 }
 
-function setup(opts) {
+/**
+ * Generated worker over the tree, a fake D1 and a fake JWKS. `req(p, init)` sends a valid Access JWT in
+ * Cf-Access-Jwt-Assertion; `anon(p, init)` sends the request as is.
+ */
+async function setup(opts = {}) {
   const { dir, files } = tree();
   const list = blobFiles(dir);
-  const source = generateWorker(workerManifest(list), { build: '2.0.20+T' });
-  const worker = loadWorker(source);
+  const source = generateWorker(workerManifest(list), { build: '2.0.20+T', access: ACCESS });
+  const jwks = jwksServer();
+  const clock = { offset: 0 };
+  const worker = loadWorker(source, { fetch: jwks.fetch, clock });
   const db = fakeD1(list, opts);
   const env = { [D1_BINDING]: db };
-  const req = (p, init = {}) => worker.fetch(new Request(`https://zuma-x.pages.dev${p}`, init), env, {});
+  const token = await jwt();
+  const anon = (p, init = {}) => worker.fetch(new Request(`https://zuma-x.pages.dev${p}`, init), env, {});
+  const req = (p, init = {}) => anon(p, { ...init, headers: { 'cf-access-jwt-assertion': token, ...(init.headers ?? {}) } });
   const keyOf = rel => list.find(f => f.path === rel).key;
-  return { dir, files, list, source, worker, db, env, req, keyOf };
+  return { dir, files, list, source, worker, db, env, req, anon, keyOf, jwks, clock, token };
 }
 
 const NAV = { headers: { 'sec-fetch-mode': 'navigate', accept: 'text/html,application/xhtml+xml' } };
-const IMMUTABLE = 'public, max-age=31536000, immutable';
+// Private: the pack is only ever served to an authenticated player, never stored by a shared cache.
+const IMMUTABLE = 'private, max-age=31536000, immutable';
 
 test('worker: / and /index.html serve index.html (text/html, no-cache, strong ETag, body from D1)', async () => {
-  const { req, files, keyOf, db } = setup();
+  const { req, files, keyOf, db } = await setup();
   for (const p of ['/', '/index.html', '/?utm=1']) {
     const res = await req(p);
     assert.equal(res.status, 200, p);
@@ -173,7 +234,7 @@ test('worker: / and /index.html serve index.html (text/html, no-cache, strong ET
 });
 
 test('worker: content types, cache classes and exact bytes (multi-part and empty files) per path', async () => {
-  const { req, files } = setup();
+  const { req, files } = await setup();
   const want = {
     '/sw.js': ['application/javascript; charset=utf-8', 'no-cache'],
     '/version.json': ['application/json; charset=utf-8', 'no-cache'],
@@ -198,7 +259,7 @@ test('worker: content types, cache classes and exact bytes (multi-part and empty
 });
 
 test('worker: decoded bodies are cached per isolate (second GET without query), cache bounded', async () => {
-  const { req, db, source } = setup();
+  const { req, db, source } = await setup();
   await req('/assets/music/zuma.mo3');
   const n = db.queries.length;
   const again = await req('/assets/music/zuma.mo3');
@@ -210,7 +271,7 @@ test('worker: decoded bodies are cached per isolate (second GET without query), 
 });
 
 test('worker: If-None-Match (exact, list, weak, *) → 304 without query; another tag → 200', async () => {
-  const { req, keyOf, db } = setup();
+  const { req, keyOf, db } = await setup();
   const etag = `"${keyOf('assets/images/frog.gif').slice(7)}"`;
   for (const inm of [etag, `"other", ${etag}`, `W/${etag}`, '*']) {
     const before = db.queries.length;
@@ -226,7 +287,7 @@ test('worker: If-None-Match (exact, list, weak, *) → 304 without query; anothe
 });
 
 test('worker: HEAD answers the headers (content-length from the manifest) without body or query', async () => {
-  const { req, files, db } = setup();
+  const { req, files, db } = await setup();
   const res = await req('/sw.js', { method: 'HEAD' });
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('content-type'), 'application/javascript; charset=utf-8');
@@ -236,7 +297,7 @@ test('worker: HEAD answers the headers (content-length from the manifest) withou
 });
 
 test('worker: unknown navigation → index.html; unknown resource → 404; /cdn-cgi/ → 404 even as a navigation', async () => {
-  const { req, files } = setup();
+  const { req, files } = await setup();
   for (const p of ['/jeu', '/niveaux/3', '/public/']) {
     const res = await req(p, NAV);
     assert.equal(res.status, 200, p);
@@ -264,37 +325,209 @@ test('worker: unknown navigation → index.html; unknown resource → 404; /cdn-
 });
 
 test('worker: GET / HEAD only (405 with Allow); absent or incomplete file → 503 retry-after; missing binding → 500', async () => {
-  const { req, worker } = setup();
+  const { req, worker } = await setup();
   for (const method of ['POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']) {
     const res = await req('/index.html', { method, ...(['POST', 'PUT', 'PATCH'].includes(method) ? { body: 'x' } : {}) });
     assert.equal(res.status, 405, method);
     assert.equal(res.headers.get('allow'), 'GET, HEAD');
   }
-  const dropped = setup({ drop: ['assets/pack.json'], truncate: ['assets/music/zuma.mo3'] });
+  const dropped = await setup({ drop: ['assets/pack.json'], truncate: ['assets/music/zuma.mo3'] });
   for (const p of ['/assets/pack.json', '/assets/music/zuma.mo3']) {
     const res = await dropped.req(p);
     assert.equal(res.status, 503, p);
     assert.ok(Number(res.headers.get('retry-after')) > 0);
     assert.equal(res.headers.get('cache-control'), 'no-store');
   }
-  const unbound = await worker.fetch(new Request('https://zuma-x.pages.dev/index.html'), {}, {});
+  const unbound = await worker.fetch(new Request('https://zuma-x.pages.dev/index.html', { headers: { 'cf-access-jwt-assertion': await jwt() } }), {}, {});
   assert.equal(unbound.status, 500);
   assert.equal(unbound.headers.get('cache-control'), 'no-store');
 });
 
 test('worker source: ES module without import, console, process, Buffer or eval; deterministic; importable', async () => {
-  const { source, list } = setup();
+  const { source, list } = await setup();
   assert.doesNotMatch(source, /^\s*import\s/m, 'no import');
   assert.doesNotMatch(source, /\bconsole\b|\bprocess\b|\bBuffer\b|\beval\b|\brequire\(/, 'never logs, Node-free');
   assert.ok(source.includes(SELECT), 'the one query, with a bound parameter');
   assert.match(source, /2\.0\.20\+T/, 'build stamp recorded');
-  assert.equal(generateWorker(workerManifest(list), { build: '2.0.20+T' }), source, 'same input → same source');
+  assert.equal(generateWorker(workerManifest(list), { build: '2.0.20+T', access: ACCESS }), source, 'same input → same source');
   const mod = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   assert.equal(typeof mod.default.fetch, 'function');
   for (const f of list) {
     assert.ok(source.includes(JSON.stringify(`/${f.path}`)), f.path);
     assert.ok(source.includes(f.key), f.key);
   }
+});
+
+// ------------------------------------------------------------ worker : Cloudflare Access JWT (défense en profondeur)
+
+const DENIED = 'Accès refusé.';
+async function assertDenied(res, what) {
+  assert.equal(res.status, 403, what);
+  assert.equal(res.headers.get('cache-control'), 'no-store', what);
+  assert.equal(res.headers.get('etag'), null, what);
+  assert.equal(res.headers.get('x-zuma-build'), null, `${what}: no build stamp for an anonymous caller`);
+  assert.equal(await res.text(), DENIED, `${what}: no detail`);
+}
+const withJwt = (token, init = {}) => ({ ...init, headers: { 'cf-access-jwt-assertion': token, ...(init.headers ?? {}) } });
+
+test('generateWorker refuses to build without a valid Access configuration (fail closed)', () => {
+  const m = workerManifest([{ path: 'index.html', key: 'sha256:aa', contentType: 'text/html; charset=utf-8', size: 3 }]);
+  for (const access of [undefined, null, {}, { team: TEAM }, { aud: AUD }, { team: TEAM, aud: 'x' }, { team: TEAM, aud: AUD.slice(1) },
+    { team: 'https://equipe.cloudflareaccess.com', aud: AUD }, { team: 'evil.example.org', aud: AUD }, { team: 'a.cloudflareaccess.com/x', aud: AUD }]) {
+    assert.throws(() => generateWorker(m, { build: 'b', access }), /Access/, JSON.stringify(access));
+  }
+  const source = generateWorker(m, { build: 'b', access: ACCESS });
+  assert.ok(source.includes(JSON.stringify(ISS)) && source.includes(JSON.stringify(AUD)), 'issuer and AUD inlined');
+  assert.ok(source.includes(JSON.stringify(CERTS)), 'team certs URL inlined');
+  assert.match(source, /RSASSA-PKCS1-v1_5/);
+  assert.match(source, /SHA-256/);
+});
+
+test('worker: a valid Access JWT (header, else CF_Authorization cookie) opens every protected path', async () => {
+  const { anon, token, files } = await setup();
+  const ok = await anon('/assets/pack.json', withJwt(token));
+  assert.equal(ok.status, 200);
+  assert.equal(await ok.text(), files['assets/pack.json']);
+  for (const cookie of [`CF_Authorization=${token}`, `theme=dark; CF_Authorization=${token}; other=1`]) {
+    const res = await anon('/index.html', { headers: { cookie } });
+    assert.equal(res.status, 200, cookie.slice(0, 20));
+    assert.equal(await res.text(), files['index.html']);
+  }
+  const nav = await anon('/jeu', withJwt(token, NAV));
+  assert.equal(nav.status, 200, 'navigation fallback with a JWT');
+  // The header wins: an invalid header is not rescued by a valid cookie.
+  await assertDenied(await anon('/index.html', { headers: { 'cf-access-jwt-assertion': 'x.y.z', cookie: `CF_Authorization=${token}` } }), 'bad header + good cookie');
+  await assertDenied(await anon('/index.html', { headers: { cookie: `XCF_Authorization=${token}` } }), 'other cookie name');
+});
+
+test('worker: missing, expired, future, wrong aud / iss, bad signature, unknown kid, alg none / HS256 and malformed JWTs → 403 « Accès refusé. »', async () => {
+  const { anon, db, clock } = await setup();
+  const t = nowS(clock);
+  const forged = await jwt(claims(), { key: K2, header: { kid: K1.kid } });
+  const valid = await jwt();
+  const [h, p] = valid.split('.');
+  const cases = {
+    missing: null,
+    empty: '',
+    expired: await jwt(claims({ exp: t - 61 })),
+    'no exp': await jwt(claims({ exp: undefined })),
+    'exp as string': await jwt(claims({ exp: String(t + 3600) })),
+    'nbf in the future': await jwt(claims({ nbf: t + 120 })),
+    'iat in the future': await jwt(claims({ iat: t + 120 })),
+    'wrong aud': await jwt(claims({ aud: ['f'.repeat(64)] })),
+    'aud missing': await jwt(claims({ aud: undefined })),
+    'aud as a prefix': await jwt(claims({ aud: [AUD.slice(0, 32)] })),
+    'wrong iss': await jwt(claims({ iss: 'https://autre.cloudflareaccess.com' })),
+    'iss with a trailing slash': await jwt(claims({ iss: `${ISS}/` })),
+    'bad signature (other key, same kid)': forged,
+    'tampered payload': `${h}.${b64u(claims({ email: 'intrus@example.org' }))}.${valid.split('.')[2]}`,
+    'unknown kid': await jwt(claims(), { key: K2 }),
+    'no kid': await jwt(claims(), { header: { kid: undefined } }),
+    'alg none': `${b64u({ alg: 'none', kid: K1.kid })}.${p}.`,
+    'alg none with signature': `${b64u({ alg: 'none', kid: K1.kid })}.${p}.${valid.split('.')[2]}`,
+    'alg HS256': await jwt(claims(), { header: { alg: 'HS256' } }),
+    'two parts': `${h}.${p}`,
+    'four parts': `${valid}.x`,
+    'not base64url': `${h}.${p}.!!!`,
+    'payload not JSON': `${h}.${b64u('nope')}.${valid.split('.')[2]}`,
+    'header not an object': `${b64u('"RS256"')}.${p}.${valid.split('.')[2]}`,
+    oversized: `${h}.${b64u({ ...claims(), pad: 'x'.repeat(20000) })}.${valid.split('.')[2]}`,
+  };
+  for (const [what, token] of Object.entries(cases)) {
+    const init = token === null ? {} : withJwt(token);
+    await assertDenied(await anon('/assets/pack.json', init), what);
+    await assertDenied(await anon('/jeu', { ...init, headers: { ...(init.headers ?? {}), ...NAV.headers } }), `${what} (navigation)`);
+  }
+  assert.equal(db.queries.length, 0, 'nothing is read from D1 for a refused request');
+  assert.equal((await anon('/assets/pack.json', withJwt(valid))).status, 200, 'control: the valid token passes');
+  // 60 s of clock skew are tolerated on exp, nbf and iat.
+  for (const over of [{ exp: t - 30 }, { nbf: t + 30 }, { iat: t + 30 }, { aud: AUD }, { aud: ['autre', AUD] }]) {
+    assert.equal((await anon('/index.html', withJwt(await jwt(claims(over))))).status, 200, JSON.stringify(over));
+  }
+});
+
+test('worker: every protected answer needs the JWT (methods, HEAD, If-None-Match, 404s, /cdn-cgi) — no oracle', async () => {
+  const { anon, keyOf } = await setup();
+  const etag = `"${keyOf('assets/pack.json').slice(7)}"`;
+  const probes = [
+    ['/assets/pack.json', { method: 'HEAD' }], ['/assets/pack.json', { headers: { 'if-none-match': etag } }],
+    ['/assets/pack.json', { method: 'POST', body: 'x' }], ['/assets/absent.gif', {}], ['/', {}], ['/index.html', NAV],
+    ['/sw.js', {}], ['/version.json', {}], ['/js/main.js', {}], ['/cdn-cgi/access/x', {}], ['/%E0%A4%A', {}],
+    ['/_worker.js', {}],
+  ];
+  for (const [p, init] of probes) await assertDenied(await anon(p, init), `${init.method ?? 'GET'} ${p}`);
+});
+
+test('worker: only the exact files under /public/ are served without JWT; traversal stays protected', async () => {
+  const { anon, files, req } = await setup();
+  for (const rel of ['public/manifest.webmanifest', 'public/style.css', 'public/icon.svg']) {
+    const res = await anon(`/${rel}`);
+    assert.equal(res.status, 200, rel);
+    assert.ok(Buffer.from(await res.arrayBuffer()).equals(bytesOf(files, rel)), rel);
+    assert.equal(res.headers.get('cache-control'), 'no-cache', rel);
+    assert.equal((await anon(`/${rel}`, { method: 'HEAD' })).status, 200, `HEAD ${rel}`);
+  }
+  // The WHATWG parser (the Request constructor, as in the Workers runtime) resolves %2e%2e before the worker sees it.
+  const sneaky = new Request('https://zuma-x.pages.dev/public/%2e%2e/assets/pack.json');
+  assert.equal(new URL(sneaky.url).pathname, '/assets/pack.json');
+  for (const p of ['/public/%2e%2e/assets/pack.json', '/public/%2E%2E/index.html', '/public/./../assets/pack.json', '/public/..%2Fassets/pack.json',
+    '/public/..%2fassets%2fpack.json', '/public/', '/public', '/public/absent.css', '/public/manifest.webmanifest/', '/public/style.css%00',
+    '/Public/style.css', '/public//style.css', '/public/%2e%2e%2fassets/pack.json']) {
+    await assertDenied(await anon(p), p);
+    await assertDenied(await anon(p, NAV), `${p} (navigation)`);
+  }
+  await assertDenied(await anon('/public/style.css', { method: 'POST', body: 'x' }), 'public file, other method: still no detail');
+  assert.equal((await req('/public/style.css', { method: 'POST', body: 'x' })).status, 405, 'with a JWT: 405');
+});
+
+test('worker: JWKS fetched once per isolate, kept 1 h, refetched once on an unknown kid (at most every 10 s); fetch failures → 403', async () => {
+  const { anon, jwks, clock } = await setup();
+  for (let i = 0; i < 4; i++) assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock))))).status, 200);
+  assert.deepEqual(jwks.urls, [CERTS], 'one fetch for several requests');
+  // Rotation: kid-2 appears; a token signed by kid-2 triggers one refetch and passes.
+  jwks.keys = [K1.jwk, K2.jwk];
+  clock.offset += 11_000;
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 })))).status, 200);
+  assert.equal(jwks.urls.length, 2, 'refetched on the unknown kid');
+  // An unknown kid right after a fetch: no new fetch (cooldown), 403.
+  const K3 = await signingKey('kid-3');
+  await assertDenied(await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K3 }))), 'unknown kid in the cooldown');
+  assert.equal(jwks.urls.length, 2, 'no fetch during the cooldown');
+  clock.offset += 11_000;
+  await assertDenied(await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K3 }))), 'unknown kid, absent from the JWKS');
+  assert.equal(jwks.urls.length, 3, 'exactly one refetch per unknown kid');
+  // Within the hour: no refetch for known kids; after it, one refetch.
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock))))).status, 200);
+  assert.equal(jwks.urls.length, 3);
+  clock.offset += 3_601_000;
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock))))).status, 200);
+  assert.equal(jwks.urls.length, 4, 'refetched after one hour');
+  // A key removed from the JWKS stops working after the next refresh.
+  jwks.keys = [K2.jwk];
+  clock.offset += 3_601_000;
+  await assertDenied(await anon('/index.html', withJwt(await jwt(claims({}, clock)))), 'kid-1 retired');
+  assert.equal((await anon('/index.html', withJwt(await jwt(claims({}, clock), { key: K2 })))).status, 200);
+
+  for (const fail of ['throw', 500]) {
+    const s = await setup();
+    s.jwks.fail = fail;
+    await assertDenied(await s.anon('/index.html', withJwt(s.token)), `JWKS ${fail}`);
+    s.jwks.fail = false;
+    assert.equal((await s.anon('/index.html', withJwt(s.token))).status, 200, `JWKS ${fail}: recovers on the next request`);
+  }
+  // Concurrent first requests share one fetch.
+  const c = await setup();
+  const all = await Promise.all(Array.from({ length: 5 }, () => c.anon('/index.html', withJwt(c.token))));
+  assert.ok(all.every(r => r.status === 200));
+  assert.equal(c.jwks.urls.length, 1, 'one in-flight fetch shared');
+});
+
+test('worker source: never logs nor echoes the token; JWKS URL is the only fetch', async () => {
+  const { source } = await setup();
+  assert.doesNotMatch(source, /\bconsole\b/);
+  assert.equal(source.match(/(?<!async )\bfetch\(/g)?.length, 1, 'a single fetch call (the team certs)');
+  assert.match(source, /cf-access-jwt-assertion/i);
+  assert.match(source, /CF_Authorization/);
 });
 
 test('D1 binding name is ASSETS_DB, not the reserved Pages ASSETS binding', () => {
