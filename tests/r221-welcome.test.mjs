@@ -482,6 +482,10 @@ test('main.js: platform first name (D-12) — api/me same-origin with a short ti
   assert.match(main, /protocol !== 'http:' && [^;]*protocol !== 'https:'/);
   assert.match(main, /kind: 'profile-detected'/);
   assert.match(main, /platformName/);
+  // Only the private host has the endpoint: no request without the pack (public build) nor on a loopback host (local
+  // server), where it would only log a 404 in the console.
+  assert.match(main, /'localhost'[^;]*'127\.0\.0\.1'/);
+  assert.match(method(main, '    async start() {'), /this\.pack \? fetchPlatformName\(\) : Promise\.resolve\(null\)/);
 });
 
 test('audio.js: the ufo loop has its own gain and is cut by stopLoops like rolling', async () => {
