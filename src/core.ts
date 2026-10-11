@@ -8,8 +8,7 @@
  * coins on the treasure points (one at a time, free once the chain head passed `dist` %, grabbed by a
  * projectile without breaking the streak), and — from R2.0.16, transcribed from
  * the original executable (05-RESEARCH.md) — the pusher kinematics (±50 / 1000
- * px/s² ramp, 24-tick stop after an insertion into the rear segment, end-of-track
- * slow zone), the computed fast feed from `start` % with « PARTEZ » on the speed
+ * px/s² ramp, 24-tick pusher stop, end-of-track slow zone), the computed fast feed from `start` % with « PARTEZ » on the speed
  * condition and the level clock from `go`, the `repeat` / `single` colour
  * generation, the per-tick ammo refresh, the conditional ZUMA rollback (> 50 %
  * coverage) and the end-of-level tally (60 px / 2.4 ticks / +100, level bonus per
@@ -33,7 +32,9 @@
  * 300 maj at most, pushing the balls behind it, the pusher stopped, a ×0.25 slowdown per chain, all reset once the
  * head is under 50 px — and in ZUMA mode a ball passing below s = 1 is deleted (`ball-exit`). D-31: a coin is
  * grabbed within 36 px and consumes the projectile. A game has `lives` frogs: a loss does lives − 1 and the game is
- * over at 0.
+ * over at 0. From R2.0.21 (06-RESEARCH.md Q5c, D-09): the 24-tick pusher stop (40 maj) is armed only when the
+ * rearmost ball of a chain — the one the pusher pushes — is removed at the end of its destruction (0x423a10), never
+ * by an insertion.
  *
  * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
  * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
@@ -42,7 +43,7 @@
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.20';
+export const ENGINE_VERSION = '2.0.21';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {
@@ -321,7 +322,8 @@ export interface EngineConfig {
   chainAccel: number;
   /** Pusher deceleration towards a lower target, px/s² (0.1 px/maj² × 10 000 = 1000). */
   chainDecel: number;
-  /** Pusher stop after an insertion into the rear (pushed) segment, ticks (40 maj × 0.6 = 24). */
+  /** Pusher stop when the rearmost ball (first node of the chain, the one the pusher pushes) is removed at the end of
+   *  its destruction (0x423a10 → 0x423ac7–0x423ad6), ticks: 40 maj × 0.6 = 24. Never armed by an insertion. */
   pusherStopTicks: number;
   /** End-of-track slow zone: `slowDistance` px of interpolation before the danger line, itself `dangerDistance` px before the skull (original `slowdistance` 500, `danger` 600). */
   slowDistance: number;
@@ -592,7 +594,7 @@ export class Chain {
   lastSpawnColor = -1;
   /** Current pusher speed, px/s (original `mSpeed`); null until the chain's first moveChain (lazy: v0 of the fast feed, or the target). */
   speed: number | null = null;
-  /** Ticks left of the pusher stop armed by an insertion into the rear segment (original counter ≥ 40 maj). */
+  /** Ticks left of the pusher stop (original counter curve+0x54): armed when the rear ball is removed (≥ 40 maj) or by a recoil contact (≥ 20 maj). */
   stopTicks = 0;
   /** Ticks of ZUMA pushback left (curve+0x5c): the head rolls back `zumaBackSpeed` px/s. */
   zumaBackLeft = 0;
@@ -1657,15 +1659,7 @@ export class ZumaEngine {
     const half = this.config.ballSpacing / 2;
     const s = ahead ? hit.s + half : hit.s - half;
     const ball = this.insertGrowing(index, { id: p.id, color: p.color }, { x: p.x, y: p.y }, s, chain);
-    // Pusher stop (0x423ac7–0x423ad6): an insertion into the rear segment — the component the
-    // pusher drives — zeroes the speed and holds it for at least pusherStopTicks (40 maj); the
-    // pusher then restarts from 0 at chainAccel (0.005 px/maj²). The test hook insert() arms nothing.
-    const alive = this.alive(chain);
-    const idx = alive.indexOf(ball);
-    if (idx >= 0 && this.componentIds(alive)[idx] === 0) {
-      chain.stopTicks = Math.max(chain.stopTicks, this.config.pusherStopTicks);
-      chain.speed = 0;
-    }
+    // No pusher stop on insertion: 0x423ac7–0x423ad6 belongs to the end of destruction (0x423a10), see processRemovals.
     this.emit('insert', { id: ball.id, color: ball.color, x: bp.x, y: bp.y, chain: chain.index });
     // Gap bonus armed on the ball (0x421d27–0x421d2b): no score, no event, no statistic here —
     // the match that destroys the ball pays it (destroyRun) or `settle` clears it.
@@ -1702,7 +1696,8 @@ export class ZumaEngine {
    * End of destruction (0x423a10): the due balls are removed; for every block of removed balls whose two curve
    * neighbours are alive, not exploding and of one colour, the front one gets the attraction counter
    * `attractStartAfterMatch` (0x423a6b–0x423aa8) — whatever opened the gap (match or bomb). The colour is not
-   * checked again afterwards; the depth stays on `comboDepth` (set by destroyRun).
+   * checked again afterwards; the depth stays on `comboDepth` (set by destroyRun). When the removed balls include the
+   * rearmost ball of the chain while the game is playing, the pusher stops `pusherStopTicks` (D-09).
    */
   private processRemovals(): void {
     for (const chain of this.chains) {
@@ -1714,6 +1709,13 @@ export class ZumaEngine {
       for (const r of due) for (const id of r.ids) gone.add(id);
       const list = chain.balls;
       const removed = (b: Ball): boolean => gone.has(b.id) && b.destroyingUntil !== undefined;
+      // 0x423a10: a ball reaching 40 maj of destruction whose node is the first of the list (0x423abc–0x423ac7) zeroes
+      // mSpeed and holds the pusher ≥ 40 maj (0x423ac9–0x423ad6); the pusher restarts from 0 at chainAccel
+      // (0x423ca4–0x423caa). `list` is sorted by s: index 0 is the rearmost ball, exploding balls included.
+      if (this.state === 'playing' && list.length > 0 && removed(list[0])) {
+        chain.stopTicks = Math.max(chain.stopTicks, this.config.pusherStopTicks);
+        chain.speed = 0;
+      }
       for (let a = 0; a < list.length; a++) {
         if (!removed(list[a])) continue;
         let b = a;
