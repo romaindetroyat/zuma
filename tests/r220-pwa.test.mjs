@@ -394,3 +394,12 @@ test('installGuidance: one instruction per platform, nothing once installed', as
   assert.match(main, /installGuidance\(/);
   assert.match(main, /readInstallEnv\(/);
 });
+
+test('installGuidance: nothing when the page is not served over http(s) (the file:// standalone cannot be installed)', async () => {
+  const { installGuidance } = await import('../.compiled/pwa.js');
+  const base = { userAgent: UA.iphoneSafari, maxTouchPoints: 5, standalone: false, displayMode: 'browser', promptAvailable: false };
+  assert.equal(installGuidance({ ...base, served: false }), 'none');
+  assert.equal(installGuidance({ ...base, userAgent: UA.macSafari, maxTouchPoints: 0, served: false }), 'none');
+  assert.equal(installGuidance({ ...base, served: true }), 'ios-share');
+  assert.match(read('.compiled/pwa.js'), /served: \/\^https\?:\$\/\.test\(/);
+});
