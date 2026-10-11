@@ -1360,7 +1360,7 @@ class Game {
   /** Ending: happyending, FÉLICITATIONS, the final score and the table with the run's rank (D-10). */
   private drawEndingFrame(): void {
     const ending = this.app.ending;
-    const view = { score: ending?.score ?? 0, rank: ending?.rank ?? null, scores: this.app.scores, hover: this.endingUi.hover, pressed: this.endingUi.pressed, strings: this.promptStrings() };
+    const view = { score: ending?.score ?? 0, rank: ending?.rank ?? null, scores: this.app.scores, hover: this.endingUi.hover, pressed: this.endingUi.pressed, strings: this.promptStrings(), scope: null };
     this.renderer.drawScene(ctx => drawEnding(ctx, this.adventureKit, view));
   }
 
@@ -1474,7 +1474,7 @@ class Game {
     const locked = this.adventureLocked();
     const view: AdventureView = {
       c, maxStage: this.adventureMaxStage(), selected: this.app.selected, hover: locked ? null : ui.hover, button: { ...ui.button },
-      reveal, shake: ui.shake, scores: this.app.scores, strings: this.promptStrings(),
+      reveal, shake: ui.shake, scores: this.app.scores, strings: this.promptStrings(), scope: null,
     };
     this.renderer.drawScene(ctx => drawAdventure(ctx, this.adventureKit, view));
   }
