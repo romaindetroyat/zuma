@@ -29,7 +29,6 @@ const SYNTH: Record<string, Synth> = {
   levelwin: { type: 'triangle', from: 440, to: 1760, duration: 1.2, gain: 0.3 },
   lose: { type: 'sawtooth', from: 400, to: 60, duration: 1.0, gain: 0.3 },
   gameover: { type: 'sawtooth', from: 300, to: 40, duration: 1.6, gain: 0.3 },
-  powerup: { type: 'sine', from: 900, to: 1500, duration: 0.25, gain: 0.2 },
   powerbomb: { type: 'sawtooth', from: 160, to: 30, duration: 0.6, gain: 0.4, noise: true },
   powerslow: { type: 'sine', from: 800, to: 200, duration: 0.7, gain: 0.3 },
   powerback: { type: 'square', from: 300, to: 700, duration: 0.5, gain: 0.25 },

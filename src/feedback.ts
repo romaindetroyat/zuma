@@ -12,18 +12,41 @@ export interface SoundCue {
   pan?: number;
 }
 
+/**
+ * One cue at gain 1. `insert` = a projectile hitting the chain, BALLCLICK2 (0x42203c, no guard). A ball becoming a
+ * power-up plays nothing (D-32: 0x40ae70 → 0x408e90 → 0x401430 / 0x401500 read no SOUND_* global; the power-up
+ * sounds belong to the activation, 0x41a7c0); a ball leaving through the entrance in ZUMA mode is silent too.
+ */
 const SIMPLE_CUES: Record<string, string> = {
   fire: 'fire',
   insert: 'insert',
-  merge: 'merge',
   swap: 'swap',
   zuma: 'zuma',
   won: 'levelwin',
   lost: 'lose',
   gameover: 'gameover',
-  'power-spawn': 'powerup',
   coin: 'coin',
 };
+
+/**
+ * Minimum interval between two plays of a cue key, ms. Contact between two segments (`merge`): BALLCLICK1 through
+ * 0x401c70, which only plays when the ms clock − board+0x114 ≥ 250 (pusher catch-up 0x418a0d, attraction 0x42196b,
+ * recoil push 0x40acc1).
+ */
+export const CUE_GUARD_MS: Readonly<Record<string, number>> = Object.freeze({ merge: 250 });
+
+/**
+ * Anti-burst guard (0x401c70): true — and `nowMs` recorded as the last play of `key` — when `key` has no guard or
+ * its last play is at least the guard ago; false otherwise. A non-finite clock allows the play and records nothing.
+ */
+export function cueAllowed(last: Map<string, number>, key: string, nowMs: number): boolean {
+  const guard = CUE_GUARD_MS[key];
+  if (guard === undefined || !Number.isFinite(nowMs)) return true;
+  const previous = last.get(key);
+  if (previous !== undefined && nowMs - previous < guard) return false;
+  last.set(key, nowMs);
+  return true;
+}
 
 /** 0..1 clamp, non-finite → 0 (shared with audio.ts: one definition in the standalone bundle). */
 export const clamp01 = (v: number): number => Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
@@ -39,6 +62,8 @@ const POWER_CUES: Record<string, string> = {
 export function soundCues(event: GameEvent): SoundCue[] {
   const simple = SIMPLE_CUES[event.kind];
   if (simple) return [{ key: simple, gain: 1, rate: 1 }];
+  // Contact between two segments: BALLCLICK1 at volume 0.80 (resources.xml), guarded 250 ms by the caller (cueAllowed).
+  if (event.kind === 'merge') return [{ key: 'merge', gain: 0.8, rate: 1 }];
   if (event.kind === 'power-activate') {
     const key = POWER_CUES[String(event.power)];
     return key ? [{ key, gain: 1, rate: 1 }] : [];

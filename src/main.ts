@@ -1,6 +1,6 @@
 /** Browser entry point: game flow, input, HUD/STATS panels and PWA wiring. */
 import { CANDIDATE, ENGINE_VERSION, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
-import { EXPLOSION_RGB, ballCss, makeColorBurst, makeSparks, soundCues, type ColorBurst } from './feedback.js';
+import { EXPLOSION_RGB, ballCss, cueAllowed, makeColorBurst, makeSparks, soundCues, type ColorBurst, type SoundCue } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
 import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
@@ -77,6 +77,8 @@ class Game {
   private progress: Progress = { stage: 0, level: 0 };
   private levelIndex = 0;
   private lives = CANDIDATE.lives;
+  /** Last start (performance.now ms) of each guarded cue key (cueAllowed). */
+  private readonly cueLast = new Map<string, number>();
   private carriedScore = 0;
   private paused = false;
   private statsOpen = false;
@@ -421,9 +423,15 @@ class Game {
     this.message = { text, sub, until: this.frame + frames };
   }
 
+  /** Plays an event cue unless its anti-burst guard holds it (merge: once per 250 ms, 0x401c70). */
+  private playCue(cue: SoundCue): void {
+    if (!cueAllowed(this.cueLast, cue.key, performance.now())) return;
+    this.audio.play(cue);
+  }
+
   private handleEvents(events: GameEvent[], engine: ZumaEngine): void {
     for (const e of events) {
-      for (const cue of soundCues(e)) this.audio.play(cue);
+      for (const cue of soundCues(e)) this.playCue(cue);
       switch (e.kind) {
         case 'fire':
           this.fx.tongueStart = engine.tick;

@@ -73,7 +73,7 @@ test('cueAllowed: merge at most once per 250 ms (0x401c70), other keys always, n
 test('main.js plays every cue through cueAllowed; audio.js has no powerup fallback', () => {
   const main = read('.compiled/main.js');
   const handle = body(main, 'handleEvents(events, engine) {');
-  assert.match(handle, /soundCues\(e\)\) this\.playCue\(cue\)/, 'event cues go through playCue');
+  assert.match(handle, /soundCues\(e\)\)[\s{]*this\.playCue\(cue\)/, 'event cues go through playCue');
   assert.doesNotMatch(handle, /this\.audio\.play\(/, 'no direct play in handleEvents');
   const play = body(main, 'playCue(cue) {');
   const guard = play.indexOf('cueAllowed(');

@@ -17,12 +17,15 @@ import { pathToFileURL } from 'node:url';
 const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.gif'];
 
 /** Sound keys used by src/feedback.ts → original resource file names. */
+// insert = a projectile hitting the chain (SOUND_BALLCLICK2, 0x42203c); merge = two segments touching
+// (SOUND_BALLCLICK1, 0x42196b / 0x418a0d / 0x40acc1) — the other way round up to R2.0.18. No `powerup`: the
+// original plays nothing when a ball becomes a power-up (spike 04 Q2).
 export const SOUND_MAP = {
-  fire: 'fireball1', insert: 'ballclick1', merge: 'ballclick2', swap: 'pop', zuma: 'chant4',
+  fire: 'fireball1', insert: 'ballclick2', merge: 'ballclick1', swap: 'pop', zuma: 'chant4',
   levelwin: 'chant5', lose: 'chant14', gameover: 'chant8', destroy1: 'ballsdestroyed1',
   destroy2: 'ballsdestroyed2', destroy3: 'ballsdestroyed3', destroy4: 'ballsdestroyed4',
   destroy5: 'ballsdestroyed5', combo: 'chime1', streak: 'chain1', gap: 'gapbonus1',
-  powerup: 'jewelappear', powerbomb: 'bombexplode', powerslow: 'slowdown1', powerback: 'reverse1',
+  powerbomb: 'bombexplode', powerslow: 'slowdown1', powerback: 'reverse1',
   poweraccuracy: 'accuracy3', gamestart: 'chant1', levelup: 'chant2', warning: 'warning1',
   rolling: 'rolling', extralife: 'extralife', bonuspop: 'endoflevelpop1', button: 'button1',
   button2: 'button2', coin: 'coingrab', frogland: 'frogland2', earthquake: 'earthquake',
