@@ -82,3 +82,16 @@ dd { margin: 0; font-weight: bold; }
 #update-toast[hidden] { display: none; }
 #update-toast button { min-height: 44px; min-width: 44px; padding: 0 14px; font: inherit; font-weight: bold; border-radius: 10px; border: 1px solid var(--panel-edge); background: #3a2812; color: var(--text); cursor: pointer; }
 #update-toast #update-apply { background: linear-gradient(#f0b429, #c98a12); color: #1a1004; }
+
+/* R2.0.20 (plan 05-14, D-38 §1): install guide card in the panel style (wood / gold), above the boot screen and the menu. */
+.install-overlay { z-index: 20; background: rgba(0, 0, 0, 0.7); }
+.install-card { position: relative; max-width: 80%; min-width: 0; text-align: center; font-size: 15px; line-height: 1.4; }
+.install-card h2 { margin-bottom: 10px; }
+.install-card p { margin: 0 0 12px; }
+.install-step { font-weight: bold; color: var(--accent); }
+.share-glyph { display: inline-block; vertical-align: -4px; color: #4ea3ff; }
+.install-close { position: absolute; top: 6px; right: 8px; min-width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--text); font-size: 26px; line-height: 1; cursor: pointer; }
+.install-action, .install-play { display: block; margin: 0 auto 10px; min-height: 44px; padding: 0 22px; font: inherit; font-weight: bold; border-radius: 10px; border: 1px solid var(--panel-edge); cursor: pointer; }
+.install-action { background: linear-gradient(#f0b429, #c98a12); color: #1a1004; }
+.install-play { background: #3a2812; color: var(--text); }
+.install-action[hidden], .install-step[hidden] { display: none; }

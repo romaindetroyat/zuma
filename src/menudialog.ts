@@ -15,7 +15,7 @@ import type { BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 
 export type MenuView = 'menu' | 'help' | 'confirm';
-export type MenuWidgetId = 'music' | 'sfx' | 'fullscreen' | 'pixels' | 'help' | 'main-menu' | 'back' | 'help-done' | 'leave' | 'cancel';
+export type MenuWidgetId = 'music' | 'sfx' | 'fullscreen' | 'pixels' | 'help' | 'main-menu' | 'back' | 'help-done' | 'leave' | 'cancel' | 'install';
 export interface MenuWidget { id: MenuWidgetId; kind: 'slider' | 'check' | 'button'; rect: Rect; label: string; enabled: boolean }
 
 /**
@@ -49,6 +49,14 @@ const MENU_STRINGS: Record<string, string> = {
 /** « Pixels nets » has no original string (it replaces CUSTOM_CURSORS / 3D_HARDWARE_ACCELERATION). */
 const PIXELS_LABEL = 'Pixels nets';
 
+/**
+ * Platform-dependent widgets (R2.0.20, D-38). `install`: the help view gets « Installer » (left, the confirm view's
+ * button geometry) beside « Terminé » (right) — no original string: a deliberate addition with no OPTIONS equivalent.
+ */
+export interface MenuOptions { install?: boolean }
+/** « Installer » has no original string. */
+const INSTALL_LABEL = 'Installer';
+
 /** Bindings shown first in the help view (D-26). */
 export const CONTROLS_HELP = 'Clic : tirer · Clic droit : échanger · Espace / Entrée / Échap : menu · Tab : statistiques · P : pause';
 
@@ -57,11 +65,18 @@ function menuString(strings: Record<string, string> | null, key: string): string
 }
 
 /** Widgets of a view, top to bottom (0x445310 order for `menu`); rectangles in logical stage pixels. */
-export function menuWidgets(view: MenuView, strings: Record<string, string> | null): MenuWidget[] {
+export function menuWidgets(view: MenuView, strings: Record<string, string> | null, options: MenuOptions = {}): MenuWidget[] {
   const L = MENU_LAYOUT;
   const str = (key: string): string => menuString(strings, key);
   const footer: Rect = { x: L.content.x, y: L.button.footer, w: L.content.w, h: L.button.h };
-  if (view === 'help') return [{ id: 'help-done', kind: 'button', rect: footer, label: str('DONE'), enabled: true }];
+  if (view === 'help') {
+    if (!options.install) return [{ id: 'help-done', kind: 'button', rect: footer, label: str('DONE'), enabled: true }];
+    const w = L.confirm.buttonW;
+    return [
+      { id: 'install', kind: 'button', rect: { x: L.content.x, y: L.button.footer, w, h: L.button.h }, label: INSTALL_LABEL, enabled: true },
+      { id: 'help-done', kind: 'button', rect: { x: L.content.x + L.content.w - w, y: L.button.footer, w, h: L.button.h }, label: str('DONE'), enabled: true },
+    ];
+  }
   if (view === 'confirm') {
     const w = L.confirm.buttonW;
     return [
@@ -114,6 +129,8 @@ export interface MenuState {
   tips: string[];
   /** Build badge shown at the bottom of the help view. */
   badge: string;
+  /** Platform-dependent widgets (R2.0.20). */
+  options?: MenuOptions;
 }
 
 /** STATS kit + the OPTIONS widgets; `pixelScale` 2 when every picture is the 2 × EPX copy (D-19). */
@@ -170,7 +187,7 @@ export function composeMenuDialog(kit: MenuKit | null, state: MenuState, canvas?
   ctx.setTransform(s, 0, 0, s, 0, 0);
   ctx.imageSmoothingEnabled = true;
   const strings = kit?.stats.strings ?? null;
-  const widgets = menuWidgets(state.view, strings);
+  const widgets = menuWidgets(state.view, strings, state.options);
   const painter = kit ? new NativeMenuPainter(ctx, kit) : new VectorMenuPainter(ctx);
   painter.frame();
   const title = state.view === 'help' ? menuString(strings, 'HELP') : state.view === 'confirm' ? menuString(strings, 'LEAVE_GAME_?') : menuString(strings, 'MENU');

@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deployError, packFiles, packHash, swSource } from './swgen.mjs';
+import { ICONS, encodePng, renderIcon } from './icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = new Set(process.argv.slice(2));
@@ -56,6 +57,8 @@ for (const f of fs.readdirSync(path.join(root, 'public'))) {
   if (f === 'sw.js') continue;
   fs.copyFileSync(path.join(root, 'public', f), path.join(dist, 'public', f));
 }
+// R2.0.20 (D-38 §3): PNG icons (192 / 512 « any », 512 maskable, 180 apple-touch-icon) generated, never committed.
+for (const icon of ICONS) fs.writeFileSync(path.join(dist, 'public', icon.file), encodePng(icon.size, icon.size, renderIcon(icon.size, icon.options)));
 
 let packed = false;
 if (local) {
@@ -91,6 +94,8 @@ if (standalone) {
   let html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')
     .replace(/<link rel="stylesheet"[^>]*>/, `<style>\n${css}\n</style>`)
     .replace(/<link rel="manifest"[^>]*>\n?/, '')
+    .replace(/<link rel="apple-touch-icon"[^>]*>\n?/, '')
+    .replace(/<link rel="icon"[^>]*image\/png"[^>]*>\n?/, '')
     .replace(/<script type="module" src="js\/main.js"><\/script>/, `<script type="module">\n${js}\n</script>`);
   if (packed) {
     const assets = {};

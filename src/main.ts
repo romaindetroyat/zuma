@@ -6,12 +6,16 @@ import { AudioManager, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
-import { applyUpdate, formatSize, offlineStatus, registerServiceWorker } from './pwa.js';
+import { applyUpdate, formatSize, installGuidance, offlineStatus, readInstallEnv, registerServiceWorker, type InstallGuidance } from './pwa.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
 import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
-import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuState, type MenuWidgetId } from './menudialog.js';
+import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
 
 declare const __BUILD__: string;
+/** `beforeinstallprompt` (Chromium, Edge, Android): kept to show « Installer Zuma » (D-38 §1). */
+interface InstallPromptEvent extends Event { prompt(): Promise<unknown>; userChoice?: Promise<{ outcome: string }> }
+/** localStorage key set when the player closes the install card on the start screen. */
+const INSTALL_HIDDEN_KEY = 'zuma.install.hidden';
 const BUILD = typeof __BUILD__ === 'string' ? __BUILD__ : 'dev';
 
 interface ResolvedLevel {
@@ -71,6 +75,10 @@ class Game {
   private menuState: MenuState = { view: 'menu', music: 0, sfx: 1, fullscreen: false, pixelated: false, hover: null, pressed: null, focus: 'back', tips: [], badge: '' };
   /** Slider dragged with the pointer captured (only `sfx` is active). */
   private menuDrag: MenuWidgetId | null = null;
+  /** Kept `beforeinstallprompt` (one use), the install card state and the callback that ends its wait (R2.0.20, D-38). */
+  private installPrompt: InstallPromptEvent | null = null;
+  private installOpen = false;
+  private installDone: (() => void) | null = null;
   /** Build badge (shown in the help view of the menu). */
   private badge = `R${ENGINE_VERSION} · ${BUILD}`;
   private engine: ZumaEngine | null = null;
@@ -114,6 +122,7 @@ class Game {
     this.bindInput();
     this.bindPanels();
     this.bindMenu();
+    this.bindInstall();
     this.bindScaling();
     this.applyScaling();
   }
@@ -199,6 +208,11 @@ class Game {
       this.badge += ` · hors ligne : ${formatSize(status.bytes)}`;
       if (this.menuOpen) this.renderMenu();
     });
+    // R2.0.20 (D-38 §1): install guide on the start screen unless installed, without instruction or closed for good.
+    const guidance = this.installGuidance();
+    let hidden = false;
+    try { hidden = localStorage.getItem(INSTALL_HIDDEN_KEY) === '1'; } catch { /* storage unavailable */ }
+    if (guidance !== 'installed' && guidance !== 'none' && !hidden) await this.showInstallCard('start');
     this.loading = false;
     await this.newGame();
     document.getElementById('boot')?.classList.add('hidden');
@@ -596,13 +610,13 @@ class Game {
   private bindInput(): void {
     window.addEventListener('contextmenu', ev => ev.preventDefault());
     window.addEventListener('pointermove', ev => {
-      if (this.menuOpen || this.statsOpen) return;
+      if (this.menuOpen || this.statsOpen || this.installOpen) return;
       this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       this.engine?.command({ kind: 'aim', ...this.pointer });
     });
     window.addEventListener('pointerdown', ev => {
       this.audio.unlock();
-      if (this.loading || this.menuOpen || this.statsOpen) return;
+      if (this.loading || this.menuOpen || this.statsOpen || this.installOpen) return;
       if (ev.pointerType === 'mouse') ev.preventDefault(); // no text selection while playing
       const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
@@ -619,6 +633,10 @@ class Game {
     });
     window.addEventListener('keydown', ev => {
       if (ev.repeat) return;
+      if (this.installOpen) {
+        if (ev.code === 'Escape') { ev.preventDefault(); this.closeInstallCard(false); }
+        return;
+      }
       if (this.menuOpen) {
         if (this.menuKey(ev.code)) ev.preventDefault();
         return;
@@ -655,6 +673,86 @@ class Game {
     });
   }
 
+  // ---------------------------------------------------------------- install
+
+  /** Current install instruction (pure rule in pwa.ts over the live navigator). */
+  private installGuidance(): InstallGuidance {
+    return installGuidance(readInstallEnv(this.installPrompt !== null));
+  }
+
+  /** Platform widgets of the menu: « Installer » in the help view while there is something to show. */
+  private menuOptions(): MenuOptions {
+    const g = this.installGuidance();
+    return { install: g !== 'installed' && g !== 'none' };
+  }
+
+  /** Fills and opens the install card; resolves when it is closed (« Jouer », « × », Escape, or installed). */
+  private showInstallCard(from: 'start' | 'menu'): Promise<void> {
+    const card = document.getElementById('install-card');
+    if (!card) return Promise.resolve();
+    this.updateInstallCard();
+    card.dataset.from = from;
+    card.classList.add('open');
+    this.installOpen = true;
+    return new Promise(resolve => { this.installDone = resolve; });
+  }
+
+  /** Shows the line of the current platform only (the browser button needs a kept prompt). */
+  private updateInstallCard(): void {
+    const g = this.installGuidance();
+    const show = (id: string, visible: boolean): void => { const el = document.getElementById(id); if (el) el.hidden = !visible; };
+    show('install-button', g === 'prompt');
+    show('install-ios', g === 'ios-share');
+    show('install-mac', g === 'mac-safari-dock');
+  }
+
+  /** Closes the card; `remember` (« × » on the start screen) stops showing it at launch. */
+  private closeInstallCard(remember: boolean): void {
+    const card = document.getElementById('install-card');
+    if (!card || !this.installOpen) return;
+    if (remember && card.dataset.from === 'start') {
+      try { localStorage.setItem(INSTALL_HIDDEN_KEY, '1'); } catch { /* storage unavailable */ }
+    }
+    card.classList.remove('open');
+    this.installOpen = false;
+    const done = this.installDone;
+    this.installDone = null;
+    if (this.menuOpen) {
+      this.menuState.options = this.menuOptions();
+      this.renderMenu();
+    }
+    done?.();
+  }
+
+  /** `beforeinstallprompt` / `appinstalled` and the card buttons. */
+  private bindInstall(): void {
+    window.addEventListener('beforeinstallprompt', ev => {
+      ev.preventDefault();
+      this.installPrompt = ev as InstallPromptEvent;
+      if (this.installOpen) this.updateInstallCard();
+      if (this.menuOpen) { this.menuState.options = this.menuOptions(); this.renderMenu(); }
+    });
+    window.addEventListener('appinstalled', () => {
+      this.installPrompt = null;
+      this.closeInstallCard(false);
+      if (this.menuOpen) { this.menuState.options = this.menuOptions(); this.renderMenu(); }
+    });
+    const click = (id: string, handler: () => void): void => {
+      document.getElementById(id)?.addEventListener('click', () => { this.audio.unlock(); handler(); });
+    };
+    click('install-play', () => this.closeInstallCard(false));
+    click('install-close', () => this.closeInstallCard(true));
+    click('install-button', () => {
+      const prompt = this.installPrompt;
+      if (!prompt) return;
+      this.installPrompt = null; // one use only
+      void prompt.prompt().catch(() => undefined);
+      void prompt.userChoice?.then(choice => { if (choice.outcome === 'accepted') this.closeInstallCard(false); else this.updateInstallCard(); }).catch(() => undefined);
+    });
+    // The card swallows its pointer events (no shot, no menu action behind it).
+    document.getElementById('install-card')?.addEventListener('pointerdown', ev => ev.stopPropagation());
+  }
+
   // ------------------------------------------------------------------- menu
 
   /**
@@ -674,7 +772,7 @@ class Game {
     this.menuState = {
       view: 'menu', music: 0, sfx: this.audio.volume, fullscreen: document.fullscreenElement !== null && document.fullscreenElement !== undefined,
       pixelated: this.pixelated, hover: null, pressed: null, focus: 'back', tips: menuTips(strings),
-      badge: this.badge,
+      badge: this.badge, options: this.menuOptions(),
     };
     this.menuDrag = null;
     this.renderMenu();
@@ -718,7 +816,7 @@ class Game {
     host.addEventListener('pointermove', ev => {
       if (!this.menuOpen) return;
       const p = this.menuPoint(ev);
-      const widgets = menuWidgets(this.menuState.view, this.menuStrings());
+      const widgets = menuWidgets(this.menuState.view, this.menuStrings(), this.menuState.options);
       if (this.menuDrag === 'sfx') {
         const sfx = widgets.find(w => w.id === 'sfx');
         if (sfx) this.setSfx(sliderValue(sfx.rect, p.x), false);
@@ -736,7 +834,7 @@ class Game {
       this.audio.unlock();
       if (ev.button !== 0) return;
       const p = this.menuPoint(ev);
-      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings()), p.x, p.y);
+      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings(), this.menuState.options), p.x, p.y);
       if (!w) return;
       this.menuState.pressed = w.id;
       this.menuState.focus = w.id;
@@ -755,7 +853,7 @@ class Game {
       this.menuState.pressed = null;
       this.menuDrag = null;
       if (dragged === 'sfx') this.setSfx(this.audio.volume, true);
-      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings()), p.x, p.y);
+      const w = hitMenu(menuWidgets(this.menuState.view, this.menuStrings(), this.menuState.options), p.x, p.y);
       if (pressed && w && w.id === pressed && w.kind !== 'slider') this.menuActivate(w.id);
       else this.renderMenu();
     };
@@ -788,7 +886,7 @@ class Game {
    */
   private menuActivate(id: MenuWidgetId): void {
     const state = this.menuState;
-    const button = id === 'help' || id === 'main-menu' || id === 'back' || id === 'help-done' || id === 'leave' || id === 'cancel';
+    const button = id === 'help' || id === 'main-menu' || id === 'back' || id === 'help-done' || id === 'leave' || id === 'cancel' || id === 'install';
     if (button) this.audio.play({ key: 'button', gain: 1, rate: 1 });
     switch (id) {
       case 'fullscreen': {
@@ -809,6 +907,10 @@ class Game {
       case 'help-done':
         state.view = 'menu';
         state.focus = 'help';
+        break;
+      case 'install':
+        // The card opens above the menu (game paused); closing it comes back to the help view.
+        void this.showInstallCard('menu');
         break;
       case 'main-menu':
         state.view = 'confirm';
@@ -839,7 +941,7 @@ class Game {
    */
   private menuKey(code: string): boolean {
     const state = this.menuState;
-    const widgets = menuWidgets(state.view, this.menuStrings()).filter(w => w.enabled);
+    const widgets = menuWidgets(state.view, this.menuStrings(), state.options).filter(w => w.enabled);
     if (code === 'Escape') {
       if (state.view === 'help') this.menuActivate('help-done');
       else if (state.view === 'confirm') this.menuActivate('cancel');

@@ -93,3 +93,50 @@ export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 Mo';
   return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} Mo`;
 }
+
+// ------------------------------------------------------------------ install guide (D-38 §1)
+
+/** What the install card says: nothing once installed, the browser prompt, or the platform's manual steps. */
+export type InstallGuidance = 'installed' | 'prompt' | 'ios-share' | 'mac-safari-dock' | 'none';
+
+export interface InstallEnv {
+  userAgent: string;
+  maxTouchPoints: number;
+  /** `navigator.standalone` (iOS home-screen app). */
+  standalone: boolean;
+  /** Matching `display-mode` media query: 'browser', 'standalone', 'fullscreen', 'minimal-ui'. */
+  displayMode: string;
+  /** A `beforeinstallprompt` event was received and kept. */
+  promptAvailable: boolean;
+}
+
+/**
+ * Pure platform rule: installed (standalone / fullscreen display mode or `navigator.standalone`) → nothing; a kept
+ * `beforeinstallprompt` (Chromium, Edge, Android) → « Installer Zuma »; iPhone / iPod / iPad, and iPadOS which
+ * announces a Mac but has several touch points → « Partager › Sur l'écran d'accueil »; Safari on macOS → « Fichier ›
+ * Ajouter au Dock »; anything else → nothing.
+ */
+export function installGuidance(env: InstallEnv): InstallGuidance {
+  if (env.standalone || env.displayMode === 'standalone' || env.displayMode === 'fullscreen') return 'installed';
+  if (env.promptAvailable) return 'prompt';
+  const ua = env.userAgent ?? '';
+  const mac = /Macintosh/.test(ua);
+  if (/iPhone|iPod|iPad/.test(ua) || (mac && env.maxTouchPoints > 1)) return 'ios-share';
+  if (mac && /Version\/[\d.]+.*Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS|OPR/.test(ua)) return 'mac-safari-dock';
+  return 'none';
+}
+
+/** The live environment for `installGuidance` (guarded: a missing API reads as « not installed »). */
+export function readInstallEnv(promptAvailable: boolean): InstallEnv {
+  const mode = (m: string): boolean => {
+    try { return typeof matchMedia === 'function' && matchMedia(`(display-mode: ${m})`).matches; } catch { return false; }
+  };
+  const nav = typeof navigator === 'undefined' ? null : navigator as Navigator & { standalone?: boolean };
+  return {
+    userAgent: nav?.userAgent ?? '',
+    maxTouchPoints: nav?.maxTouchPoints ?? 0,
+    standalone: nav?.standalone === true,
+    displayMode: mode('fullscreen') ? 'fullscreen' : mode('standalone') ? 'standalone' : mode('minimal-ui') ? 'minimal-ui' : 'browser',
+    promptAvailable,
+  };
+}
