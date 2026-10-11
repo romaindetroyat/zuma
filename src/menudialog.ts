@@ -42,7 +42,7 @@ export const MENU_LAYOUT = {
 
 /** Original string keys and their French fallbacks (strings.json values) for a pack-less build. */
 const MENU_STRINGS: Record<string, string> = {
-  MENU: 'MENU', HELP: 'Aide', MUSIC_VOLUME: 'Musique', SOUND_EFFECTS: 'Sons', FULLSCREEN: 'Plein écran',
+  MENU: 'MENU', OPTIONS: 'OPTIONS', HELP: 'Aide', MUSIC_VOLUME: 'Musique', SOUND_EFFECTS: 'Sons', FULLSCREEN: 'Plein écran',
   BACK_TO_MAIN_MENU: 'Retour au menu principal', BACK_TO_GAME: 'Retour à la partie', DONE: 'Terminé', LEAVE: 'Quitter', CANCEL: 'ANNULER',
   'LEAVE_GAME_?': 'Quitter la partie ?', 'QUIT_THE_GAME_?': 'Voulez-vous vraiment&cr;quitter la partie ?',
 };
@@ -57,6 +57,11 @@ export interface MenuOptions {
   install?: boolean;
   /** « Plein écran » (default true); false without the Fullscreen API (iPhone): the check disappears, « Pixels nets » keeps its place. */
   fullscreen?: boolean;
+  /**
+   * false: OPTIONS out of game, from the main menu (0x445310 with inGame = 0, spike 06 Q1) — title `OPTIONS`, no
+   * `BACK_TO_MAIN_MENU`, footer `DONE` « Terminé »; « Aide » stays. Default true (the in-game MENU).
+   */
+  inGame?: boolean;
 }
 /** « Installer » has no original string. */
 const INSTALL_LABEL = 'Installer';
@@ -98,8 +103,8 @@ export function menuWidgets(view: MenuView, strings: Record<string, string> | nu
     ...(options.fullscreen === false ? [] : [{ id: 'fullscreen' as const, kind: 'check' as const, rect: check(0), label: str('FULLSCREEN'), enabled: true }]),
     { id: 'pixels', kind: 'check', rect: check(1), label: PIXELS_LABEL, enabled: true },
     { id: 'help', kind: 'button', rect: button(L.button.help), label: str('HELP'), enabled: true },
-    { id: 'main-menu', kind: 'button', rect: button(L.button.mainMenu), label: str('BACK_TO_MAIN_MENU'), enabled: true },
-    { id: 'back', kind: 'button', rect: footer, label: str('BACK_TO_GAME'), enabled: true },
+    ...(options.inGame === false ? [] : [{ id: 'main-menu' as const, kind: 'button' as const, rect: button(L.button.mainMenu), label: str('BACK_TO_MAIN_MENU'), enabled: true }]),
+    { id: 'back', kind: 'button', rect: footer, label: str(options.inGame === false ? 'DONE' : 'BACK_TO_GAME'), enabled: true },
   ];
 }
 
@@ -194,7 +199,9 @@ export function composeMenuDialog(kit: MenuKit | null, state: MenuState, canvas?
   const widgets = menuWidgets(state.view, strings, state.options);
   const painter = kit ? new NativeMenuPainter(ctx, kit) : new VectorMenuPainter(ctx);
   painter.frame();
-  const title = state.view === 'help' ? menuString(strings, 'HELP') : state.view === 'confirm' ? menuString(strings, 'LEAVE_GAME_?') : menuString(strings, 'MENU');
+  // Out of game (main menu) the dialog is titled OPTIONS, in game MENU (0x445310).
+  const menuTitle = state.options?.inGame === false ? 'OPTIONS' : 'MENU';
+  const title = state.view === 'help' ? menuString(strings, 'HELP') : state.view === 'confirm' ? menuString(strings, 'LEAVE_GAME_?') : menuString(strings, menuTitle);
   painter.title(title);
   if (state.view === 'help') painter.helpText(state);
   if (state.view === 'confirm') painter.confirmText(menuString(strings, 'QUIT_THE_GAME_?'));

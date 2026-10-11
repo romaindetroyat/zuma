@@ -278,7 +278,7 @@ test('drawWelcome: 0x43d1a0 order — sky ×3, back, pupils, lids, additive glow
   assert.deepEqual(sky, [2 - 520, 2, 2 + 520], 'o = (16 >> 3) mod 520 = 2');
   const glow = images(ctx).find(c => c.args[0].name === 'glow');
   assert.equal(glow.composite, 'lighter', 'additive glow');
-  assert.ok(Math.abs(glow.alpha - 75 / 255) < 0.01, 'glow alpha from mmGlow');
+  assert.equal(glow.alpha, (await W()).mmGlow(16).alpha, 'glow alpha from mmGlow');
   const col = name => images(ctx).find(c => c.args[0].name === name).args[1];
   const stone = id => MM.stones.find(s => s.id === id);
   assert.equal(col('gauntlet'), 0, 'a disabled stone ignores the hover');

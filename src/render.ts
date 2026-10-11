@@ -183,6 +183,19 @@ export class Renderer {
     this.storeScale = scale;
   }
 
+  /**
+   * Draws a full-screen scene (welcome, adventure, ending) in logical 640 × 480 units at the backing-store scale: the
+   * same transform and smoothing as `draw()`, then `paint(ctx)`; the context state is restored afterwards.
+   */
+  drawScene(paint: (ctx: CanvasRenderingContext2D) => void): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.setTransform(this.storeScale, 0, 0, this.storeScale, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    paint(ctx);
+    ctx.restore();
+  }
+
   /** Returns the HUD button under canvas coordinates, if any. */
   hitTest(x: number, y: number): HudButton | null {
     const buttons = this.assets?.menubar ? ORIGINAL_BUTTONS : VECTOR_BUTTONS;
