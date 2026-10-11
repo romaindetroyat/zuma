@@ -232,7 +232,8 @@ test('shell and bundle: no DOM menu panel, .menu-picture without url(, menudialo
   const build = read('tools/build.mjs');
   // R2.0.20: pwa after original (plan 05-14).
   // R2.0.21: progress after menudialog (plan 06-02).
-  assert.match(build, /const MODULES = \['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'main'\]/);
+  // R2.0.21 (D-01): welcome after progress (plan 06-03).
+  assert.match(build, /const MODULES = \['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'welcome', 'main'\]/);
   assert.match(read('public/sw.js'), /\.\/js\/menudialog\.js/);
   const main = read('.compiled/main.js');
   assert.match(main, /composeMenuDialog\(/);
