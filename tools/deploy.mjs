@@ -24,8 +24,9 @@
  *
  * Authentication: in the cloud session the egress proxy injects the API token on api.cloudflare.com (no header is
  * sent); elsewhere CLOUDFLARE_API_TOKEN (and CLOUDFLARE_ACCOUNT_ID with several accounts) is read from the environment.
- * Private configuration: private_assets/deploy.json = { "project": "zuma", "allow": [addresses], "pinIdpApps": [names] }
- * (git-ignored; no address, account id or team name lives in the repository).
+ * Private configuration: private_assets/deploy.json = { "project": "zuma", "allow": [addresses], "pinIdpApps": [names],
+ * "players": { "<address>": "<first name>" } } (git-ignored; no address, name, account id or team name lives in the
+ * repository). Every `players` address is allowed too; the worker answers `api/me` with its first name (D-12).
  *
  * Guarantees: every step reads before writing and reads back after; an existing object that differs is reported as a
  * conflict and never rewritten; the Access applications exist and are read back before any content is uploaded; the
@@ -39,7 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkArtifact, uploadAndDeploy } from './pagesupload.mjs';
-import { blobFiles, D1_BINDING, generateWorker, workerManifest } from './d1worker.mjs';
+import { blobFiles, D1_BINDING, generateWorker, playerNames, workerManifest } from './d1worker.mjs';
 import {
   bindingBody, bindingOk, COMPATIBILITY_DATE, DATABASE_NAME, deployedOk, deployWorker, findDatabase, planD1,
   productionDeployment, queryPath, readBlobs, ROW_BUDGET, SCHEMA, uploadBlobs, workerMarker,
@@ -256,16 +257,19 @@ function permissionFor(p) {
 // ------------------------------------------------------------ run
 
 /** Private configuration, or { error } (French). */
-function readConfig(root) {
+export function readConfig(root) {
   const file = path.join(root, 'private_assets', 'deploy.json');
   const hint = 'private_assets/deploy.json absent ou incomplet : créez { "project": "zuma", "allow": ["votre adresse"] } (dossier ignoré par Git).';
   let cfg;
   try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { error: hint }; }
-  const allow = Array.isArray(cfg.allow) ? emailsOf(cfg.allow) : [];
+  // D-12: every address of `players` ({ "<e-mail>": "<first name>" }) is also allowed.
+  const players = cfg.players ?? {};
+  try { playerNames(players); } catch (e) { return { error: `${hint} (${e.message.replace(/ ; worker non généré\.$/, '')})` }; }
+  const allow = emailsOf([...(Array.isArray(cfg.allow) ? cfg.allow : []), ...Object.keys(players)]);
   if (allow.length === 0 || !allow.every(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) return { error: hint };
   if (typeof cfg.project !== 'string' || !/^[a-z0-9][a-z0-9-]{0,57}$/.test(cfg.project)) return { error: `${hint} (nom de projet invalide)` };
   if (cfg.pinIdpApps !== undefined && !(Array.isArray(cfg.pinIdpApps) && cfg.pinIdpApps.every(n => typeof n === 'string'))) return { error: `${hint} (pinIdpApps : liste de noms)` };
-  return { project: cfg.project, allow, pinIdpApps: cfg.pinIdpApps ?? null };
+  return { project: cfg.project, allow, pinIdpApps: cfg.pinIdpApps ?? null, players };
 }
 
 /** The main Access app of `host` (covers `host` and `*.host`), or undefined. */
@@ -351,7 +355,7 @@ export async function run(argv, deps = {}) {
   let cfg = readConfig(root);
   if (cfg.error) {
     if (mode !== 'dry') { log(cfg.error); return 1; }
-    cfg = { project: 'zuma', allow: ['joueur@example.org'], pinIdpApps: null };
+    cfg = { project: 'zuma', allow: ['joueur@example.org'], pinIdpApps: null, players: {} };
     log("configuration privée absente : valeurs d'exemple (simulation seulement).");
   }
   let version;
@@ -419,7 +423,7 @@ export async function run(argv, deps = {}) {
       if (!files) return null;
       const app = mainApp(state, hostOf(state.project, cfg.project));
       if (!app) return null;
-      const source = generateWorker(manifest, { build: info.build, access: { team, aud: mode === 'dry' ? DRY_RUN_AUD : app.aud } });
+      const source = generateWorker(manifest, { build: info.build, access: { team, aud: mode === 'dry' ? DRY_RUN_AUD : app.aud }, players: cfg.players });
       if (Buffer.byteLength(source) > WORKER_MAX_BYTES) throw new Error(`_worker.js de ${Buffer.byteLength(source)} octets : au-delà de ${WORKER_MAX_BYTES} octets.`);
       return { source, marker: workerMarker(source) };
     };
