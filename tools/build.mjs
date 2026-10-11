@@ -87,16 +87,18 @@ if (deploy) {
 if (standalone) {
   // Single-file build: modules are concatenated in dependency order with their
   // import/export statements stripped, styles inlined, assets referenced as data URLs.
+  // R2.0.22: every insertion goes through a replacer function — a replacement STRING expands `$'` / `$&` (records.js
+  // holds `'^[a-z0-9-]{1,40}$'`), which broke the single file.
   // `export { a } from './x.js';` re-exports must go too: a surviving `from` clause makes the single file fetch a module at runtime (R2.0.15).
   const strip = s => s.replace(/^import[^\n]*\n/gm, '').replace(/^export (?=(const|let|function|class|async function))/gm, '').replace(/^export \{[^}]*\}[^\n]*\n/gm, '');
   const js = MODULES.map(m => strip(fs.readFileSync(path.join(dist, 'js', `${m}.js`), 'utf8'))).join('\n');
   const css = fs.readFileSync(path.join(dist, 'public', 'style.css'), 'utf8');
   let html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')
-    .replace(/<link rel="stylesheet"[^>]*>/, `<style>\n${css}\n</style>`)
+    .replace(/<link rel="stylesheet"[^>]*>/, () => `<style>\n${css}\n</style>`)
     .replace(/<link rel="manifest"[^>]*>\n?/, '')
     .replace(/<link rel="apple-touch-icon"[^>]*>\n?/, '')
     .replace(/<link rel="icon"[^>]*image\/png"[^>]*>\n?/, '')
-    .replace(/<script type="module" src="js\/main.js"><\/script>/, `<script type="module">\n${js}\n</script>`);
+    .replace(/<script type="module" src="js\/main.js"><\/script>/, () => `<script type="module">\n${js}\n</script>`);
   if (packed) {
     const assets = {};
     const walk = dir => {
@@ -110,7 +112,7 @@ if (standalone) {
     const mime = { '.json': 'application/json', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.png': 'image/png', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.mo3': 'application/octet-stream', '.txt': 'text/plain;charset=utf-8' };
     const inline = Object.fromEntries(Object.entries(assets).map(([k, p]) => [k, `data:${mime[path.extname(p)] ?? 'application/octet-stream'};base64,${fs.readFileSync(p).toString('base64')}`]));
     // src/original.ts resolves every asset path through window.__ZUMA_ASSETS__ when present.
-    html = html.replace('<script type="module">', `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n</script>\n<script type="module">`);
+    html = html.replace('<script type="module">', () => `<script>\nwindow.__ZUMA_ASSETS__=${JSON.stringify(inline)};\n</script>\n<script type="module">`);
   }
   fs.mkdirSync(path.join(root, 'standalone'), { recursive: true });
   fs.writeFileSync(path.join(root, 'standalone', 'zuma-standalone.html'), html);
