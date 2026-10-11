@@ -101,3 +101,21 @@ test('baseline 2.0.20: ENGINE_VERSION and package.json agree', () => {
   assert.equal(pkg.version, '2.0.20');
   assert.match(pkg.description, /^Zuma R2\.0\.20 /);
 });
+
+// ------------------------------------------------------------ vue Aide : « Installer » (D-38 §1)
+
+test('help view: [help-done] alone by default; with { install: true } « Installer » left and « Terminé » right, confirm geometry', () => {
+  assert.deepEqual(menuWidgets('help', null).map(w => w.id), ['help-done']);
+  const widgets = menuWidgets('help', null, { install: true });
+  assert.deepEqual(widgets.map(w => w.id), ['install', 'help-done']);
+  const [install, done] = widgets;
+  assert.equal(install.label, 'Installer');
+  assert.equal(install.kind, 'button');
+  const L = MENU_LAYOUT;
+  assert.deepEqual(install.rect, { x: L.content.x, y: L.button.footer, w: L.confirm.buttonW, h: L.button.h });
+  assert.deepEqual(done.rect, { x: L.content.x + L.content.w - L.confirm.buttonW, y: L.button.footer, w: L.confirm.buttonW, h: L.button.h });
+  const f = L.frame;
+  for (const r of [install.rect, done.rect]) assert.ok(r.x >= f.x && r.x + r.w <= f.x + f.w && r.y + r.h <= f.y + f.h, 'inside the frame');
+  assert.ok(install.rect.x + install.rect.w < done.rect.x, 'disjoint');
+  assert.deepEqual(menuWidgets('menu', null, { install: true }).map(w => w.id), menuWidgets('menu', null).map(w => w.id), 'the option only touches the help view');
+});

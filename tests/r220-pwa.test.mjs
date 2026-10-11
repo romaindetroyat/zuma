@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 import { swSource, packFiles, packHash, deployError } from '../tools/swgen.mjs';
 import { updateReady, formatSize } from '../.compiled/pwa.js';
 
@@ -246,4 +247,150 @@ test('index.html update toast; main.js registers through pwa.ts; pwa.js writes n
   const css = read('public/style.css');
   const rule = css.match(/#update-toast button\s*\{[^}]*\}/);
   assert.ok(rule && /min-height:\s*44px/.test(rule[0]), 'toast buttons ≥ 44 px');
+});
+
+// ------------------------------------------------------------ installabilité (D-38 §1–3)
+
+/** Independent PNG reader: chunks with CRC check (own table), IHDR, inflated IDAT. */
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crcOf = buf => { let c = 0xffffffff; for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function readPng(file) {
+  const buf = fs.readFileSync(file);
+  assert.deepEqual([...buf.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], `${file}: PNG signature`);
+  let off = 8;
+  const chunks = [];
+  while (off < buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.subarray(off + 4, off + 8).toString('latin1');
+    const data = buf.subarray(off + 8, off + 8 + len);
+    assert.equal(buf.readUInt32BE(off + 8 + len), crcOf(buf.subarray(off + 4, off + 8 + len)), `${file}: CRC of ${type}`);
+    chunks.push({ type, data });
+    off += 12 + len;
+  }
+  assert.equal(chunks[0].type, 'IHDR');
+  assert.equal(chunks.at(-1).type, 'IEND');
+  const ihdr = chunks[0].data;
+  const w = ihdr.readUInt32BE(0), h = ihdr.readUInt32BE(4);
+  assert.deepEqual([ihdr[8], ihdr[9]], [8, 6], 'RGBA 8 bits');
+  const raw = zlib.inflateSync(Buffer.concat(chunks.filter(c => c.type === 'IDAT').map(c => c.data)));
+  assert.equal(raw.length, h * (1 + 4 * w), 'h × (1 + 4w) bytes');
+  const px = (x, y) => { const i = y * (1 + 4 * w) + 1 + 4 * x; return [...raw.subarray(i, i + 4)]; };
+  for (let y = 0; y < h; y++) assert.equal(raw[y * (1 + 4 * w)], 0, 'filter 0');
+  return { w, h, px };
+}
+const near = (a, b, tol = 6) => a.every((v, i) => Math.abs(v - b[i]) <= tol);
+
+test('PNG icons of dist/public: sizes, valid chunks, transparent / opaque corners, ball colours, maskable pattern in the safe zone', () => {
+  const BG = [0x12, 0x0c, 0x06, 255];
+  for (const [file, size, opaque] of [['icon-192.png', 192, false], ['icon-512.png', 512, false], ['icon-maskable-512.png', 512, true], ['apple-touch-icon.png', 180, true]]) {
+    const { w, h, px } = readPng(path.join('dist/public', file));
+    assert.deepEqual([w, h], [size, size], file);
+    if (opaque) assert.ok(near(px(0, 0), BG, 0), `${file}: opaque #120c06 corner`);
+    else assert.equal(px(0, 0)[3], 0, `${file}: transparent corner`);
+    assert.ok(near(px(size >> 1, size >> 1), BG, 2), `${file}: centre on the dark background`);
+    // Blue ball centre (40, 50) of the 128 px design, scaled (× 0.8 around the centre for the opaque icons).
+    const map = v => opaque ? (12.8 + 0.8 * v) * size / 128 : v * size / 128;
+    assert.ok(near(px(Math.round(map(40)), Math.round(map(54))), [0x19, 0x80, 0xff, 255], 12), `${file}: blue ball`);
+    if (file === 'icon-maskable-512.png') {
+      for (let y = 0; y < h; y += 4) for (let x = 0; x < w; x += 4) {
+        if (near(px(x, y), BG, 3)) continue;
+        assert.ok(Math.hypot(x - w / 2, y - h / 2) <= 0.4 * w, `pattern pixel (${x}, ${y}) inside the 80 % safe zone`);
+      }
+    }
+  }
+});
+
+test('manifest: relative id / start_url / scope resolve under any base; PNG icons present; fullscreen, landscape, French', () => {
+  const m = JSON.parse(read('public/manifest.webmanifest'));
+  const at = 'https://h.example/zuma/public/manifest.webmanifest';
+  const start = new URL(m.start_url, at);
+  assert.equal(start.href, 'https://h.example/zuma/index.html');
+  assert.equal(new URL(m.scope, at).href, 'https://h.example/zuma/');
+  assert.equal(new URL(m.id, start).href, 'https://h.example/zuma/', 'id resolved against start_url');
+  assert.equal(m.display, 'fullscreen');
+  assert.deepEqual(m.display_override, ['fullscreen', 'standalone']);
+  assert.equal(m.orientation, 'landscape');
+  assert.equal(m.lang, 'fr');
+  assert.equal(m.dir, 'ltr');
+  assert.deepEqual(m.categories, ['games']);
+  const icon = (src, purpose) => m.icons.find(i => i.src === src && i.purpose === purpose);
+  assert.equal(icon('icon-192.png', 'any')?.sizes, '192x192');
+  assert.equal(icon('icon-512.png', 'any')?.sizes, '512x512');
+  assert.equal(icon('icon-maskable-512.png', 'maskable')?.sizes, '512x512');
+  assert.ok(icon('icon.svg', 'any'), 'SVG kept');
+  for (const i of m.icons) assert.ok(fs.existsSync(path.join('dist/public', i.src)), `${i.src} built`);
+  const sw = read('dist/sw.js');
+  for (const f of ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png']) assert.match(sw, new RegExp(`\\./public/${f.replace('.', '\\.')}`), `${f} precached`);
+});
+
+test('index.html head: Apple metadata, PNG icons, viewport for the notch; install card without any share button', () => {
+  const html = read('index.html');
+  assert.match(html, /<link rel="apple-touch-icon" href="public\/apple-touch-icon\.png" sizes="180x180">/);
+  assert.match(html, /<link rel="icon" href="public\/icon-192\.png" sizes="192x192" type="image\/png">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+  assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-title" content="Zuma">/);
+  assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">/);
+  assert.match(html, /id="install-card"/);
+  assert.match(html, /id="install-button"[^>]*>Installer Zuma</);
+  assert.match(html, /id="install-ios"[^>]*>[\s\S]*?Touchez[\s\S]*?class="share-glyph"[\s\S]*?Partager puis « Sur l’écran d’accueil »/);
+  assert.match(html, /id="install-mac"[^>]*>[\s\S]*?Fichier › Ajouter au Dock/);
+  assert.match(html, /Ouvrez l’app une première fois avec une connexion : elle restera ensuite disponible hors ligne\./);
+  assert.match(html, /id="install-play"[^>]*>Jouer</);
+  assert.match(html, /id="install-close"/);
+  assert.doesNotMatch(html, /Partager le jeu|navigator\.share|id="share/);
+  assert.doesNotMatch(read('.compiled/main.js'), /navigator\.share/);
+});
+
+test('standalone strips the manifest and the PNG icon links (data-URL single file)', () => {
+  const build = read('tools/build.mjs');
+  assert.match(build, /\.replace\(\/<link rel="apple-touch-icon"\[\^>\]\*>\\n\?\/, ''\)/);
+  assert.match(build, /\.replace\(\/<link rel="icon"\[\^>\]\*image\\\/png"\[\^>\]\*>\\n\?\/, ''\)/);
+  if (fs.existsSync('standalone/zuma-standalone.html')) {
+    const html = read('standalone/zuma-standalone.html');
+    if (html.includes('R2.0.20') || html.includes("'2.0.20'")) {
+      assert.doesNotMatch(html, /<link rel="manifest"/);
+      assert.doesNotMatch(html, /<link rel="apple-touch-icon"/);
+      assert.doesNotMatch(html, /icon-192\.png/);
+    }
+  }
+});
+
+// Fixtures: user agents of the D-38 platforms.
+const UA = {
+  iphoneSafari: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+  iphoneChrome: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.6312.52 Mobile/15E148 Safari/604.1',
+  ipad: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  macSafari: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  macChrome: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  winEdge: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+  android: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+};
+
+test('installGuidance: one instruction per platform, nothing once installed', async () => {
+  const { installGuidance } = await import('../.compiled/pwa.js');
+  const env = (userAgent, maxTouchPoints, extra = {}) => ({ userAgent, maxTouchPoints, standalone: false, displayMode: 'browser', promptAvailable: false, ...extra });
+  const cases = [
+    [env(UA.iphoneSafari, 5), 'ios-share'],
+    [env(UA.iphoneChrome, 5), 'ios-share'],
+    [env(UA.ipad, 5), 'ios-share', 'iPadOS announces a Mac: maxTouchPoints > 1'],
+    [env(UA.macSafari, 0), 'mac-safari-dock'],
+    [env(UA.macChrome, 0), 'none'],
+    [env(UA.macChrome, 0, { promptAvailable: true }), 'prompt'],
+    [env(UA.winEdge, 0, { promptAvailable: true }), 'prompt'],
+    [env(UA.android, 5, { promptAvailable: true }), 'prompt'],
+    [env(UA.android, 5), 'none'],
+  ];
+  for (const [e, expected, note] of cases) {
+    assert.equal(installGuidance(e), expected, note ?? e.userAgent);
+    assert.equal(installGuidance({ ...e, displayMode: 'standalone' }), 'installed', `${expected} installed (standalone)`);
+    assert.equal(installGuidance({ ...e, displayMode: 'fullscreen' }), 'installed', `${expected} installed (fullscreen)`);
+    assert.equal(installGuidance({ ...e, standalone: true }), 'installed', `${expected} installed (navigator.standalone)`);
+  }
+  const main = read('.compiled/main.js');
+  assert.match(main, /'beforeinstallprompt'/);
+  assert.match(main, /'appinstalled'/);
+  assert.match(main, /installGuidance\(/);
+  assert.match(main, /readInstallEnv\(/);
 });
