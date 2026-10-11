@@ -274,3 +274,394 @@ test('uploadAndDeploy retries a transient upload failure (5 attempts) and reload
   const bearers = expired.calls.filter(c => c.path.startsWith('/pages/assets/')).map(c => c.opts.bearer);
   assert.ok(bearers.every(b => b === expired.jwt), 'asset calls use the fresh JWT');
 });
+
+// ============================================================ tools/deploy.mjs (CLI, hors réseau)
+
+const { planProvision, isAccessRedirect, redact, run } = await import('../tools/deploy.mjs');
+
+const ACC = '0123456789abcdef0123456789abcdef';
+const A = `/accounts/${ACC}`;
+const AUTH = 'team.cloudflareaccess.com';
+const ME = 'joueur@example.org';
+const HOST = 'zuma-x.pages.dev';
+const ALLOW = 'Zuma — joueurs';
+const BYPASS = 'Zuma — fichiers publics';
+
+/** An existing app of the account (shape of GET /access/apps), with the shared reusable policy expanded. */
+const otherApp = (name, uri, extra = {}) => ({
+  id: `app-${name}`, uid: `app-${name}`, type: 'self_hosted', name, aud: 'f'.repeat(64), created_at: '2026-09-17T12:27:22Z',
+  updated_at: '2026-09-17T12:27:22Z', domain: uri, self_hosted_domains: [uri], destinations: [{ type: 'public', uri }],
+  app_launcher_visible: true, allowed_idps: [], tags: [], auto_redirect_to_identity: false,
+  policies: [{ id: 'pol-shared', name: 'Partagée', decision: 'allow', include: [{ email: { email: ME } }], exclude: [], require: [], reusable: true, precedence: 1 }],
+  session_duration: '24h', enable_binding_cookie: false, http_only_cookie_attribute: false, options_preflight_bypass: false, ...extra,
+});
+
+/**
+ * Simulated Cloudflare account (Pages + Access + direct upload) over an in-memory state; records every call.
+ * Shapes follow the real GET responses (ids, expanded policies with precedence, app_count on reusable policies).
+ */
+function fakeCloud({ accounts = 1, project = null, idps = [{ id: 'idp-cf', type: 'cloudflare', name: '' }], policies = [], apps = [], environment = 'production', errorWith = null } = {}) {
+  const s = { project, idps: structuredClone(idps), policies: structuredClone(policies), apps: structuredClone(apps), n: 0 };
+  const calls = [];
+  const jwt = makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  const expand = app => ({ ...app, policies: app.policies.map(p => ({ ...(s.policies.find(q => q.id === p.id) ?? p), precedence: p.precedence })) });
+  const api = async (method, p, o = {}) => {
+    calls.push({ method, path: p, body: o.body, form: o.form, bearer: o.bearer });
+    if (errorWith && errorWith.method === method && p.startsWith(errorWith.prefix)) throw fail(errorWith.status, `Authentication error on ${p} with Authorization: Bearer secret-token-123456`);
+    if (p === '/user/tokens/verify') return { status: 'active' };
+    if (p === '/accounts') return Array.from({ length: accounts }, (_, i) => ({ id: i === 0 ? ACC : `${i}`.repeat(32), name: `Compte ${i}` }));
+    if (p === `${A}/access/organizations`) return { auth_domain: AUTH, name: 'team' };
+    if (p === `${A}/pages/projects/zuma` && method === 'GET') { if (!s.project) throw fail(404, 'Project not found'); return s.project; }
+    if (p === `${A}/pages/projects` && method === 'POST') {
+      s.project = { name: o.body.name, subdomain: HOST, production_branch: o.body.production_branch, latest_deployment: null };
+      return s.project;
+    }
+    if (p === `${A}/access/identity_providers`) {
+      if (method === 'GET') return s.idps;
+      const idp = { id: 'idp-otp', ...o.body };
+      s.idps.push(idp);
+      return idp;
+    }
+    if (p === `${A}/access/policies`) {
+      if (method === 'GET') return s.policies.map(q => ({ ...q, app_count: s.apps.filter(a => a.policies.some(x => x.id === q.id)).length }));
+      const pol = { id: `pol-${++s.n}`, reusable: true, exclude: [], require: [], ...o.body };
+      s.policies.push(pol);
+      return pol;
+    }
+    if (p === `${A}/access/apps`) {
+      if (method === 'GET') return s.apps.map(expand);
+      const uri = o.body.destinations[0].uri;
+      const app = { id: `app-new-${++s.n}`, uid: 'u', aud: 'e'.repeat(64), created_at: 'now', updated_at: 'now', domain: uri, self_hosted_domains: o.body.destinations.map(d => d.uri), tags: [], ...o.body };
+      s.apps.push(app);
+      return expand(app);
+    }
+    const one = p.match(new RegExp(`^${A}/access/apps/([^/]+)$`));
+    if (one) {
+      const i = s.apps.findIndex(a => a.id === one[1]);
+      if (i < 0) throw fail(404, 'no app');
+      if (method === 'GET') return expand(s.apps[i]);
+      if (method === 'PUT') {
+        const { id, uid, aud, created_at } = s.apps[i];
+        s.apps[i] = { ...o.body, id, uid, aud, created_at, updated_at: 'later', self_hosted_domains: o.body.destinations.map(d => d.uri) };
+        return expand(s.apps[i]);
+      }
+    }
+    if (p === `${A}/pages/projects/zuma/upload-token`) return { jwt };
+    if (p === '/pages/assets/check-missing') return o.body.hashes;
+    if (p === '/pages/assets/upload' || p === '/pages/assets/upsert-hashes') return true;
+    if (p === `${A}/pages/projects/zuma/deployments` && method === 'POST') {
+      s.project.latest_deployment = { id: 'dep-1', url: `https://abc12345.${HOST}` };
+      return { id: 'dep-1', url: `https://abc12345.${HOST}`, environment, latest_stage: { name: 'queued', status: 'active' } };
+    }
+    if (p === `${A}/pages/projects/zuma/deployments/dep-1`) return { id: 'dep-1', url: `https://abc12345.${HOST}`, environment, latest_stage: { name: 'deploy', status: 'success' } };
+    throw fail(404, `unexpected ${method} ${p}`);
+  };
+  return { api, calls, s, jwt };
+}
+
+/** Temporary project root: package.json, private_assets/deploy.json, a --deploy dist/. */
+function root({ config = { project: 'zuma', allow: [ME] }, dist = true } = {}) {
+  const dir = tmp();
+  write(dir, 'package.json', JSON.stringify({ version: '2.0.20' }));
+  if (config) write(dir, 'private_assets/deploy.json', JSON.stringify(config));
+  if (dist) fs.cpSync(artefact(), path.join(dir, 'dist'), { recursive: true });
+  return dir;
+}
+
+/** Simulated network for --verify: every protected URL redirects to Access, /public/ answers 200. */
+function protectedFetch({ exposed = [], unreachable = false } = {}) {
+  const seen = [];
+  const fetch = async (url, init = {}) => {
+    seen.push({ url: String(url), redirect: init.redirect });
+    if (unreachable) throw new TypeError('fetch failed', { cause: new Error('CONNECT tunnel failed, response 403') });
+    const u = new URL(url);
+    if (exposed.some(x => u.pathname === x)) return new Response('{"stages":[]}', { status: 200, headers: { 'content-type': 'application/json' } });
+    if (u.pathname.startsWith('/public/') && !u.pathname.includes('..')) return new Response('{"name":"Zuma"}', { status: 200, headers: { 'content-type': 'application/manifest+json' } });
+    return new Response(null, { status: 302, headers: { location: `https://${AUTH}/cdn-cgi/access/login/${u.host}?redirect_url=${encodeURIComponent(u.pathname)}` } });
+  };
+  return { fetch, seen };
+}
+
+async function exec(argv, cloud, { dir = root(), fetch = protectedFetch().fetch, env = {} } = {}) {
+  const out = [];
+  const code = await run(argv, { api: cloud.api, fetch, log: m => out.push(m), env, root: dir, sleep: noSleep });
+  return { code, out: out.join('\n'), lines: out.join('\n').split('\n') };
+}
+
+const writes = calls => calls.filter(c => c.method !== 'GET' && !c.path.startsWith('/pages/assets/') && !c.path.endsWith('/deployments'));
+
+test('planProvision: empty state → the six actions in order; complete state → none', () => {
+  const empty = planProvision({ project: null, idps: [{ id: 'idp-cf', type: 'cloudflare' }], policies: [], apps: [] }, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' });
+  assert.deepEqual(empty.conflict, []);
+  assert.deepEqual(empty.actions.map(a => a.kind), ['create-project', 'add-otp', 'create-allow-policy', 'create-allow-app', 'create-bypass-policy', 'create-bypass-app']);
+  const state = {
+    project: { name: 'zuma', subdomain: HOST, production_branch: 'main' },
+    idps: [{ id: 'idp-cf', type: 'cloudflare' }, { id: 'idp-otp', type: 'onetimepin' }],
+    policies: [
+      { id: 'p1', name: ALLOW, decision: 'allow', include: [{ email: { email: ME } }], exclude: [], require: [] },
+      { id: 'p2', name: BYPASS, decision: 'bypass', include: [{ everyone: {} }], exclude: [], require: [] },
+    ],
+    apps: [
+      { id: 'a1', name: 'Zuma', domain: HOST, destinations: [{ type: 'public', uri: HOST }, { type: 'public', uri: `*.${HOST}` }], session_duration: '730h', allowed_idps: ['idp-otp'], policies: [{ id: 'p1', precedence: 1 }] },
+      { id: 'a2', name: BYPASS, domain: `${HOST}/public`, destinations: [{ type: 'public', uri: `${HOST}/public` }], policies: [{ id: 'p2', precedence: 1 }] },
+    ],
+  };
+  const done = planProvision(state, { project: 'zuma', allow: [ME], host: HOST });
+  assert.deepEqual(done, { actions: [], conflict: [] });
+
+  const variants = {
+    'production branch': s => { s.project.production_branch = 'dev'; },
+    'session': s => { s.apps[0].session_duration = '24h'; },
+    'policy include': s => { s.policies[0].include.push({ email: { email: 'autre@example.org' } }); },
+    'policy exclude': s => { s.policies[0].exclude = [{ everyone: {} }]; },
+    'app policy': s => { s.apps[0].policies = [{ id: 'p2', precedence: 1 }]; },
+    'idps without OTP': s => { s.apps[0].allowed_idps = ['idp-cf']; },
+    'bypass outside /public': s => { s.apps[1].destinations = [{ type: 'public', uri: `${HOST}/assets` }]; s.apps[1].domain = `${HOST}/assets`; },
+    'main app on one host only': s => { s.apps[0].destinations = [{ type: 'public', uri: HOST }]; },
+  };
+  for (const [name, mutate] of Object.entries(variants)) {
+    const st = structuredClone(state);
+    mutate(st);
+    const res = planProvision(st, { project: 'zuma', allow: [ME], host: HOST });
+    assert.ok(res.conflict.length > 0, `${name} → conflict`);
+    assert.deepEqual(res.actions, [], `${name} → no action`);
+  }
+});
+
+test('planProvision (D-43): existing apps with empty allowed_idps are pinned to the current providers before OTP, only when listed', () => {
+  const state = { project: null, idps: [{ id: 'idp-cf', type: 'cloudflare' }], policies: [], apps: [otherApp('Prisme', 'app.example.org'), otherApp('ssh', 'ssh.example.org')] };
+  const listed = planProvision(state, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev', pinIdpApps: ['Prisme', 'ssh'] });
+  assert.deepEqual(listed.conflict, []);
+  assert.deepEqual(listed.actions.map(a => a.kind), ['create-project', 'pin-idp', 'pin-idp', 'add-otp', 'create-allow-policy', 'create-allow-app', 'create-bypass-policy', 'create-bypass-app']);
+  assert.deepEqual(listed.actions[1], { kind: 'pin-idp', id: 'app-Prisme', name: 'Prisme', idps: ['idp-cf'] });
+  const unlisted = planProvision(state, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' });
+  assert.ok(unlisted.conflict.length > 0 && unlisted.actions.length === 0, 'unlisted apps → conflict, nothing written');
+  const pinned = structuredClone(state);
+  pinned.apps[1].allowed_idps = ['idp-cf'];
+  const differs = planProvision(pinned, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev', pinIdpApps: ['Prisme', 'ssh'] });
+  assert.ok(differs.conflict.length > 0 && differs.actions.length === 0, 'an app no longer empty → conflict');
+  const withOtp = structuredClone(state);
+  withOtp.idps.push({ id: 'idp-otp', type: 'onetimepin' });
+  assert.ok(!planProvision(withOtp, { project: 'zuma', allow: [ME], host: 'zuma.pages.dev' }).actions.some(a => a.kind === 'pin-idp'), 'OTP present → no pin');
+});
+
+test('run --plan: GET only, « actions prévues : N » then one « - <action> » line per action', async () => {
+  const cloud = fakeCloud();
+  const { code, lines } = await exec(['--plan'], cloud);
+  assert.equal(code, 0);
+  assert.ok(cloud.calls.every(c => c.method === 'GET'), 'GET only');
+  const i = lines.indexOf('actions prévues : 6');
+  assert.ok(i >= 0, lines.join('\n'));
+  assert.deepEqual(lines.slice(i + 1, i + 7), ['- create-project', '- add-otp', '- create-allow-policy', '- create-allow-app', '- create-bypass-policy', '- create-bypass-app']);
+});
+
+
+test('run (full) on an empty account: project → OTP → policies → apps → upload; no content call before the main app is read back', async () => {
+  const cloud = fakeCloud();
+  const { code, out } = await exec([], cloud);
+  assert.equal(code, 0, out);
+  const sig = c => `${c.method} ${c.path}`;
+  const idx = pred => cloud.calls.findIndex(pred);
+  const project = idx(c => sig(c) === `POST ${A}/pages/projects`);
+  const otp = idx(c => sig(c) === `POST ${A}/access/identity_providers`);
+  const allowPol = idx(c => sig(c) === `POST ${A}/access/policies` && c.body.decision === 'allow');
+  const mainApp = idx(c => sig(c) === `POST ${A}/access/apps` && c.body.name === 'Zuma');
+  const bypassPol = idx(c => sig(c) === `POST ${A}/access/policies` && c.body.decision === 'bypass');
+  const bypassApp = idx(c => sig(c) === `POST ${A}/access/apps` && c.body.name === BYPASS);
+  const readBack = cloud.calls.findIndex((c, i) => i > mainApp && c.method === 'GET' && c.path.startsWith(`${A}/access/apps`));
+  const content = idx(c => c.path.startsWith('/pages/assets/') || c.path.includes('/deployments') || c.path.endsWith('/upload-token'));
+  assert.ok(project >= 0 && project < otp && otp < allowPol && allowPol < mainApp && mainApp < bypassPol && bypassPol < bypassApp, 'write order');
+  assert.ok(readBack > mainApp && content > readBack && content > bypassApp, 'content only after the Access apps are created and read back');
+  // Exact bodies (shape of the GET of an existing app).
+  assert.deepEqual(cloud.calls[project].body, { name: 'zuma', production_branch: 'main' });
+  assert.deepEqual(cloud.calls[otp].body, { name: 'One-time PIN', type: 'onetimepin', config: {} });
+  assert.deepEqual(cloud.calls[allowPol].body, { name: ALLOW, decision: 'allow', include: [{ email: { email: ME } }], exclude: [], require: [], session_duration: '730h' });
+  assert.deepEqual(cloud.calls[mainApp].body, {
+    type: 'self_hosted', name: 'Zuma', domain: HOST,
+    destinations: [{ type: 'public', uri: HOST }, { type: 'public', uri: `*.${HOST}` }],
+    session_duration: '730h', allowed_idps: ['idp-otp'], auto_redirect_to_identity: true, app_launcher_visible: false,
+    policies: [{ id: cloud.calls[allowPol] && cloud.s.policies.find(p => p.name === ALLOW).id, precedence: 1 }],
+  });
+  assert.deepEqual(cloud.calls[bypassPol].body, { name: BYPASS, decision: 'bypass', include: [{ everyone: {} }], exclude: [], require: [] });
+  assert.deepEqual(cloud.calls[bypassApp].body, {
+    type: 'self_hosted', name: BYPASS, domain: `${HOST}/public`, destinations: [{ type: 'public', uri: `${HOST}/public` }],
+    app_launcher_visible: false, policies: [{ id: cloud.s.policies.find(p => p.name === BYPASS).id, precedence: 1 }],
+  });
+  const deploy = cloud.calls.find(c => sig(c) === `POST ${A}/pages/projects/zuma/deployments`);
+  assert.equal(deploy.form.get('branch'), 'main');
+  assert.match(deploy.form.get('commit_message'), /^R2\.0\.20 /);
+  assert.match(out, new RegExp(`https://${HOST.replace(/\./g, '\\.')}`), 'production URL in the log');
+  assert.match(out, /abc12345\.zuma-x\.pages\.dev/, 'deployment URL in the log');
+  assert.match(out, /abcdef012345/, 'pack fingerprint in the log');
+
+  // Second run on the resulting state: no provisioning write, and --plan announces nothing.
+  const before = cloud.calls.length;
+  const again = await exec([], cloud);
+  assert.equal(again.code, 0, again.out);
+  assert.deepEqual(writes(cloud.calls.slice(before)), [], 'no provisioning write the second time');
+  assert.match(again.out, /déjà présent/);
+  const plan = await exec(['--plan'], cloud);
+  assert.ok(plan.lines.includes('actions prévues : 0'), plan.out);
+});
+
+test('run (D-43): listed existing apps get allowed_idps = [cloudflare] before OTP, nothing else changes, previous value logged', async () => {
+  const prisme = otherApp('Prisme', 'app.example.org', { session_duration: '730h' });
+  const cloud = fakeCloud({ apps: [prisme, otherApp('ssh', 'ssh.example.org'), otherApp('label', 'label.example.org')], policies: [prisme.policies[0]] });
+  const dir = root({ config: { project: 'zuma', allow: [ME], pinIdpApps: ['Prisme', 'ssh', 'label'] } });
+  const beforeApps = structuredClone(cloud.s.apps);
+  const { code, out } = await exec([], cloud, { dir });
+  assert.equal(code, 0, out);
+  const puts = cloud.calls.filter(c => c.method === 'PUT');
+  assert.deepEqual(puts.map(c => c.path), ['Prisme', 'ssh', 'label'].map(n => `${A}/access/apps/app-${n}`));
+  const otp = cloud.calls.findIndex(c => c.method === 'POST' && c.path === `${A}/access/identity_providers`);
+  assert.ok(cloud.calls.lastIndexOf(puts[2]) < otp, 'pinned before the One-time PIN is added');
+  for (const [i, put] of puts.entries()) {
+    const was = beforeApps[i];
+    assert.deepEqual(put.body.allowed_idps, ['idp-cf']);
+    assert.deepEqual(put.body.policies, [{ id: 'pol-shared', precedence: 1 }]);
+    for (const k of ['id', 'uid', 'aud', 'created_at', 'updated_at', 'self_hosted_domains']) assert.ok(!(k in put.body), `${k} not sent`);
+    for (const k of ['name', 'type', 'domain', 'destinations', 'session_duration', 'app_launcher_visible', 'auto_redirect_to_identity', 'tags', 'enable_binding_cookie', 'http_only_cookie_attribute', 'options_preflight_bypass']) {
+      assert.deepEqual(put.body[k], was[k], `${was.name}.${k} unchanged`);
+    }
+    const now = cloud.s.apps.find(a => a.id === was.id);
+    assert.deepEqual({ ...now, allowed_idps: [], updated_at: was.updated_at }, was, `${was.name}: only allowed_idps changed`);
+  }
+  assert.match(out, /Prisme.*allowed_idps \[\] → \[/);
+  assert.match(out, /remettre \[\]/);
+  // Idempotent: nothing to pin any more.
+  const plan = await exec(['--plan'], cloud, { dir });
+  assert.ok(plan.lines.includes('actions prévues : 0'), plan.out);
+  // Without the explicit list: conflict, nothing written.
+  const fresh = fakeCloud({ apps: [otherApp('Prisme', 'app.example.org')] });
+  const refused = await exec([], fresh);
+  assert.equal(refused.code, 1);
+  assert.deepEqual(writes(fresh.calls), []);
+  assert.match(refused.out, /pinIdpApps/);
+});
+
+test('no mode ever sends DELETE / PATCH; PUT only on listed existing Access apps', async () => {
+  const cloud = fakeCloud({ apps: [otherApp('Prisme', 'app.example.org')] });
+  const dir = root({ config: { project: 'zuma', allow: [ME], pinIdpApps: ['Prisme'] } });
+  for (const argv of [['--plan'], [], ['--verify'], ['--rollback-plan'], ['--plan']]) await exec(argv, cloud, { dir });
+  assert.ok(!cloud.calls.some(c => c.method === 'DELETE' || c.method === 'PATCH'));
+  const puts = cloud.calls.filter(c => c.method === 'PUT');
+  assert.deepEqual(puts.map(c => c.path), [`${A}/access/apps/app-Prisme`], 'one PUT, on the listed app only');
+});
+
+test('run --rollback-plan: GET only, prints the ordered removal (project first) with DELETE endpoints and dashboard paths', async () => {
+  const cloud = fakeCloud();
+  await exec([], cloud);
+  const n = cloud.calls.length;
+  const { code, out, lines } = await exec(['--rollback-plan'], cloud);
+  assert.equal(code, 0);
+  assert.ok(cloud.calls.slice(n).every(c => c.method === 'GET'));
+  const at = prefix => lines.findIndex(l => l.startsWith(prefix));
+  assert.ok(at('1. supprimer le projet Pages (contenu retiré d\'abord)') >= 0, out);
+  assert.ok(at('2. supprimer l\'application principale et l\'application Bypass') > at('1. '));
+  assert.ok(at(`3. supprimer les politiques « ${ALLOW} » / « ${BYPASS} » si app_count = 0`) > at('2. '));
+  assert.ok(at('4. garder la méthode « One-time PIN » (facultatif : la retirer)') > at('3. '));
+  assert.match(out, /DELETE \/accounts\/\{compte\}\/pages\/projects\/zuma/);
+  assert.match(out, /DELETE \/accounts\/\{compte\}\/access\/apps\//);
+  assert.match(out, /Workers & Pages › zuma › Settings › Delete project/);
+  assert.match(out, /Zero Trust › Access › Applications › Zuma › Delete/);
+});
+
+test('run: missing or empty private config, several accounts, non --deploy dist → code 1 before any write', async () => {
+  for (const config of [null, { project: 'zuma', allow: [] }, { project: 'zuma' }]) {
+    const cloud = fakeCloud();
+    const { code, out } = await exec([], cloud, { dir: root({ config }) });
+    assert.equal(code, 1);
+    assert.match(out, /private_assets\/deploy\.json/);
+    assert.deepEqual(writes(cloud.calls), []);
+  }
+  const multi = fakeCloud({ accounts: 2 });
+  const r = await exec(['--plan'], multi);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /CLOUDFLARE_ACCOUNT_ID/);
+  const chosen = await exec(['--plan'], fakeCloud({ accounts: 2 }), { env: { CLOUDFLARE_ACCOUNT_ID: ACC } });
+  assert.equal(chosen.code, 0, chosen.out);
+  const publicBuild = fakeCloud();
+  const dir = root({ dist: false });
+  write(dir, 'dist/index.html', 'x');
+  const p = await exec([], publicBuild, { dir });
+  assert.equal(p.code, 1);
+  assert.match(p.out, /n'est pas un build --deploy/);
+  assert.deepEqual(writes(publicBuild.calls), [], 'the artefact is checked before any write');
+});
+
+test('run: a 403 on the first write stops with the missing permission named; a preview environment is refused', async () => {
+  const cloud = fakeCloud({ errorWith: { method: 'POST', prefix: `${A}/pages/projects`, status: 403 } });
+  const { code, out } = await exec([], cloud);
+  assert.equal(code, 1);
+  assert.match(out, /Cloudflare Pages.*Edit/);
+  assert.equal(cloud.calls.filter(c => c.method !== 'GET').length, 1, 'stopped at the first refused write');
+  assert.ok(!out.includes('secret-token-123456'), 'the Authorization value is masked');
+  assert.ok(!out.includes(ACC), 'the account id is masked');
+  const preview = fakeCloud({ environment: 'preview' });
+  const r = await exec([], preview);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /production/);
+});
+
+test('the whole output of a run never contains the upload JWT, the token or the account id', async () => {
+  const cloud = fakeCloud();
+  const outputs = [];
+  for (const argv of [['--plan'], [], ['--verify'], ['--rollback-plan']]) outputs.push((await exec(argv, cloud)).out);
+  const all = outputs.join('\n');
+  assert.ok(!all.includes(cloud.jwt), 'no JWT');
+  assert.doesNotMatch(all, /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./);
+  assert.ok(!all.includes(ACC), 'no account id');
+});
+
+test('redact masks JWTs, Authorization values and 32+ hex identifiers, keeping the last 4 characters', () => {
+  const jwt = makeJwt({ exp: 1 });
+  const text = `jwt=${jwt} Authorization: Bearer abcdefghijklmnop1234 compte ${ACC} aud ${'a1'.repeat(32)} short 0123abcd`;
+  const r = redact(text);
+  assert.ok(!r.includes(jwt) && !r.includes('abcdefghijklmnop1234') && !r.includes(ACC) && !r.includes('a1'.repeat(32)));
+  assert.match(r, /\[masqué\]cdef/, 'account id: last 4 kept');
+  assert.match(r, /Authorization: \[masqué\]1234/);
+  assert.match(r, /short 0123abcd/, 'short hex untouched');
+  assert.equal(redact('rien à masquer'), 'rien à masquer');
+});
+
+test('isAccessRedirect: 301/302/303/307/308 to exactly the team domain', () => {
+  for (const s of [301, 302, 303, 307, 308]) assert.equal(isAccessRedirect(s, `https://${AUTH}/cdn-cgi/access/login/x`, AUTH), true, String(s));
+  assert.equal(isAccessRedirect(200, `https://${AUTH}/`, AUTH), false);
+  assert.equal(isAccessRedirect(302, 'https://evil.example/?team.cloudflareaccess.com', AUTH), false);
+  assert.equal(isAccessRedirect(302, `https://x.${AUTH}/`, AUTH), false);
+  assert.equal(isAccessRedirect(302, '/', AUTH), false, 'relative redirect (Pages /index.html → /) is not Access');
+  assert.equal(isAccessRedirect(302, null, AUTH), false);
+});
+
+test('run --verify: API configuration then HTTP (redirect manual); 0 protected, 1 exposed, 2 unreachable', async () => {
+  const cloud = fakeCloud();
+  await exec([], cloud);
+  const ok = protectedFetch();
+  const r0 = await exec(['--verify'], cloud, { fetch: ok.fetch });
+  assert.equal(r0.code, 0, r0.out);
+  const urls = ok.seen.map(s => s.url);
+  for (const p of ['/', '/index.html', '/sw.js', '/assets/pack.json', '/public/manifest.webmanifest', '/public/..%2Fassets/pack.json']) {
+    assert.ok(urls.includes(`https://${HOST}${p}`), p);
+  }
+  assert.ok(urls.includes(`https://abc12345.${HOST}/`), 'deployment URL checked');
+  assert.ok(ok.seen.every(s => s.redirect === 'manual'));
+  const r1 = await exec(['--verify'], cloud, { fetch: protectedFetch({ exposed: ['/assets/pack.json'] }).fetch });
+  assert.equal(r1.code, 1);
+  assert.match(r1.out, /EXPOSÉ/);
+  const r2 = await exec(['--verify'], cloud, { fetch: protectedFetch({ unreachable: true }).fetch });
+  assert.equal(r2.code, 2);
+  assert.match(r2.out, /injoignable/);
+  // Configuration not conforming (main app session changed in the console) → 1 even if HTTP looks protected.
+  cloud.s.apps.find(a => a.name === 'Zuma').session_duration = '24h';
+  const bad = await exec(['--verify'], cloud);
+  assert.equal(bad.code, 1);
+  assert.match(bad.out, /730h/);
+});
+
+test('importing tools/deploy.mjs runs nothing', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(process.execPath, ['-e', "import('./tools/deploy.mjs').then(() => console.log('imported'))"], { encoding: 'utf8', env: { ...process.env, HTTPS_PROXY: '', https_proxy: '' } });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout.trim(), 'imported');
+});
