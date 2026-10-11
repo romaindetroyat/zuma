@@ -195,7 +195,7 @@ test('render.js draws the coin and its sparkle; main.js shows GET_READY then rea
 
 test('standalone bundle: no top-level identifier is declared by two modules (concatenated module scope)', () => {
   // R2.0.15 regression: `clamp01` (audio/feedback) and `canvasOf` (original/bitmapfont) made the single-file build a SyntaxError.
-  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'welcome', 'adventure', 'main']; // R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04); R2.0.21 (D-01): welcome after progress (plan 06-03); R2.0.17: upscale.js (EPX) added before original; R2.0.18: menudialog.js after render; R2.0.20: pwa after original; R2.0.21: progress after menudialog (plan 06-02)
+  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'records', 'welcome', 'adventure', 'main']; // R2.0.22: records after progress (plan 06.1-01); R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04); R2.0.21 (D-01): welcome after progress (plan 06-03); R2.0.17: upscale.js (EPX) added before original; R2.0.18: menudialog.js after render; R2.0.20: pwa after original; R2.0.21: progress after menudialog (plan 06-02)
   assert.match(fs.readFileSync('tools/build.mjs', 'utf8'), new RegExp(`const MODULES = \\[${modules.map(m => `'${m}'`).join(', ')}\\]`), 'MODULES list mirrored');
   const owners = new Map();
   for (const m of modules) {
@@ -214,7 +214,7 @@ test('standalone bundle: the stripped concatenation keeps no import / export / r
   const m = bundler.match(/const strip = (s => [^\n]*);\n/);
   assert.ok(m, 'strip arrow found in build.mjs');
   const strip = new Function(`return ${m[1]}`)();
-  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'welcome', 'adventure', 'main']; // R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04); R2.0.21 (D-01): welcome after progress (plan 06-03); R2.0.17: upscale.js (EPX) added before original; R2.0.18: menudialog.js after render; R2.0.20: pwa after original; R2.0.21: progress after menudialog (plan 06-02)
+  const modules = ['core', 'feedback', 'levels', 'audio', 'upscale', 'original', 'pwa', 'bitmapfont', 'statsdialog', 'render', 'menudialog', 'progress', 'records', 'welcome', 'adventure', 'main']; // R2.0.22: records after progress (plan 06.1-01); R2.0.21 (D-02/D-03): adventure after welcome (plan 06-04); R2.0.21 (D-01): welcome after progress (plan 06-03); R2.0.17: upscale.js (EPX) added before original; R2.0.18: menudialog.js after render; R2.0.20: pwa after original; R2.0.21: progress after menudialog (plan 06-02)
   const js = modules.map(name => strip(fs.readFileSync(`.compiled/${name}.js`, 'utf8'))).join('\n');
   assert.doesNotMatch(js, /^(import|export) /m, 'no module statement left');
   assert.doesNotMatch(js, /from '\.\/[a-z]+\.js'/, 'no module specifier left');
