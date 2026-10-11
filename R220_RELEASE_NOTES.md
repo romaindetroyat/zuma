@@ -104,6 +104,7 @@ Une régression de l'astuce du STATS, relevée sur les captures de R2.0.20, est 
   - reprise d'un contexte `suspended` ou `interrupted` quand la page redevient visible ;
   - repli m4a inchangé.
   - Verrou : `r220-ios`.
+  - **Révisé après l'UAT 9** (tâche rapide 261011-ios-sound-menu, « sur mon iPhone le son ne semble pas fonctionner ») : voir « Correctifs UAT 9 » plus bas.
 
 ## Outils
 
@@ -262,3 +263,14 @@ Premier hébergement privé du jeu complet sur le compte Cloudflare de l'utilisa
 - **R2** : connexion dans l'app installée sur iOS (stockage séparé de Safari), à vérifier sur l'iPhone et l'iPad réels. En cas de boucle, variante M-A (Access par chemins).
 - **R5** : après expiration de la session, la mise à jour du worker échoue en silence et l'app continue sur sa version en cache jusqu'à la prochaine connexion (accepté).
 - **Clés BLAKE3** : identiques au témoin et aux vecteurs officiels. L'acceptation par Pages sera confirmée au premier envoi depuis le Mac.
+
+## Correctifs UAT 9 (tâche rapide 261011-ios-sound-menu)
+
+- **Son sur iPhone** :
+  - `navigator.audioSession.type = 'playback'` au lieu de `'ambient'` : le jeu sonne **même interrupteur silencieux activé** (D-38 §6 le demandait ; l'hypothèse `ambient` de 05-14 rendait le jeu muet) et coupe la musique d'une autre app comme un lecteur ;
+  - `unlock()` démarre, **dans le geste**, une source silencieuse d'un échantillon tant que le contexte ne tourne pas (WebKit ne débloque vraiment Web Audio qu'avec un son lancé dans le geste) ;
+  - sur WebKit (détection par `GestureEvent` / `webkitAudioContext`, sans user agent), un `<audio>` silencieux (WAV de 124 octets en data URL, `playsinline`, volume 0, muet puis démuté) est joué une fois : sur iOS < 16.4, sans API Audio Session, il fait passer la page sur le canal média ;
+  - les écouteurs `touchend` / `pointerup` / `click` restent posés **jusqu'à ce que le contexte tourne**, puis sont retirés ; ils reviennent s'il repasse `suspended` ou `interrupted` (appel, verrouillage) ;
+  - reprise sur `visibilitychange` (page visible) et `pageshow` (retour du cache de navigation).
+  - Verrou : `r220-ios-audio` (AudioContext, document et `<audio>` factices), `r220-ios`.
+- **Appui long sur MENU** : un appui de **450 ms** sur le bouton MENU du HUD (souris, doigt ou stylet, resté dans le bouton, déplacé de moins de 12 px) ouvre le menu, sans tir au relâcher. Relâché avant, rien ne change : la souris tire (D-26, le tir part au relâcher), le doigt ouvre le menu. Le bouton s'affiche **pressé** (troisième état de `MenuButton`) pendant l'appui. Aide du menu et README : « Appui long sur MENU : menu ». Verrou : `r220-longpress` (machine `longPress`), `r218-presentation`.

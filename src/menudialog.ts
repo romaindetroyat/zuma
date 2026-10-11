@@ -62,7 +62,7 @@ export interface MenuOptions {
 const INSTALL_LABEL = 'Installer';
 
 /** Bindings shown first in the help view (D-26). */
-export const CONTROLS_HELP = 'Clic : tirer · Clic droit : échanger · Espace / Entrée / Échap : menu · Tab : statistiques · P : pause';
+export const CONTROLS_HELP = 'Clic : tirer · Clic droit : échanger · Espace / Entrée / Échap : menu · Appui long sur MENU : menu · Tab : statistiques · P : pause';
 
 function menuString(strings: Record<string, string> | null, key: string): string {
   return strings?.[key] ?? MENU_STRINGS[key] ?? key;

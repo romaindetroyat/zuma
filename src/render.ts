@@ -68,6 +68,8 @@ export interface HudState {
   zuma: boolean;
   message: string | null;
   subMessage: string | null;
+  /** A long press on MENU is pending (quick 261011): the button shows its pressed state. Absent → false. */
+  menuPressed?: boolean;
 }
 
 export const WIDTH = 640;
@@ -748,10 +750,11 @@ export class Renderer {
       const m = HUD_LAYOUT.menu;
       const button = this.assets.menuButton;
       if (button) {
+        // Frames: normal, hover, pressed; the pressed one while a long press is pending (quick 261011).
         const sw = button.width / 3;
-        ctx.drawImage(button, 0, 0, sw, button.height, m.x, m.y, m.w, m.h);
+        ctx.drawImage(button, hud.menuPressed ? sw * 2 : 0, 0, sw, button.height, m.x, m.y, m.w, m.h);
       } else {
-        ctx.fillStyle = '#f3e4b8';
+        ctx.fillStyle = hud.menuPressed ? '#ffffff' : '#f3e4b8';
         ctx.font = font(15);
         ctx.fillText('MENU', m.x + m.w / 2, m.y + m.h / 2 + 1);
       }
@@ -773,8 +776,8 @@ export class Renderer {
       ctx.fillRect(0, 0, WIDTH, HUD_HEIGHT);
       ctx.fillStyle = '#c9a85a';
       ctx.fillRect(0, HUD_HEIGHT - 2, WIDTH, 2);
-      for (const b of Object.values(VECTOR_BUTTONS)) {
-        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      for (const [key, b] of Object.entries(VECTOR_BUTTONS)) {
+        ctx.fillStyle = key === 'menu' && hud.menuPressed ? 'rgba(217,184,106,0.55)' : 'rgba(0,0,0,0.45)';
         roundRect(ctx, b.x, b.y, b.w, b.h, 8);
         ctx.fill();
         ctx.strokeStyle = '#d9b86a';
@@ -913,6 +916,67 @@ export function stagePoint(clientX: number, clientY: number, rect: { left: numbe
  * the scale is rounded down to whole device pixels — max(1, ⌊fit × dpr⌋) / dpr: never less than one device pixel
  * per logical pixel. Non-finite sizes → 1; a non-finite or non-positive dpr counts as 1.
  */
+/** Hold on the HUD MENU button that opens the menu (UAT 9, quick 261011-ios-sound-menu), ms. */
+export const LONG_PRESS_MS = 450;
+/** Movement (CSS px from the press point) that turns a hold back into an ordinary press. */
+export const LONG_PRESS_SLOP = 12;
+
+/** `pending`: pressed on MENU, waiting; `fired`: the menu opened, the release still to swallow. */
+export interface LongPressState {
+  readonly phase: 'idle' | 'pending' | 'fired';
+  readonly id: number;
+  readonly x: number;
+  readonly y: number;
+  readonly start: number;
+}
+export const LONG_PRESS_IDLE: LongPressState = { phase: 'idle', id: -1, x: 0, y: 0, start: 0 };
+
+/** Pointer events of the MENU hold; `inside` = over the button, `t` in ms, `x` / `y` in CSS px. */
+export type LongPressInput =
+  | { kind: 'down'; id: number; x: number; y: number; t: number; inside: boolean }
+  | { kind: 'move'; id: number; x: number; y: number; inside: boolean }
+  | { kind: 'tick'; t: number }
+  | { kind: 'up'; id: number; t: number; inside: boolean }
+  | { kind: 'cancel'; id: number };
+
+/**
+ * `start`: hold armed; `fire`: open the menu now; `tap`: released early on the button (today's press: the mouse
+ * shoots, D-26, a touch opens the menu); `slip`: moved away or released outside (an ordinary press: the mouse
+ * shoots); `cancel`: pointercancel, nothing; `swallow`: release of a fired hold, nothing (no shot).
+ */
+export type LongPressAction = 'none' | 'start' | 'fire' | 'tap' | 'slip' | 'cancel' | 'swallow';
+
+/**
+ * Long press on the MENU button, pure state machine. A press inside the button arms it; it fires once `ms` have
+ * elapsed (tick, or a late release) unless the pointer moved `slop` px or more, left the button, or was cancelled.
+ * Only the pointer that armed it is followed; a new press restarts a stale fired state.
+ */
+export function longPress(state: LongPressState, input: LongPressInput, ms = LONG_PRESS_MS, slop = LONG_PRESS_SLOP): { state: LongPressState; action: LongPressAction } {
+  const idle = { state: LONG_PRESS_IDLE, action: 'none' as LongPressAction };
+  const same = { state, action: 'none' as LongPressAction };
+  switch (input.kind) {
+    case 'down':
+      if (state.phase === 'pending' && input.id !== state.id) return same;
+      if (!input.inside) return idle;
+      return { state: { phase: 'pending', id: input.id, x: input.x, y: input.y, start: Number.isFinite(input.t) ? input.t : 0 }, action: 'start' };
+    case 'tick':
+      return state.phase === 'pending' && input.t - state.start >= ms ? { state: { ...state, phase: 'fired' }, action: 'fire' } : same;
+    case 'move': {
+      if (state.phase !== 'pending' || input.id !== state.id) return same;
+      const moved = Math.hypot(input.x - state.x, input.y - state.y);
+      return !input.inside || !(moved < slop) ? { state: LONG_PRESS_IDLE, action: 'slip' } : same;
+    }
+    case 'up':
+      if (input.id !== state.id || state.phase === 'idle') return same;
+      if (state.phase === 'fired') return { state: LONG_PRESS_IDLE, action: 'swallow' };
+      if (input.t - state.start >= ms) return { state: LONG_PRESS_IDLE, action: 'fire' };
+      return { state: LONG_PRESS_IDLE, action: input.inside ? 'tap' : 'slip' };
+    case 'cancel':
+      if (input.id !== state.id || state.phase === 'idle') return same;
+      return { state: LONG_PRESS_IDLE, action: state.phase === 'fired' ? 'swallow' : 'cancel' };
+  }
+}
+
 /** Touch radius of the frog (R2.0.20, D-38 §4): a tap this close to its centre swaps the balls instead of shooting. */
 export const FROG_TAP_RADIUS = 32;
 

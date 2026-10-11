@@ -291,8 +291,13 @@ test('main.js: aim and shots on the whole window through stagePoint, right click
   assert.match(input, /'Tab'[\s\S]*?openStats\('live'\)/);
   assert.match(input, /preventDefault\(\)/);
   assert.match(input, /'KeyP'[\s\S]*?togglePause\(\)/);
-  assert.match(input, /pointerType === 'touch'[\s\S]*?hitTest\(/, 'HUD buttons for touch only');
-  assert.equal((input.match(/hitTest\(/g) || []).length, 1);
+  // UAT 9 (quick 261011): MENU is hit-tested for every pointer to arm the long press (r220-longpress); a short mouse
+  // press there still shoots (D-26); STATS stays touch only.
+  assert.match(input, /hitTest\([\s\S]*?button === 'menu'[\s\S]*?longPress\(/, 'MENU press → longPress, any pointer');
+  assert.match(input, /pointerType === 'touch'[\s\S]*?button === 'stats'/, 'STATS for touch only');
+  // `input` runs to the end of the class: the press site, plus overMenuButton that follows the held pointer.
+  assert.equal((input.match(/hitTest\(/g) || []).length, 2);
+  assert.match(body(main, '    overMenuButton(ev) {'), /hitTest\([^)]*\) === 'menu'/);
   const scaling = body(main, '    applyScaling() {');
   assert.match(scaling, /fitScale\(/);
   assert.match(scaling, /--k/);

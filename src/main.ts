@@ -8,7 +8,7 @@ import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 import { applyUpdate, fitArea, formatSize, installGuidance, needsRotation, offlineStatus, readInstallEnv, registerServiceWorker, type InstallGuidance, type Insets } from './pwa.js';
 import { BONUS_FAST_STEP, STATS_ORDER, TIP_KEYS, bestTime, bestTimeKey, bonusCountStep, bonusPopRate, composeStatsDialog, loadStatsKit, statsValues, upscaleStatsKit, type ButtonState, type StatsInput, type StatsKit, type StatsValues } from './statsdialog.js';
-import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, Renderer, WIDTH, HEIGHT, fitScale, frogHit, stagePoint, type FloatingText, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
+import { FROG_FRONT, HD_MIN_SCALE, HUD_HEIGHT, LONG_PRESS_IDLE, LONG_PRESS_MS, Renderer, WIDTH, HEIGHT, fitScale, frogHit, longPress, stagePoint, type FloatingText, type LongPressInput, type LongPressState, type Fx, type HudState, type LevelView, type RenderAssets } from './render.js';
 import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upscaleMenuKit, type MenuKit, type MenuOptions, type MenuState, type MenuWidgetId } from './menudialog.js';
 
 declare const __BUILD__: string;
@@ -105,6 +105,11 @@ class Game {
   private livesBlinkUntil = 0;
   private seed = Date.now() >>> 0;
   private pointer: Point = { x: WIDTH / 2, y: HEIGHT };
+  /** Long press on the HUD MENU button (quick 261011): state, pointer type, stage point of the press, timer. */
+  private menuPress: LongPressState = LONG_PRESS_IDLE;
+  private menuPressType = '';
+  private menuPressPoint: Point = { x: 0, y: 0 };
+  private menuPressTimer = 0;
   private loading = true;
   /** « Pixels nets »: integer CSS scale with image-rendering: pixelated (persisted as zuma.pixelated). */
   private pixelated = false;
@@ -425,6 +430,7 @@ class Game {
       this.audio.setLoop('rolling', 0);
       this.audio.pulse('warning', 0);
     }
+    if (this.menuPress.phase === 'pending') this.menuPressStep({ kind: 'tick', t: performance.now() });
     this.frame++;
     this.fx.bursts = this.fx.bursts.filter(b => engine.tick - b.start < 40);
     this.fx.floats = this.fx.floats.filter(f => engine.tick - f.start < 70);
@@ -477,6 +483,7 @@ class Game {
       zuma: engine.zumaMode,
       message: this.paused && !msg ? 'PAUSE' : msg?.text ?? null,
       subMessage: msg?.sub ?? null,
+      menuPressed: this.menuPress.phase === 'pending',
     };
   }
 
@@ -637,7 +644,8 @@ class Game {
    * Inputs (D-26): the aim follows the pointer over the whole window (stagePoint, clamped to the stage) and a left
    * click shoots anywhere, the HUD band and the page frame included; right click swaps (hypothesis C1). The HUD
    * MENU / STATS buttons only answer a touch (without a keyboard the menu would be unreachable — deviation from
-   * D-26 limited to touch). Keys: Space / Enter / Escape open and close the menu (the original pauses on Space, and
+   * D-26 limited to touch). UAT 9 (quick 261011): a press held LONG_PRESS_MS on MENU opens the menu with any pointer
+   * (longPress); released earlier, a mouse / pen press shoots on release (D-26) and a touch opens the menu. Keys: Space / Enter / Escape open and close the menu (the original pauses on Space, and
    * the menu pauses: converging), Tab opens the STATS, P pauses, M mutes. Open dialogs handle their own pointer.
    */
   private bindInput(): void {
@@ -648,6 +656,7 @@ class Game {
     stage?.addEventListener('dblclick', ev => ev.preventDefault());
     this.audio.bindUnlock();
     window.addEventListener('pointermove', ev => {
+      if (this.menuPress.phase === 'pending') this.menuPressStep({ kind: 'move', id: ev.pointerId, x: ev.clientX, y: ev.clientY, inside: this.overMenuButton(ev) });
       if (this.menuOpen || this.statsOpen || this.installOpen) return;
       this.pointer = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       this.engine?.command({ kind: 'aim', ...this.pointer });
@@ -659,9 +668,22 @@ class Game {
       const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
       if (ev.button === 2) { this.engine?.command({ kind: 'swap' }); return; }
       if (ev.button !== 0) return;
+      const button = this.renderer.hitTest(p.x, p.y);
+      if (button === 'menu') {
+        // Any pointer on MENU arms the long press; the outcome (menu, shot or nothing) is decided by menuPressStep.
+        const step = longPress(this.menuPress, { kind: 'down', id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: performance.now(), inside: true });
+        if (step.action === 'start') {
+          this.menuPress = step.state;
+          this.menuPressType = ev.pointerType;
+          this.menuPressPoint = p;
+          this.pointer = p;
+          if (ev.pointerType !== 'touch') this.engine?.command({ kind: 'aim', ...p });
+          window.clearTimeout(this.menuPressTimer);
+          this.menuPressTimer = window.setTimeout(() => this.menuPressStep({ kind: 'tick', t: performance.now() }), LONG_PRESS_MS + 5);
+          return;
+        }
+      }
       if (ev.pointerType === 'touch') {
-        const button = this.renderer.hitTest(p.x, p.y);
-        if (button === 'menu') { this.toggleMenu(); return; }
         if (button === 'stats') { this.openStats('live'); return; }
         // R2.0.20 (D-38 §4): touching the frog swaps the balls (no aim, no shot), as in the mobile versions.
         if (this.engine && frogHit(p, this.engine.frog)) {
@@ -670,10 +692,13 @@ class Game {
           return;
         }
       }
-      this.pointer = p;
-      this.engine?.command({ kind: 'aim', ...p });
-      if (this.paused) { this.togglePause(); return; }
-      this.engine?.command({ kind: 'shoot', x: p.x, y: p.y });
+      this.pressShoot(p);
+    });
+    window.addEventListener('pointerup', ev => {
+      if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'up', id: ev.pointerId, t: performance.now(), inside: this.overMenuButton(ev) });
+    });
+    window.addEventListener('pointercancel', ev => {
+      if (this.menuPress.phase !== 'idle') this.menuPressStep({ kind: 'cancel', id: ev.pointerId });
     });
     window.addEventListener('keydown', ev => {
       if (ev.repeat) return;
@@ -716,6 +741,50 @@ class Game {
           break;
       }
     });
+  }
+
+  /** The ordinary press of the stage: aim at `p` and shoot (a paused game resumes instead, D-26). */
+  private pressShoot(p: Point): void {
+    if (this.loading || this.menuOpen || this.statsOpen || this.installOpen || this.rotateOpen) return;
+    this.pointer = p;
+    this.engine?.command({ kind: 'aim', ...p });
+    if (this.paused) { this.togglePause(); return; }
+    this.engine?.command({ kind: 'shoot', x: p.x, y: p.y });
+  }
+
+  /** True when the pointer event lies over the HUD MENU button. */
+  private overMenuButton(ev: PointerEvent): boolean {
+    const p = stagePoint(ev.clientX, ev.clientY, this.canvas.getBoundingClientRect());
+    return this.renderer.hitTest(p.x, p.y) === 'menu';
+  }
+
+  /**
+   * Long press on MENU (quick 261011): `fire` opens the menu (the release is then swallowed: no shot); `tap` keeps
+   * today's press — a touch opens the menu, a mouse / pen shoots at the press point (D-26); `slip` (moved 12 px or
+   * left the button) is an ordinary press: the mouse / pen shoots, a touch does nothing; `cancel` does nothing.
+   */
+  private menuPressStep(input: LongPressInput): void {
+    const { state, action } = longPress(this.menuPress, input);
+    this.menuPress = state;
+    if (state.phase !== 'pending') window.clearTimeout(this.menuPressTimer);
+    const touch = this.menuPressType === 'touch';
+    switch (action) {
+      case 'fire':
+        if (!this.installOpen && !this.rotateOpen) this.openMenu();
+        break;
+      case 'tap':
+        if (touch) {
+          if (!this.installOpen && !this.rotateOpen) this.openMenu();
+        } else {
+          this.pressShoot(this.menuPressPoint);
+        }
+        break;
+      case 'slip':
+        if (!touch) this.pressShoot(this.menuPressPoint);
+        break;
+      default:
+        break;
+    }
   }
 
   // ---------------------------------------------------------------- install
