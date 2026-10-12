@@ -368,7 +368,8 @@ export class Renderer {
   // ----------------------------------------------------------------- balls
 
   /**
-   * Every ball of every chain within [−r, length + r], with its draw priority (Track.ballPriority, 0x405c10):
+   * Every ball of every chain that boardBallVisible keeps (up to one radius into the skull; before the start only when the
+   * curve starts off the stage), with its draw priority (Track.ballPriority, 0x405c10):
    * the settled balls first, then those still opening their slot, so a landing ball stays above its
    * neighbours of the same pass. No ball is left out for a layer flag (D-23).
    */
@@ -378,8 +379,9 @@ export class Renderer {
     const growing: BoardBall[] = [];
     for (const chain of engine.chains) {
       const track = chain.track;
+      const startOnStage = onStage(track.points[0]);
       for (const ball of chain.balls) {
-        if (ball.s < -r || ball.s > track.length + r) continue;
+        if (!boardBallVisible(ball.s, track.length, r, startOnStage)) continue;
         const item = { priority: track.ballPriority(ball.s), ball, track };
         if (ball.width < 1 && ball.enterFrom !== undefined) growing.push(item);
         else settled.push(item);
@@ -1032,6 +1034,23 @@ export function livesHidden(left: number): boolean {
 export function pitCoverFrame(threat: number, frames: number): number {
   const t = Number.isFinite(threat) ? Math.max(0, Math.min(1, threat)) : 0;
   return Math.min(frames - 1, Math.max(0, Math.floor(t * (frames - 1))));
+}
+
+/**
+ * A ball of the board is drawn from its entrance to one radius into the skull (s ≤ length + radius). Before the start
+ * (s < 0, balls not yet on the curve) it is drawn only when the curve starts off the stage, so that it slides in from
+ * the edge (s ≥ −radius); when the curve starts on the board — inversespiral, under the skull cutout — the curve is
+ * not extrapolated before its first point: a ball shows once it is on the curve (s ≥ 0), as in the original that
+ * only draws the balls of its list, which a pending ball joins at waypoint 1 (0x418510). R2.0.23: every entering
+ * ball of 9-7 / 12-7 popped in above the skull, off the track. Non-finite → not drawn.
+ */
+export function boardBallVisible(s: number, length: number, radius: number, startOnStage: boolean): boolean {
+  return Number.isFinite(s) && s >= (startOnStage ? 0 : -radius) && s <= length + radius;
+}
+
+/** True when `p` lies on the 640 × 480 stage (edges included); non-finite → false. */
+export function onStage(p: Point): boolean {
+  return p.x >= 0 && p.x <= WIDTH && p.y >= 0 && p.y <= HEIGHT;
 }
 
 export function ballPosition(ball: Ball, track: Track): Point {

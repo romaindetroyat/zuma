@@ -102,16 +102,27 @@ test('main.js startLevel: the level, the engine and the renderer view are publis
 
 // ----------------------------------------------------------------- 4. no ball drawn before the curve start
 
-test('render: a ball is drawn only once it is on the curve (0 ≤ s ≤ length + radius), never extrapolated before the start', () => {
+test('render: before its first point a curve is not extrapolated when it starts on the board; off-stage starts slide in as before', () => {
   assert.equal(typeof render.boardBallVisible, 'function', 'boardBallVisible exported by render.js');
-  const { boardBallVisible } = render;
-  assert.equal(boardBallVisible(-16, 1000, 16), false, 'queued ball (s < 0), off the curve: not drawn');
-  assert.equal(boardBallVisible(-0.5, 1000, 16), false);
-  assert.equal(boardBallVisible(0, 1000, 16), true, 'on the curve from s = 0 (the original enters a ball at waypoint 1)');
-  assert.equal(boardBallVisible(500, 1000, 16), true);
-  assert.equal(boardBallVisible(1016, 1000, 16), true, 'into the skull up to one radius past the end, as before');
-  assert.equal(boardBallVisible(1017, 1000, 16), false);
-  assert.equal(boardBallVisible(Number.NaN, 1000, 16), false, 'non-finite → not drawn');
+  assert.equal(typeof render.onStage, 'function', 'onStage exported by render.js');
+  const { boardBallVisible, onStage } = render;
+  // Start on the board (inversespiral (244, 170), under the skull cutout): drawn only once on the curve.
+  assert.equal(boardBallVisible(-16, 1000, 16, true), false, 'queued ball before an on-board start: not drawn');
+  assert.equal(boardBallVisible(-0.5, 1000, 16, true), false);
+  assert.equal(boardBallVisible(0, 1000, 16, true), true, 'on the curve from s = 0 (the original enters a ball at waypoint 1)');
+  // Start off the stage (every other pack curve): the ball slides in from the edge, unchanged.
+  assert.equal(boardBallVisible(-16, 1000, 16, false), true);
+  assert.equal(boardBallVisible(-16.5, 1000, 16, false), false);
+  for (const onBoard of [true, false]) {
+    assert.equal(boardBallVisible(500, 1000, 16, onBoard), true);
+    assert.equal(boardBallVisible(1016, 1000, 16, onBoard), true, 'into the skull up to one radius past the end, as before');
+    assert.equal(boardBallVisible(1017, 1000, 16, onBoard), false);
+    assert.equal(boardBallVisible(Number.NaN, 1000, 16, onBoard), false, 'non-finite → not drawn');
+  }
+  assert.equal(onStage({ x: 244, y: 170 }), true);
+  for (const p of [{ x: 137.41, y: 485.19 }, { x: -20.08, y: 133.6 }, { x: 667.04, y: 13.29 }, { x: 296.92, y: -11.6 }, { x: Number.NaN, y: 0 }]) assert.equal(onStage(p), false, JSON.stringify(p));
   const src = read('src/render.ts');
-  assert.match(method(src, '  private boardBalls('), /boardBallVisible\(ball\.s, track\.length, r\)/, 'boardBalls uses the rule');
+  const body = method(src, '  private boardBalls(');
+  assert.match(body, /onStage\(track\.points\[0\]\)/, 'boardBalls reads where the curve starts');
+  assert.match(body, /boardBallVisible\(ball\.s, track\.length, r, startOnStage\)/, 'boardBalls uses the rule');
 });

@@ -501,7 +501,12 @@ class Game {
   private async startLevel(): Promise<void> {
     this.audio.stopLoops();
     this.lastPositions.clear();
-    this.level = await this.resolveLevel();
+    const level = await this.resolveLevel();
+    // R2.0.23: the art is loaded BEFORE the new level, its engine and its view are published, all three in the same
+    // synchronous block below — otherwise every frame drawn while the art of a first-visited level loads showed the new
+    // chains over the previous board (balls off the track, then « appearing » once the board switched).
+    const art = this.pack && level.graphics ? await this.pack.levelArt(level.graphics) : null;
+    this.level = level;
     this.seed = (this.seed * 1664525 + 1013904223) >>> 0;
     // With the original sprite the projectile leaves from the measured mouth offset (ROADMAP SC2).
     const engine = new ZumaEngine(this.level.tracks, this.level.frog, {
@@ -521,7 +526,6 @@ class Game {
     // A level starting under « Tournez votre appareil » stays paused until the device is turned (D-38 §5).
     this.pausedByRotation = this.rotateOpen;
     if (this.rotateOpen) this.paused = true;
-    const art = this.pack && this.level.graphics ? await this.pack.levelArt(this.level.graphics) : null;
     const view: LevelView = { name: this.level.name, tracks: this.level.tracks, frog: this.level.frog, art, skullRotation: this.level.graphics?.skullRotation ?? null };
     this.renderer.setLevel(view);
     // « Attention » (D-11) stays up for the whole fast feed; the `go` event replaces it with « PARTEZ ».

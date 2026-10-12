@@ -592,6 +592,11 @@ export class Chain {
   recoils: Array<{ id: number; ticks: number; speed: number }> = [];
   spawned = 0;
   lastSpawnColor = -1;
+  /**
+   * Id of the ball last fed through the entrance (R2.0.23). While it is the rearmost ball the next one is placed right
+   * behind it; once it is gone (destroyed with the rear group, bombed) the next ball enters behind the entrance.
+   */
+  fedId: number | null = null;
   /** Current pusher speed, px/s (original `mSpeed`); null until the chain's first moveChain (lazy: v0 of the fast feed, or the target). */
   speed: number | null = null;
   /** Ticks left of the pusher stop (original counter curve+0x54): armed when the rear ball is removed (≥ 40 maj) or by a recoil contact (≥ 20 maj). */
@@ -749,6 +754,10 @@ export class ZumaEngine {
   loadFixture(fixture: Fixture, chain: Chain = this.chains[0]): void {
     chain.balls = fixture.balls.map(b => ({ id: this.nextId++, color: b.color, s: b.s, width: 1, ...(b.power ? { power: b.power } : {}) }));
     chain.spawned = chain.balls.length;
+    // The fixture's rearmost ball counts as fed: the stream goes on right behind it.
+    let rear: Ball | undefined;
+    for (const b of chain.balls) if (!rear || b.s < rear.s) rear = b;
+    chain.fedId = rear?.id ?? null;
     chain.removals = [];
     chain.recoils = [];
     chain.speed = null;
@@ -928,15 +937,25 @@ export class ZumaEngine {
     }
   }
 
+  /**
+   * Streams balls in from the entrance: a new ball is placed right behind the rearmost ball while that one is the last
+   * ball fed (several per tick when the fast feed outruns a spacing per tick, the chain stays contiguous). When the fed
+   * ball is gone — destroyed with the rear group, bombed — the next one enters behind the entrance (s = −spacing), never
+   * mid-track: the original only ever puts a pending ball on the curve at its start (0x418510, waypoint 1). R2.0.23:
+   * refilling from the next ball down to the entrance created up to 25 balls along the track in one frame.
+   */
   private spawnBalls(chain: Chain): void {
     if (!this.stream || this.zumaMode || this.state !== 'playing') return;
+    const spacing = this.config.ballSpacing;
     while (chain.spawned < this.config.total) {
       let rear: Ball | undefined;
       for (const b of chain.balls) if (!rear || b.s < rear.s) rear = b;
-      const s = rear ? rear.s - this.config.ballSpacing : 0;
-      if (rear && s < -this.config.ballSpacing) break;
+      let s = rear ? rear.s - spacing : 0;
+      if (rear && s < -spacing) break;
+      if (rear && s > 0 && rear.id !== chain.fedId) s = -spacing;
       const ball: Ball = { id: this.nextId++, color: this.spawnColor(chain), s, width: 1 };
       chain.balls.unshift(ball);
+      chain.fedId = ball.id;
       chain.spawned++;
     }
   }
@@ -1182,7 +1201,7 @@ export class ZumaEngine {
     for (const { r, idx } of entries) {
       if (idx >= 0) {
         list[idx].s -= r.speed * dt;
-        this.pushBehind(list, idx);
+        this.pushBehind(list, idx, r.speed * dt);
         moved = true;
       }
       r.ticks--;
@@ -1201,8 +1220,9 @@ export class ZumaEngine {
     for (const b of alive) if (!head || b.s > head.s) head = b;
     if (!head) return;
     const list = chain.balls;
-    head.s -= this.config.zumaBackSpeed / this.config.tickHz;
-    this.pushBehind(list, list.indexOf(head));
+    const back = this.config.zumaBackSpeed / this.config.tickHz;
+    head.s -= back;
+    this.pushBehind(list, list.indexOf(head), back);
     this.stopPusher(chain);
     for (const r of chain.recoils) r.ticks--;
     chain.recoils = chain.recoils.filter(r => r.ticks > 0);
@@ -1229,12 +1249,21 @@ export class ZumaEngine {
     chain.speed = 0;
   }
 
-  /** Pushes the balls behind `list[idx]` (curve order, exploding balls included) back while they overlap it. */
-  private pushBehind(list: Ball[], idx: number): void {
-    for (let i = idx - 1; i >= 0; i--) {
+  /**
+   * Pushes the balls behind `list[idx]` (curve order, exploding balls included) back while they overlap it, after
+   * `list[idx]` rolled back `moved` px. A ball is never pushed further than the ball in front of it moved (R2.0.23): an
+   * overlap that predates this push — alive balls that rolled into exploding ones left in place, the list then out of
+   * curve order — is not resolved in one tick, which shifted the whole rear chain back by up to ~100 px (1-1, seed
+   * 16838, tick 370). Without such an overlap the result is unchanged.
+   */
+  private pushBehind(list: Ball[], idx: number, moved: number): void {
+    let step = moved;
+    for (let i = idx - 1; i >= 0 && step > 0; i--) {
       const max = list[i + 1].s - this.gap(list[i], list[i + 1]);
-      if (list[i].s > max) list[i].s = max;
-      else break;
+      if (!(list[i].s > max)) break;
+      const d = Math.min(list[i].s - max, step);
+      list[i].s -= d;
+      step = d;
     }
   }
 
