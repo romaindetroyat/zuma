@@ -278,7 +278,8 @@ test('pusher stop: speed 0 during the recoil and at least 12 ticks after its las
   for (let i = 0; i <= last + 12; i++) assert.equal(rows[i].speed, 0, `row ${i}: pusher stopped`);
   const restart = rows.findIndex(r => r.speed > 0);
   assert.ok(restart > last + 12, `restart at row ${restart}`);
-  assert.ok(rows[restart].speed <= CANDIDATE.chainAccel / 60 + 1e-9, `restarts from 0 (${rows[restart].speed})`);
+  // R2.0.24 (level-settings-audit): +0.005 px/maj per whole maj of the tick (one or two), was chainAccel / 60.
+  assert.ok(rows[restart].speed <= (2 * CANDIDATE.chainAccel) / 100 + 1e-9, `restarts from 0 (${rows[restart].speed})`);
 });
 
 test('the pusher catching a still segment emits merge but arms no recoil', () => {
@@ -378,7 +379,7 @@ test('ZUMA pushback lasts 180 ticks at most, then the pusher restarts from 0 at 
   for (let i = 0; i < 80; i++) { g.step(); speeds.push(g.chains[0].speed); assert.ok(headOf(g) >= h180 - 1e-9, 'no more pushback'); }
   const restart = speeds.findIndex(v => v > 0);
   assert.ok(restart >= 11, `pusher held ${restart} ticks after the pushback`);
-  assert.ok(speeds[restart] <= CANDIDATE.chainAccel / 60 + 1e-9, 'restarting from 0');
+  assert.ok(speeds[restart] <= (2 * CANDIDATE.chainAccel) / 100 + 1e-9, 'restarting from 0 (R2.0.24: one or two maj at +0.5 px/s)');
   assert.equal(speeds[speeds.length - 1], 15, 'target × 0.25');
   assert.ok(g.chains[0].zumaSlowLeft > 0);
 });

@@ -138,9 +138,10 @@ test('the stop restarts the pusher from 0: the speed ramps at 50 px/s² right af
   run(g, 24);
   assert.equal(g.chains[0].speed, 0);
   g.step();
-  near(g.chains[0].speed, 50 / 60, 1e-9, 'first tick after the stop: +50 px/s² × 1/60 s');
+  // R2.0.24 (level-settings-audit): +0.005 px/maj per whole maj of the tick (0x4188cb), was +50 px/s² × 1/60 s per tick.
+  assert.ok([0.5, 1].includes(g.chains[0].speed), `first tick after the stop: one or two maj at +0.5 px/s (${g.chains[0].speed})`);
   run(g, 29);
-  near(g.chains[0].speed, 25, 1e-6, '30 ticks after the stop: 25 px/s');
+  near(g.chains[0].speed, 25, 0.5, '30 ticks (50 maj ± 1) after the stop: 25 px/s');
 });
 
 test('removal of a block in the middle (the rear ball survives) stops nothing', () => {

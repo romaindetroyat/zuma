@@ -76,7 +76,8 @@ test('ramp: the pusher accelerates at 50 px/s² towards its target and decelerat
   run(fast, 1);
   fast.chains[0].speed = 500;
   fast.step();
-  near(fast.chains[0].speed, 500 - 1000 / 60, 1e-6, 'one tick at −1000 px/s²');
+  // R2.0.24 (level-settings-audit): −0.1 px/maj per whole maj of the tick (0x4188b3), was −1000 / 60 per tick.
+  assert.ok([490, 480].includes(fast.chains[0].speed), `one tick = one or two maj at −10 px/s (${fast.chains[0].speed})`);
   let ticks = 1;
   while (fast.chains[0].speed > 50 && ticks < 100) { fast.step(); ticks++; }
   assert.ok(ticks <= 28, `back to 50 px/s within 28 ticks (${ticks})`);
@@ -186,7 +187,12 @@ test('ZUMA slowdown: the target is speed × 0.25 while zumaSlowLeft runs, cumula
   assert.equal(g.chains[0].speed, 15);
   assert.equal(g.chains[0].zumaSlowLeft, 940, 'counted down every tick');
   g.slowTicks = 1000;
-  run(g, 10);
+  // R2.0.24 (level-settings-audit): the −0.1 px/maj step is not clamped (0x4188b3): 15 → 5 → −5 (+0.5) then back up at
+  // +0.5 px/s per maj — 3.75 is reached after ≈ 19 maj (was 10 ticks with a clamped deceleration).
+  const dip = [];
+  for (let i = 0; i < 20; i++) { g.step(); dip.push(g.chains[0].speed); }
+  const low = Math.min(...dip);
+  assert.ok(low >= -4.5 - 1e-9 && low <= -4 + 1e-9, `one unclamped step under the target, read at the end of a tick (${low})`);
   assert.equal(g.chains[0].speed, 3.75, '60 × 0.25 ÷ 4');
   g.slowTicks = 0;
   g.chains[0].zumaSlowLeft = 0;
@@ -651,6 +657,7 @@ test('configFromSettings: defaults and bounds (T-05-13)', () => {
   assert.equal(one({ zumaslow: Number.NaN }, 'zumaSlowTicks'), 660, 'non-finite → default, not 0');
   assert.equal(one({ zumaslow: -10 }, 'zumaSlowTicks'), 0, 'negative → 0');
   assert.equal(one({ zumaback: Number.POSITIVE_INFINITY }, 'zumaBackTicks'), 180);
-  assert.equal(one({ colors: 9 }, 'colors'), 6);
-  assert.equal(one({ colors: 1 }, 'colors'), 3);
+  // R2.0.24 (level-settings-audit): the attribute is overwritten by min(6, 4 + ⌊stage / 3⌋) (0x420021–0x420068), was 6 / 3.
+  assert.equal(one({ colors: 9 }, 'colors'), 4);
+  assert.equal(one({ colors: 1 }, 'colors'), 4);
 });

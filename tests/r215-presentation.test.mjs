@@ -170,8 +170,11 @@ test('configFromSettings: defaults, bounds and temple colours (T-05-11 / T-05-13
   assert.equal(d.startFraction, 0.4);
   assert.equal(configFromSettings({ id: 'x' }, 6).colors, 6, 'temple 7 → 6 colours');
   assert.equal(configFromSettings({ id: 'x' }, 4).colors, 5, 'temple 5 → 5 colours');
-  assert.equal(configFromSettings({ id: 'x', colors: 9 }, 0).colors, 6, 'colors bounded to 6');
-  assert.equal(configFromSettings({ id: 'x', colors: 1 }, 0).colors, 3, 'colors bounded to 3');
+  // R2.0.24 (level-settings-audit): adventure overwrites the Settings `colors` with min(6, 4 + ⌊stage / 3⌋)
+  // (0x420021–0x420068) — was « colors bounded to 6 / to 3 » on the attribute itself.
+  assert.equal(configFromSettings({ id: 'x', colors: 9 }, 0).colors, 4, 'R2.0.24: colors ignored, temple 1 → 4');
+  assert.equal(configFromSettings({ id: 'x', colors: 1 }, 0).colors, 4, 'R2.0.24: colors ignored, temple 1 → 4');
+  assert.equal(configFromSettings({ id: 'x', colors: 4 }, 12).colors, 6, 'R2.0.24: colors ignored, temple 13 → 6');
   assert.equal(configFromSettings({ id: 'x', single: 150 }, 0).singleLimit, 10, 'single bounded to 10');
   assert.equal(configFromSettings({ id: 'x', single: -5 }, 0).singleLimit, 0);
   assert.equal(configFromSettings({ id: 'x', zumaslow: -10, zumaback: Number.NaN }, 0).zumaSlowTicks, 0, 'negative → 0');
