@@ -533,6 +533,17 @@ export function feedSpeed(speed: number, distance: number): number {
 }
 
 /**
+ * Distance of the fast intro feed, in curve units (0x405088–0x40509c: d = ⌊points × start / 100⌋, the curve's point
+ * count, 0x404ed0). The pack's CURV polylines are sampled every pixel (≈ 1.005 px per point): their point count is
+ * used, as in the original; a sparse polyline (procedural levels, several px per vertex) uses its length in px.
+ */
+export function feedDistance(track: Track, startFraction: number): number {
+  const segments = track.points.length - 1;
+  const units = segments > 0 && track.length / segments <= 1.5 ? track.points.length : track.length;
+  return Math.floor(units * startFraction + 1e-7);
+}
+
+/**
  * Original ACE TIME bonus (0x401cb0): with t = ⌊seconds⌋, 0 when t > parTime, otherwise
  * 100 × (1 + ⌊250 × (1 − t / parTime)⌋) — 1-1 (par 25 s): 24 s → 1100, 20 s → 5100, 0 s → 25100.
  * 0 without a par time. The ratio is computed as (par − t) / par so that exact fractions stay exact.
@@ -1088,27 +1099,34 @@ export class ZumaEngine {
   }
 
   /**
-   * Original pusher kinematics (0x4188b3–0x4188e6, 0x418905–0x41890e): the speed is created lazily
-   * on the chain's first move — the fast-feed v0 of `feedSpeed` for `startFraction` × track length
+   * Original pusher kinematics (0x4188a7–0x4188e6, 0x418905–0x41890e): the speed is created lazily
+   * on the chain's first move — the fast-feed v0 of `feedSpeed` for `feedDistance` (start % of the curve's points)
    * (hypothesis A2: computed once at the start, the natural `chainDecel` deceleration does the rest)
-   * or the target — held at 0 while a pusher stop runs, otherwise moved towards the target by at
-   * most `chainDecel` × dt downwards or `chainAccel` × dt upwards. Always computed, even while a
-   * rollback or a recoil keeps the pusher from advancing, so the speed is coherent afterwards.
+   * or the target — held at 0 while a pusher stop runs, otherwise updated once per whole maj of the
+   * tick like the original: above the target it loses `chainDecel` / 100 px/s (0.1 px/maj) WITHOUT
+   * clamping (0x4188b3), then, below the target, it gains `chainAccel` / 100 px/s (0.005 px/maj)
+   * clamped on the target (0x4188cb–0x4188e6). Under a target that keeps decreasing (the slow-zone
+   * band) the speed runs a sawtooth up to 0.1 px/maj under it (R2.0.24, debug level-settings-audit).
+   * Always computed, even while a rollback or a recoil keeps the pusher from advancing.
    */
   private updatePusher(chain: Chain, alive: Ball[]): void {
-    const dt = 1 / this.config.tickHz;
     const target = this.pusherTarget(chain, alive);
     if (chain.speed === null) {
-      chain.speed = this.feeding ? feedSpeed(this.config.speed, this.config.startFraction * chain.track.length) : target;
+      chain.speed = this.feeding ? feedSpeed(this.config.speed, feedDistance(chain.track, this.config.startFraction)) : target;
       return;
     }
     if (chain.stopTicks > 0) {
       chain.stopTicks--;
       chain.speed = 0;
-    } else if (chain.speed > target) {
-      chain.speed = Math.max(target, chain.speed - this.config.chainDecel * dt);
-    } else if (chain.speed < target) {
-      chain.speed = Math.min(target, chain.speed + this.config.chainAccel * dt);
+      return;
+    }
+    // px/s per maj (1 maj = 10 ms); a float residue of the feed (V − v = n × 0.1 px/maj) lands on the target.
+    const down = this.config.chainDecel / 100;
+    const up = this.config.chainAccel / 100;
+    for (let m = 0; m < this.majSteps; m++) {
+      if (chain.speed > target + 1e-6) chain.speed -= down;
+      else if (chain.speed > target) chain.speed = target;
+      if (chain.speed < target) chain.speed = Math.min(target, chain.speed + up);
     }
   }
 

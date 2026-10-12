@@ -2278,13 +2278,18 @@ export { formatSeconds } from './statsdialog.js';
 /**
  * Maps original level settings onto the engine configuration (README « Réglages originaux »).
  * Units: the original simulates at 100 Hz (1 maj = 10 ms); px/maj × 100 = px/s, maj × 0.6 = ticks.
+ * A `<Settings>` element starts from the built-in defaults (0x4293d0 → 0x41aae0 / 0x40b070) and only overrides
+ * the attributes it carries (0x40d3e0): an absent attribute takes the default below, never the value of another
+ * element; a duplicated attribute keeps its last value (XML parser 0x4c444a). No stage or difficulty scaling of
+ * `speed` in adventure (0x418780; the coverage catch-up is Gauntlet-only, board+0x187).
  * `speed` px/maj → px/s; `start` % of the curve length → `startFraction`; `repeat` → `(repeat + 1) / 100`
- * (hypothesis A1: the pack's last duplicated attribute wins); `single` → `singleLimit` (repair
+ * (lvl11 / lvl12: the second `repeat`, 50); `single` → `singleLimit` (repair
  * threshold, 10 = off); `slowfactor` / `slowspeed` (→ speed / slowspeed) → `endSlowFactor` of the
  * end-of-track slow zone (the SLOW power-up keeps `CANDIDATE.slowFactor`); `danger` / `slowdistance`
  * → px; `zumaback` / `zumaslow` (300 / 1100 maj by default) → ticks; `partime` (s) or, when absent,
  * `defaultParTime(score, curves)` (hypothesis A7); `score` → `target` and `coinPoints` =
- * max(500, 100 × ⌊score / 600⌋); `levelBonus` 10 000 per curve (hypothesis A3).
+ * max(500, 100 × ⌊score / 600⌋); `levelBonus` 10 000 per curve (hypothesis A3). `colors` of the Settings is
+ * ignored: adventure overwrites it with min(6, 4 + ⌊stage / 3⌋), stage 0-based (0x420021–0x420068).
  * Every value is untrusted pack data (T-05-13): finite, bounded, defaulted.
  */
 export function configFromSettings(settings: PackSettings | undefined, stage: number, curves = 1): Partial<EngineConfig> {
@@ -2303,14 +2308,14 @@ export function configFromSettings(settings: PackSettings | undefined, stage: nu
     const n = Number(v);
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   };
-  const colors = num(s.colors, stage < 3 ? 4 : stage < 6 ? 5 : 6);
+  const colors = 4 + Math.floor(Math.max(0, num(stage, 0)) / 3);
   const powerfreq = num(s.powerfreq, 3000);
   const speed = num(s.speed, 0.5); // px/maj
   const target = num(s.score, 1000);
   const slowspeed = num(s.slowspeed, 0);
   const partime = num(s.partime, 0);
   return {
-    colors: clamp(Math.trunc(colors), 3, 6),
+    colors: Math.min(6, colors),
     startFraction: clamp(num(s.start, 40) / 100, 0, 1),
     total: Number.POSITIVE_INFINITY,
     target,
