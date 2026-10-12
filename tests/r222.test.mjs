@@ -9,9 +9,10 @@ import { ENGINE_VERSION } from '../.compiled/core.js';
 
 const read = path => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('baseline 2.0.22: ENGINE_VERSION and package.json agree', () => {
+// R2.0.23: r223 locks '2.0.23'; this one only checks that the baseline moved past 2.0.22 and still agrees with the package.
+test('baseline 2.0.22 superseded: ENGINE_VERSION is newer and agrees with package.json', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(ENGINE_VERSION, '2.0.22');
-  assert.equal(pkg.version, '2.0.22');
-  assert.match(pkg.description, /^Zuma R2\.0\.22 — /);
+  assert.ok(ENGINE_VERSION > '2.0.22', ENGINE_VERSION);
+  assert.equal(pkg.version, ENGINE_VERSION);
+  assert.match(pkg.description, new RegExp(`^Zuma R${ENGINE_VERSION.replaceAll('.', '\\.')} `));
 });
