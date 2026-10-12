@@ -60,7 +60,7 @@ test('gapBonusPoints: max(10, ⌊500 × (300 − max(0, w − 64)) / 300⌋₁�
 
 /** Lower leg y = 240 (s 0..640), right leg, upper leg y = 100 (s 780..1420, x = 640 − (s − 780)). A shot at (320, 100) crosses s = 320 and lands at s = 1100. */
 const RECT = [[0, 240], [640, 240], [640, 100], [0, 100]];
-/** Free width 380 − 284 − 32 = 64 px of track between the two balls' edges. */
+/** Free width 64 px between the edges; R2.0.24 (r224, 0x414e19): the original measures the centres, 380 − 284 = 96 → 440. */
 const LOWER = [{ color: 1, s: 284 }, { color: 2, s: 380 }];
 const rect = (balls, current, next = current, points = RECT) => {
   const g = new ZumaEngine(new Track(points), frog, quiet, 3);
@@ -69,7 +69,7 @@ const rect = (balls, current, next = current, points = RECT) => {
   return g;
 };
 
-test('gap bonus: a shot through a 64 px gap that completes a run pays 500 with the match, never at the insertion', () => {
+test('gap bonus: a shot through a gap (centres 96 px apart) that completes a run pays 440 with the match, never at the insertion', () => {
   const g = rect([...LOWER, { color: 1, s: 1036 }, { color: 0, s: 1068 }, { color: 0, s: 1100 }, { color: 1, s: 1132 }], 0);
   g.command({ kind: 'shoot', x: 320, y: 100 });
   g.step();
@@ -80,22 +80,22 @@ test('gap bonus: a shot through a 64 px gap that completes a run pays 500 with t
   assert.equal(g.score, 0, 'no points at the insertion');
   assert.equal(g.stats.gaps, 0);
   const inserted = g.balls.find(b => b.id === insert.id);
-  assert.equal(inserted.gapBonus, 500, 'bonus armed on the ball (0x421d27)');
+  assert.equal(inserted.gapBonus, 440, 'bonus armed on the ball (0x421d27)');
   assert.equal(inserted.gapCount, 1);
   const destroy = stepUntil(g, 'destroy', 60);
   assert.equal(destroy.count, 3);
-  assert.equal(destroy.gapPoints, 500);
+  assert.equal(destroy.gapPoints, 440);
   assert.equal(destroy.gapCount, 1);
   assert.equal(destroy.chainBonus, 0);
-  assert.equal(destroy.points, 530, '10 × 3 + 500');
-  assert.equal(g.score, 530);
-  assert.equal(g.levelScore, 530, 'the gauge gets the gap points too');
+  assert.equal(destroy.points, 470, '10 × 3 + 440');
+  assert.equal(g.score, 470);
+  assert.equal(g.levelScore, 470, 'the gauge gets the gap points too');
   const gaps = ofKind(g, 'gap');
   assert.equal(gaps.length, 1);
   assert.equal(gaps[0].tick, destroy.tick, 'gap emitted with the match');
   assert.ok(gaps[0].tick > insert.tick, 'never at the insert tick');
   assert.equal(gaps[0].count, 1);
-  assert.equal(gaps[0].points, 500);
+  assert.equal(gaps[0].points, 440);
   assert.equal(g.stats.gaps, 1, 'one SAUTS per match');
   assert.equal(inserted.gapBonus, undefined, 'cleared once paid');
   assert.equal(inserted.gapCount, undefined);
@@ -117,7 +117,7 @@ test('gap bonus: a shot through a gap that lands beside no ball of its colour pa
   assert.equal(g.streak, 0);
 });
 
-test('gap bonus: a ball landed against its colour keeps its bonus; the later match pays the sum of both balls as one gap', () => {
+test('gap bonus: a ball landed against ONE touching ball of its colour is not waiting (R2.0.24, 0x421dbc): its bonus is lost, the later match pays only its own', () => {
   const g = rect([...LOWER, { color: 1, s: 1068 }, { color: 0, s: 1100 }, { color: 1, s: 1132 }], 0, 0);
   g.command({ kind: 'shoot', x: 320, y: 100 });
   const first = stepUntil(g, 'insert', 60);
@@ -125,47 +125,47 @@ test('gap bonus: a ball landed against its colour keeps its bonus; the later mat
   assert.equal(ofKind(g, 'destroy').length, 0, 'two balls of colour 0: no match');
   assert.equal(ofKind(g, 'gap').length, 0);
   assert.equal(g.score, 0);
-  const waiting = g.balls.find(b => b.id === first.id);
-  assert.equal(waiting.gapBonus, 500, 'waiting ball keeps its bonus (0x421d59)');
-  assert.equal(waiting.gapCount, 1);
+  const pair = g.balls.find(b => b.id === first.id);
+  assert.equal(pair.gapBonus, undefined, 'a touching pair is not waiting: bonus cleared (the waiting case is in r224)');
+  assert.equal(pair.gapCount, undefined);
   assert.equal(g.current, 0);
   g.command({ kind: 'shoot', x: 320, y: 100 });
   const destroy = stepUntil(g, 'destroy', 80);
   assert.equal(destroy.count, 3);
-  assert.equal(destroy.gapPoints, 1000, '500 + 500');
+  assert.equal(destroy.gapPoints, 440, 'the second shot only');
   assert.equal(destroy.gapCount, 1);
-  assert.equal(destroy.points, 1030);
-  assert.equal(g.score, 1030);
+  assert.equal(destroy.points, 470);
+  assert.equal(g.score, 470);
   const gaps = ofKind(g, 'gap');
   assert.equal(gaps.length, 1, 'one gap event for the match');
-  assert.equal(gaps[0].points, 1000);
+  assert.equal(gaps[0].points, 440);
   assert.equal(gaps[0].count, 1);
   assert.equal(g.stats.gaps, 1, 'one match with a gap');
 });
 
-test('double gap: two gaps of 64 and 100 px pay 500 × 2 (the narrowest, not 500 + 440) with count 2', () => {
+test('double gap: two gaps of centres 96 and 132 px pay 440 × 2 (the narrowest, not 440 + 390) with count 2', () => {
   // Lower leg y 240 (s 0..640), middle leg y 170 (s 710..1350, x = 640 − (s − 710)), upper leg y 100 (s 1420..2060, x = s − 1420).
   // The shot at (320, 100) crosses s = 320 and s = 1030 and lands at s = 1740.
   const track = [[0, 240], [640, 240], [640, 170], [0, 170], [0, 100], [640, 100]];
   const g = rect([
     ...LOWER,
-    { color: 3, s: 994 }, { color: 2, s: 1126 }, // free width 1126 − 994 − 32 = 100
+    { color: 3, s: 994 }, { color: 2, s: 1126 }, // centres 1126 − 994 = 132 (free 100)
     { color: 1, s: 1676 }, { color: 0, s: 1708 }, { color: 0, s: 1740 }, { color: 1, s: 1772 },
   ], 0, 0, track);
   g.command({ kind: 'shoot', x: 320, y: 100 });
   const insert = stepUntil(g, 'insert', 80);
   const inserted = g.balls.find(b => b.id === insert.id);
   assert.equal(inserted.gapCount, 2);
-  assert.equal(inserted.gapBonus, 1000);
+  assert.equal(inserted.gapBonus, 880);
   const destroy = stepUntil(g, 'destroy', 60);
   assert.equal(destroy.count, 3);
-  assert.equal(destroy.gapPoints, 1000);
+  assert.equal(destroy.gapPoints, 880);
   assert.equal(destroy.gapCount, 2);
-  assert.equal(destroy.points, 1030);
+  assert.equal(destroy.points, 910);
   const gap = ofKind(g, 'gap')[0];
   assert.ok(gap, 'gap event');
   assert.equal(gap.count, 2);
-  assert.equal(gap.points, 1000);
+  assert.equal(gap.points, 880);
   assert.equal(g.stats.gaps, 1);
 });
 
@@ -179,7 +179,7 @@ test('trackGap keeps the narrowest gap crossed in Projectile.gapMinWidth; the in
   // From y = 384 at 12 px/tick: y = 240 ± 16 is reached after 11..13 ticks.
   run(g, 14);
   assert.equal(p.gaps, 1);
-  assert.equal(p.gapMinWidth, 64, 'next.s − prev.s − ballSpacing');
+  assert.equal(p.gapMinWidth, 96, 'next.s − prev.s, centre to centre (R2.0.24, 0x414e19)');
   const hook = g.insert(0, { id: 999, color: 0 }, { x: 0, y: 0 }, 10);
   assert.equal(hook.gapBonus, undefined);
   assert.equal(hook.gapCount, undefined);

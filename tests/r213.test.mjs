@@ -112,7 +112,8 @@ test('no recoil at match time; the contact recoil pushes the whole chain back', 
 
 test('a projectile flying through a gap before landing earns a gap bonus', () => {
   // R2.0.17: the gap bonus is paid by the match (D-22) — the shot lands between two balls of its colour on the
-  // upper leg; the gap crossed on the lower leg is 500 − 132 − 32 = 336 px wide → 40 points (gapBonusPoints).
+  // upper leg; the gap crossed on the lower leg is 500 − 132 = 368 px between centres (R2.0.24, 0x414e19) → the
+  // floor of 10 points (gapBonusPoints).
   const track = new Track([[0, 240], [640, 240], [640, 100], [0, 100]]);
   const g = new ZumaEngine(track, frog, quiet, 3);
   g.feeding = false;
@@ -122,7 +123,7 @@ test('a projectile flying through a gap before landing earns a gap bonus', () =>
   const gap = g.events.find(e => e.kind === 'gap');
   assert.ok(gap, 'gap event expected');
   assert.equal(gap.count, 1);
-  assert.equal(gap.points, 40);
+  assert.equal(gap.points, 10);
   assert.equal(g.stats.gaps, 1);
 });
 

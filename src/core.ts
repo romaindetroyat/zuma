@@ -15,14 +15,19 @@
  * curve at clearing, ACE TIME bonus credited by the STATS count-up). From R2.0.17
  * (05-RESEARCH-02.md, D-22): the gap bonus is computed at the insertion from the
  * narrowest gap crossed (`gapBonusPoints`), armed on the ball and paid by the match
- * that destroys it (kept while the ball waits against its colour, cleared
- * otherwise); a match scores 10 × n + 100 × combo + gap bonus, plus (chain + 5) × 10
+ * that destroys it (kept while the ball waits across a gap from its colour, cleared
+ * otherwise — R2.0.24); a match scores 10 × n + 100 × combo + gap bonus, plus (chain + 5) × 10
  * from the 5th consecutive hit on a direct match. From R2.0.18 (05-RESEARCH-03.md, D-23 / D-27 / D-28 /
  * D-30): CURV byte A marks tunnel points (a ball there cannot be hit, the nearest-point search skips
  * them) and byte B the draw priority 0..3; one life per multiple of `extraLifeEvery` (50 000) crossed,
  * with no cap; coins stay 10 s and are attempted at 1/180 per tick from 780 ticks after the previous
  * appearance, never in ZUMA mode, on points whose chain head passed `dist` % of the curve; the
- * end-of-level tally walks one marker per chain, all together. From R2.0.19 (05-RESEARCH-04.md, D-34): a
+ * end-of-level tally walks one marker per chain, all together. From R2.0.24 (scoring audit, 0x414c60 / 0x421d55 /
+ * 0x408e30): the gap detector samples the curve every 32 px (radius 16) on the updates without collision, measures
+ * the gap between the CENTRES of the two list neighbours (exploding balls included) and drops the gap the ball lands
+ * in; a ball landing without a match across a gap from its colour (centres ≥ 42 px apart) is « waiting »: it keeps
+ * its gap bonus and the chain, adds 1 to the chain when destroyed (the contact match then pays the chain bonus), and
+ * a contact that leaves it alive resets the chain. From R2.0.19 (05-RESEARCH-04.md, D-34): a
  * destroyed ball stays 40 maj (24 ticks) and nothing moves meanwhile; when it is removed between two balls of one
  * colour the front segment is attracted back by a counter v (⌊v/8⌋ px per maj, then v + 1, no cap), also armed
  * (v = 1) by a shot ball that lands without a match against a gap of its colour; only the contact of an attraction
@@ -218,6 +223,12 @@ export interface Ball {
   /** Number of gaps the shot crossed (0x421d2b, `ball+0x5e`), armed and cleared with `gapBonus`. */
   gapCount?: number;
   /**
+   * « Waiting » shot ball (`ball+0x32`, 0x421d70 / 0x421da3): landed without a match across a gap from a ball of its
+   * colour. It keeps its gap bonus and does not reset the chain; destroyed in a match it adds 1 to the chain
+   * (0x4212d4–0x4212e1); a contact that leaves it alive clears it and resets the chain (0x408e30).
+   */
+  waiting?: boolean;
+  /**
    * Attraction counter v (`ball+0x3c`): the segment led by this ball (it and the balls ahead in contact) rolls back
    * ⌊v/8⌋ px per maj towards the alive ball behind it, then v += 1 (0x421800); cleared at the contact.
    */
@@ -231,12 +242,15 @@ export interface Projectile {
   y: number;
   vx: number;
   vy: number;
+  /** Number of gaps in the list (projectile+0x9c). */
   gaps: number;
+  /** One key per gap, `chain:frontBallId` (AddGap 0x414660 dedups on the id of the ball ahead of the gap, ball+4). */
   gapKeys: string[];
+  /** Width of each gap of `gapKeys`, same order (node+0xc). */
+  gapWidths: number[];
   /**
-   * Narrowest gap crossed, px of track: the free length between the edges of the two balls
-   * (`next.s − prev.s − ballSpacing`); Infinity until a gap is crossed. The original stores the
-   * width per gap node (`+0xc`) and 0x40a810 takes the minimum.
+   * Narrowest gap in the list (0x40a810), px of track between the CENTRES of the two balls bordering the gap
+   * (`next.s − prev.s`, 0x414e19, truncated); Infinity while the list is empty.
    */
   gapMinWidth: number;
 }
@@ -544,8 +558,8 @@ export function defaultParTime(score: number, curves: number): number {
 
 /**
  * Original gap bonus (0x421cac–0x421d2b) for a shot that crossed `gaps` gaps, the narrowest being
- * `minWidth` px of track (hypothesis B1: the original does not convert `w`, and its thresholds 64 ≈ two
- * ball diameters and 300 match the other track distances): w' = max(0, w − 64), base 500 (250 is
+ * `minWidth` px of track between the CENTRES of its two balls (0x414e19; curve points are 1.005 px apart in the
+ * pack, so points ≈ px): w' = max(0, w − 64) — 500 up to one free ball slot —, base 500 (250 is
  * the gauntlet mode `board+0x187`, ignored), pts = ⌊500 × (300 − w') / 300 / 10⌋ × 10, at least 10,
  * × gaps when gaps > 1. 0 when gaps < 1; a NaN or negative width counts as 0 (→ 500), an infinite
  * one falls to the floor of 10.
@@ -609,6 +623,9 @@ export class Chain {
 }
 
 const CONTACT_EPS = 0.5;
+
+/** Gap detector samples per track (0x414c60 walks the curve points every 2 × radius). */
+const GAP_SAMPLES = new WeakMap<Track, Array<{ s: number; x: number; y: number }>>();
 
 export class ZumaEngine {
   readonly config: EngineConfig;
@@ -908,6 +925,7 @@ export class ZumaEngine {
       vy: (dy / len) * speed,
       gaps: 0,
       gapKeys: [],
+      gapWidths: [],
       gapMinWidth: Infinity,
     };
     this.projectiles.push(projectile);
@@ -1292,12 +1310,39 @@ export class ZumaEngine {
     }
     const destroyed = this.junctionMatch(chain, alive, i, depth);
     if (!attracted) return;
+    this.endWaiting(chain, arrived[arrived.length - 1]);
     let pusher: Ball | undefined;
     for (let k = arrived.length - 1; k >= 0 && !pusher; k--) if (arrived[k].destroyingUntil === undefined) pusher = arrived[k];
     if (!pusher || chain.recoils.some(r => r.id === pusher.id)) return;
     const d = destroyed ? depth : 0;
     const speed = Math.max(this.config.contactRecoilMin, this.config.contactRecoilPerDepth * d);
     chain.recoils.push({ id: pusher.id, ticks: this.config.contactRecoilTicks, speed });
+  }
+
+  /**
+   * 0x408e30, after every attraction contact: from the most advanced ball of the arrived segment backwards through the
+   * raw list, every ball still waiting loses that state, its gap bonus and the chain (0x401ac0). The walk crosses
+   * linked balls freely; past the first gap it stops at a ball whose attraction is still running (its own wait is
+   * not over).
+   */
+  private endWaiting(chain: Chain, start: Ball): void {
+    const list = chain.balls;
+    let k = list.indexOf(start);
+    let linked = true;
+    while (k >= 0) {
+      const b = list[k];
+      if (b.waiting) {
+        delete b.waiting;
+        delete b.gapBonus;
+        delete b.gapCount;
+        this.streak = 0;
+      }
+      const prev = list[k - 1];
+      if (!prev) return;
+      if (!this.linked(prev, b)) linked = false;
+      if (!linked && (prev.attract ?? 0) > 0) return;
+      k--;
+    }
   }
 
   /** Match at a junction (0x421240); returns whether a run was destroyed. */
@@ -1316,11 +1361,10 @@ export class ZumaEngine {
   /**
    * A shot ball has finished opening its slot (width = 1): this is where the
    * match it may complete is evaluated, hits/streak accounted and the run destroyed.
-   * Chain bonus (0x420bee–0x420bfc): (chain + 5) × 10 from the 5th consecutive hit, on
-   * the direct match only. Without a match, a ball in contact with a ball of its colour
-   * is « waiting » (0x421d59–0x421db9) and keeps its gap bonus for a later match; any
-   * other ball loses it (0x421dbc–0x421dd2). The original also lets a waiting ball keep
-   * the chain alive (`+0x32`); that refinement is not implemented: the chain resets.
+   * Chain bonus (0x420bee–0x420bfc, computed in destroyRun): (chain + 5) × 10 from the 5th consecutive hit, on
+   * a match of combo 0. Without a match, a ball whose neighbour of its colour sits across a gap — centres 42 px
+   * apart or more, 0x401820 with tolerance 5 — is « waiting » (0x421d59–0x421db9): it keeps its gap bonus and the
+   * chain; any other ball (a touching pair included) loses its bonus and resets the chain (0x421dbc–0x421dd2).
    */
   private settle(chain: Chain, ball: Ball): void {
     if (ball.destroyingUntil !== undefined) return;
@@ -1330,24 +1374,10 @@ export class ZumaEngine {
     const run = this.runAround(alive, index);
     if (run.length >= 3) {
       this.stats.hits++;
-      this.streak++;
+      this.streak++; // 0x421d32, before the match test
       this.stats.maxStreak = Math.max(this.stats.maxStreak, this.streak);
-      const chainBonus = this.streak >= 5 ? (this.streak + 5) * 10 : 0;
-      this.destroyRun(chain, alive, run, 1, ball.id, chainBonus);
-      if (chainBonus > 0) {
-        const pos = this.ballPosition(ball, chain);
-        this.emit('streak', { streak: this.streak, points: chainBonus, x: pos.x, y: pos.y });
-      }
+      this.destroyRun(chain, alive, run, 1, ball.id, ball);
     } else {
-      const prev = alive[index - 1];
-      const next = alive[index + 1];
-      const waiting = (prev !== undefined && prev.color === ball.color && this.touching(prev, ball))
-        || (next !== undefined && next.color === ball.color && this.touching(ball, next));
-      if (!waiting) {
-        delete ball.gapBonus;
-        delete ball.gapCount;
-      }
-      this.streak = 0;
       // 0x421d55–0x421dae: a ball landing without a match next to a gap whose other edge has its colour arms the
       // attraction with v = 1 — on itself when the gap is behind it, on the next ball when the gap is ahead and that
       // ball does not attract already. Neighbours in curve order; an exploding neighbour is no edge.
@@ -1356,9 +1386,25 @@ export class ZumaEngine {
       const behind = list[k - 1];
       const ahead = list[k + 1];
       const edge = (b: Ball | undefined): b is Ball => b !== undefined && b.destroyingUntil === undefined && b.color === ball.color;
+      const waiting = (edge(behind) && !this.linked(behind, ball)) || (edge(ahead) && !this.linked(ball, ahead));
+      if (waiting) {
+        ball.waiting = true; // keeps its gap bonus and the chain
+      } else {
+        delete ball.gapBonus;
+        delete ball.gapCount;
+        this.streak = 0; // 0x401ac0
+      }
       if (edge(behind) && !this.touching(behind, ball) && !((ball.attract ?? 0) > 0)) ball.attract = this.config.attractStartAfterShot;
       if (edge(ahead) && !this.touching(ball, ahead) && !((ahead.attract ?? 0) > 0)) ahead.attract = this.config.attractStartAfterShot;
     }
+  }
+
+  /**
+   * The original « touches its next » flag (`ball+0x30`, 0x408700 → 0x401820 with tolerance 5): truncated centres
+   * less than 2 × 5 + 32 = 42 px apart. Only used by the waiting rule and its reset walk.
+   */
+  private linked(a: Ball, b: Ball): boolean {
+    return Math.abs(Math.trunc(b.s) - Math.trunc(a.s)) < 2 * 5 + 2 * this.config.ballRadius;
   }
 
   /** Physical contact between two consecutive alive balls (same criterion as `runAround`). */
@@ -1378,12 +1424,14 @@ export class ZumaEngine {
   }
 
   /**
-   * Match score (0x420b80, 0x421240): 10 × n + 100 × (depth − 1) + the gap bonuses armed on the
-   * balls of the run (summed, with the largest gap count) + `chainBonus`; the gap fields are
-   * cleared (0x4212f0–0x4212ff), SAUTS counts one per match with a gap (0x420c1f–0x420c3a) and
-   * the `gap` event is emitted here, never at the insertion (0x420da8–0x420ec4).
+   * Match score (0x420b80, 0x421240): every waiting ball of the run first adds 1 to the chain (0x4212d4–0x4212e1),
+   * then 10 × n + 100 × (depth − 1) + the gap bonuses armed on the balls of the run (summed, with the largest gap
+   * count) + the chain bonus (chain + 5) × 10 when chain ≥ 5 and depth = 1 (0x420bcf–0x420bfc, whatever made the
+   * match: shot or attraction contact); the gap fields are cleared (0x4212f0–0x4212ff), SAUTS counts one per match
+   * with a gap (0x420c1f–0x420c3a) and the `gap` event is emitted here, never at the insertion (0x420da8–0x420ec4).
+   * `anchor` places the ENCHAÎNEMENT text (the shot ball), the run centre otherwise.
    */
-  private destroyRun(chain: Chain, alive: Ball[], run: Ball[], depth: number, shotId: number, chainBonus = 0): void {
+  private destroyRun(chain: Chain, alive: Ball[], run: Ball[], depth: number, shotId: number, anchor?: Ball): void {
     const until = this.tick + this.config.destroyTicks;
     const lo = alive.indexOf(run[0]);
     const hi = alive.indexOf(run[run.length - 1]);
@@ -1399,6 +1447,13 @@ export class ZumaEngine {
     const centre = this.ballPosition(middle, chain);
     this.lastDestroy[chain.index] = middle.s;
     this.lastDestroyChain = chain.index;
+    for (const b of run) {
+      if (!b.waiting) continue;
+      delete b.waiting;
+      this.streak++;
+    }
+    this.stats.maxStreak = Math.max(this.stats.maxStreak, this.streak);
+    const chainBonus = depth === 1 && this.streak >= 5 ? (this.streak + 5) * 10 : 0;
     let gapPoints = 0;
     let gapCount = 0;
     for (const b of run) {
@@ -1415,6 +1470,10 @@ export class ZumaEngine {
     const ids = run.map(b => b.id);
     this.emit('destroy', { depth, count: run.length, color: run[0].color, x: centre.x, y: centre.y, points, gapPoints, gapCount, chainBonus, streak: this.streak, ids, chain: chain.index });
     if (gapPoints > 0) this.emit('gap', { count: gapCount, points: gapPoints, x: centre.x, y: centre.y, chain: chain.index });
+    if (chainBonus > 0) {
+      const pos = anchor ? this.ballPosition(anchor, chain) : centre;
+      this.emit('streak', { streak: this.streak, points: chainBonus, x: pos.x, y: pos.y });
+    }
     this.registerDestroyed(run.length);
     this.addScore(points);
     for (const b of run) if (b.power) this.activatePower(b, chain);
@@ -1636,7 +1695,6 @@ export class ZumaEngine {
       let bestDist = Infinity;
       for (const chain of this.chains) {
         const alive = this.alive(chain);
-        this.trackGap(p, chain, alive);
         for (const b of alive) {
           if (b.s < 0 || b.s > chain.track.length) continue;
           // 0x408f52: a ball on a tunnel point is not touchable; the projectile flies on.
@@ -1650,32 +1708,65 @@ export class ZumaEngine {
           }
         }
       }
-      if (hit && hitChain) this.land(p, hit, hitChain);
-      else keep.push(p);
+      if (hit && hitChain) {
+        this.land(p, hit, hitChain);
+        continue;
+      }
+      // 0x423749–0x4237a5: the gap detector runs on every curve only when no curve was hit this update.
+      for (const chain of this.chains) this.trackGap(p, chain);
+      keep.push(p);
     }
     this.projectiles = keep;
   }
 
-  /** Counts the gaps between separated segments a projectile flies through and keeps the narrowest free width. */
-  private trackGap(p: Projectile, chain: Chain, alive: Ball[]): void {
-    const near = chain.track.nearest(p, true); // 0x414d6e: tunnel points are never the nearest point
-    if (near.dist > this.config.ballRadius) return;
-    let prev: Ball | undefined;
-    let next: Ball | undefined;
-    for (const b of alive) {
-      if (b.s <= near.s) prev = b;
-      else { next = b; break; }
+  /**
+   * Original gap detector (0x414c60) for one curve: the first curve sample — every 2 × radius = 32 px from s = 1,
+   * tunnel points skipped — closer than the ball radius (16) to the projectile; the gap is between the first ball of
+   * the raw list (exploding balls included, they stay in the curve list) beyond that sample and its predecessor;
+   * width = truncated centre distance, > 0; one entry per front ball (AddGap 0x414660). No gap before the rearmost
+   * ball nor beyond the head.
+   */
+  private trackGap(p: Projectile, chain: Chain): void {
+    const r = this.config.ballRadius;
+    let found: number | null = null;
+    for (const sample of this.gapSamples(chain.track)) {
+      const dx = sample.x - p.x;
+      const dy = sample.y - p.y;
+      if (dx * dx + dy * dy < r * r) { found = sample.s; break; }
     }
-    if (!prev || !next) return;
-    const spacing = this.config.ballSpacing;
-    if (next.s - prev.s <= 2 * spacing) return;
-    if (near.s - prev.s < spacing * 0.75 || next.s - near.s < spacing * 0.75) return;
-    const key = `${chain.index}:${prev.id}`;
+    if (found === null) return;
+    const list = chain.balls;
+    const k = list.findIndex(b => b.s > found);
+    if (k <= 0) return;
+    const w = Math.trunc(list[k].s - list[k - 1].s);
+    if (!(w > 0)) return;
+    const key = `${chain.index}:${list[k].id}`;
     if (p.gapKeys.includes(key)) return;
     p.gapKeys.push(key);
-    p.gaps++;
-    // Free width between the two balls' edges, px of track (hypothesis B1, see gapBonusPoints).
-    p.gapMinWidth = Math.min(p.gapMinWidth, next.s - prev.s - spacing);
+    p.gapWidths.push(w);
+    this.refreshGaps(p);
+  }
+
+  /** Recomputes the gap count and the narrowest width (0x40a810) from the projectile's list. */
+  private refreshGaps(p: Projectile): void {
+    p.gaps = p.gapKeys.length;
+    p.gapMinWidth = p.gapWidths.length > 0 ? Math.min(...p.gapWidths) : Infinity;
+  }
+
+  /** Curve samples of the gap detector, cached per track: s = 1, 33, 65… (2 × radius), tunnel points excluded. */
+  private gapSamples(track: Track): Array<{ s: number; x: number; y: number }> {
+    let samples = GAP_SAMPLES.get(track);
+    if (!samples) {
+      samples = [];
+      const step = 2 * this.config.ballRadius;
+      for (let s = 1; s < track.length; s += step) {
+        if (track.tunnelAt(s)) continue;
+        const q = track.pointAt(s);
+        samples.push({ s, x: q.x, y: q.y });
+      }
+      GAP_SAMPLES.set(track, samples);
+    }
+    return samples;
   }
 
   private land(p: Projectile, hit: Ball, chain: Chain): void {
@@ -1687,6 +1778,16 @@ export class ZumaEngine {
     // A zero-width ball sits half a spacing from the hit ball; it grows into a full slot.
     const half = this.config.ballSpacing / 2;
     const s = ahead ? hit.s + half : hit.s - half;
+    // 0x422001–0x422032: the gap the ball goes into is removed from the list (key = the ball ahead of the slot).
+    const front = ahead ? chain.balls[globalIdx + 1] : hit;
+    if (front) {
+      const at = p.gapKeys.indexOf(`${chain.index}:${front.id}`);
+      if (at >= 0) {
+        p.gapKeys.splice(at, 1);
+        p.gapWidths.splice(at, 1);
+        this.refreshGaps(p);
+      }
+    }
     const ball = this.insertGrowing(index, { id: p.id, color: p.color }, { x: p.x, y: p.y }, s, chain);
     // No pusher stop on insertion: 0x423ac7–0x423ad6 belongs to the end of destruction (0x423a10), see processRemovals.
     this.emit('insert', { id: ball.id, color: ball.color, x: bp.x, y: bp.y, chain: chain.index });
