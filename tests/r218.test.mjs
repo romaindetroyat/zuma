@@ -132,7 +132,7 @@ test('collision: a projectile flies through a ball sitting in a tunnel and misse
   assert.equal(h.balls.length, 2, 'landed at the contact');
   const core = fs.readFileSync('.compiled/core.js', 'utf8');
   assert.match(core, /tunnelAt\(b\.s\)\)\s*continue/, 'contact loop skips tunnel balls');
-  assert.match(core, /nearest\(p, true\)/, 'trackGap ignores tunnel points');
+  assert.match(core, /if \(track\.tunnelAt\(s\)\)\s*continue/, 'the gap detector samples skip tunnel points (0x414d6e)');
 });
 
 // ------------------------------------------------------------ vies (0x417380)
