@@ -1,5 +1,5 @@
 ---
-status: awaiting_human_verify
+status: resolved (user kept the original gap amounts, 2026-10-12)
 trigger: "« J'ai l'impression que les scores ne reflètent pas vraiment les scores du jeu d'origine. Je voudrais que tu vérifies notamment les scores attribués quand on tire dans les brèches. J'ai l'impression que c'est sous noté... »"
 created: 2026-10-12T00:00:00Z
 updated: 2026-10-12T12:00:00Z

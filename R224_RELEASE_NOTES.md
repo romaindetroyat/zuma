@@ -12,7 +12,7 @@ Trois retours de jeu traités ensemble. Rapports : `.planning/debug/scoring-audi
 
 - **Tir dans une brèche qui referme la chaîne** : l'enchaînement n'est plus remis à zéro quand la bille se pose face à sa couleur de l'autre côté d'une brèche (bille « en attente », voisins à 42 px ou plus, 0x421d59 / 0x401820) ; le bonus d'enchaînement s'applique aussi au match provoqué par l'attraction (0x42198f). C'était la principale sous-notation.
 - **Tir par-dessus une série en train d'exploser** : compté comme une brèche (500 par brèche), comme l'original.
-- **Largeur de brèche** mesurée de centre à centre (0x414e19) au lieu de bord à bord ; la brèche où se pose la bille ne compte plus ; détection seulement sans collision. Chaque brèche rapporte un peu moins qu'avant (2 billes manquantes : 440 au lieu de 500). **Décision utilisateur en attente** : revenir aux anciens montants est un changement d'une ligne (`trackGap`), au prix d'un écart avec l'original.
+- **Largeur de brèche** mesurée de centre à centre (0x414e19) au lieu de bord à bord ; la brèche où se pose la bille ne compte plus ; détection seulement sans collision. Chaque brèche rapporte un peu moins qu'avant (2 billes manquantes : 440 au lieu de 500). **Décision utilisateur (2026-10-12)** : garder les montants du jeu original (largeur de centre à centre).
 - Inchangés et vérifiés : points par bille et combos, pièces, vie tous les 50 000, ACE TIME, décompte de fin de niveau. Verrous : `tests/r224-scoring.test.mjs`.
 
 ## Vitesses des niveaux (levels.xml de l'utilisateur)
