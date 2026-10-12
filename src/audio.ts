@@ -141,6 +141,9 @@ export const UFO_GAIN = 0.8;
 /** Full-level gain of each loop. */
 const LOOP_GAINS: Record<LoopKey, number> = { rolling: ROLLING_GAIN, ufo: UFO_GAIN };
 
+/** Delay before the context replaced by resumeAfterPause is closed: its last one-shots (≤ 1 s) play out first. */
+export const OLD_CONTEXT_RELEASE_MS = 1500;
+
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
 
@@ -239,6 +242,19 @@ export function primeMediaChannel(doc: Pick<AudioDocument, 'createElement'> | nu
   }
 }
 
+/**
+ * Transient user activation of the page (`navigator.userActivation.isActive`, Safari 16.4+, Chrome 72+): false only
+ * when the API says so; without it the caller is assumed to run in a gesture. Never throws.
+ */
+export function hasTransientActivation(nav: unknown): boolean {
+  try {
+    const activation = (nav as { userActivation?: { isActive?: unknown } } | null | undefined)?.userActivation;
+    return !activation || activation.isActive !== false;
+  } catch {
+    return true;
+  }
+}
+
 /** WebKit (Safari, every iOS browser) by feature detection on WebKit-only globals, not the user agent. */
 export function isWebKit(win: unknown): boolean {
   const w = win as { GestureEvent?: unknown; webkitAudioContext?: unknown } | null | undefined;
@@ -288,6 +304,8 @@ export class AudioManager {
   private loading = new Set<string>();
   private loops = new Map<LoopKey, Loop>();
   private pulses = new Map<PulseKey, Pulse>();
+  /** resumeAfterPause() came without transient activation: the fresh context is made at the next unlock(). */
+  private renewPending = false;
 
   /** Silent `<audio>` already played (once per page). */
   private mediaPrimed = false;
@@ -364,10 +382,78 @@ export class AudioManager {
       this.master.connect(this.ctx.destination);
       this.watchState(this.ctx);
       void this.preload();
+    } else if (this.renewPending && hasTransientActivation(this.env.navigator)) {
+      this.renewPending = false;
+      this.renew();
     }
+    if (!this.ctx) return;
     if (this.ctx.state !== 'running') primeContext(this.ctx);
     if (this.env.webkit && !this.mediaPrimed) this.mediaPrimed = primeMediaChannel(this.env.document);
     this.resume();
+  }
+
+  /**
+   * Call when the game resumes after a pause (MENU closed, P, live STATS closed), from the gesture that resumes it.
+   * The output latency of a long-lived AudioContext is not guaranteed to come back down: on WebKit (Safari macOS, every
+   * iOS browser) Web Audio is rendered into a ring buffer read by the GPU process, each render underrun adds one
+   * hardware buffer of write-ahead that is never reclaimed, and suspend() / resume() keep it — after the long silent
+   * stretch of a pause every sound was heard late (R2.0.25, sound-lag-after-pause). A fresh context starts again at the
+   * minimal latency: it is created and unlocked here like the first one (silent source + resume inside the gesture), the
+   * decoded buffers and the volume are kept, the old context is closed OLD_CONTEXT_RELEASE_MS later. Without transient
+   * activation (Escape is not one; WebKit would leave the new context suspended) the swap waits for the next unlock()
+   * that has one. Before the first unlock this does nothing. Never throws.
+   */
+  resumeAfterPause(): void {
+    if (!this.ctx) return;
+    // A context that has run for less than OLD_CONTEXT_RELEASE_MS is fresh: a MENU opened and closed in a row creates
+    // no context at all (at most two exist at once).
+    if (this.ctx.state === 'running' && this.ctx.currentTime * 1000 < OLD_CONTEXT_RELEASE_MS) return;
+    if (!hasTransientActivation(this.env.navigator)) {
+      this.renewPending = true;
+      return;
+    }
+    this.renewPending = false;
+    if (!this.renew() || !this.ctx) return;
+    if (this.ctx.state !== 'running') primeContext(this.ctx);
+    this.resume();
+  }
+
+  /**
+   * Replaces the context by a new one with its own master gain (0.8 × volume); loops and pulses of the old one are
+   * stopped at once, its master disconnected and the context closed OLD_CONTEXT_RELEASE_MS later. The gesture listeners
+   * follow the new context (re-armed while it does not run). False, old context kept, when the new one cannot be built.
+   */
+  private renew(): boolean {
+    const old = this.ctx;
+    const Ctor = this.env.AudioContext;
+    if (!old || !Ctor) return false;
+    let next: AudioContext;
+    let master: GainNode;
+    try {
+      next = new Ctor();
+    } catch {
+      return false;
+    }
+    try {
+      master = next.createGain();
+      master.gain.value = 0.8 * this.volume;
+      master.connect(next.destination);
+    } catch {
+      try { void next.close().catch(() => undefined); } catch { /* not closable */ }
+      return false;
+    }
+    this.stopLoops();
+    const oldMaster = this.master;
+    this.ctx = next;
+    this.master = master;
+    this.watchState(next);
+    this.syncListeners();
+    // The old context finishes what it was playing (the « button » click of « Retour au jeu ») before it is closed.
+    setTimeout(() => {
+      try { oldMaster?.disconnect(); } catch { /* already disconnected */ }
+      try { void old.close().catch(() => undefined); } catch { /* old WebKit: no close() */ }
+    }, OLD_CONTEXT_RELEASE_MS);
+    return true;
   }
 
   /** Resumes a context the browser suspended, or that iOS `interrupted` (call, other app, lock). */
@@ -571,13 +657,18 @@ export class AudioManager {
   private async load(key: string): Promise<void> {
     if (!this.ctx || this.loading.has(key) || this.buffers.has(key)) return;
     this.loading.add(key);
+    let decoder: AudioContext | null = this.ctx;
     try {
       const format = this.formats.get(key) ?? 'ogg';
       const res = await fetch(assetUrl(`sounds/${key}.${format}`, this.assetBase));
       if (!res.ok) throw new Error(String(res.status));
-      this.buffers.set(key, await this.ctx.decodeAudioData(await res.arrayBuffer()));
+      const data = await res.arrayBuffer();
+      decoder = this.ctx;
+      if (!decoder) return;
+      this.buffers.set(key, await decoder.decodeAudioData(data));
     } catch {
-      this.available.delete(key);
+      // A decode cut short by the context swap of resumeAfterPause is retried on the new context at the next cue.
+      if (decoder === this.ctx) this.available.delete(key);
     } finally {
       this.loading.delete(key);
     }

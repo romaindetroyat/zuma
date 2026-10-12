@@ -741,7 +741,9 @@ class Game {
   private togglePause(): void {
     if (this.statsOpen || this.menuOpen) return;
     this.paused = !this.paused;
+    // Back into the game: a fresh audio context, the paused one may have slipped (sound-lag-after-pause).
     if (this.paused) this.audio.stopLoops();
+    else this.audio.resumeAfterPause();
   }
 
   private toggleSound(): void {
@@ -1778,6 +1780,9 @@ class Game {
     if (!this.menuOpen) return;
     this.menuOpen = false;
     this.menuDrag = null;
+    // R2.0.25: the sounds were heard late after the pause on Mac and iPhone — a fresh audio context, made inside the
+    // gesture that closes the menu (AudioManager.resumeAfterPause, sound-lag-after-pause).
+    this.audio.resumeAfterPause();
     document.getElementById('menu')?.classList.remove('open');
     this.menuCanvas?.remove();
   }
@@ -2174,6 +2179,7 @@ class Game {
     this.statsCanvas?.remove();
     const outcome = this.statsOutcome;
     this.statsOutcome = 'live';
+    if (outcome === 'live') this.audio.resumeAfterPause(); // the live STATS paused the game too
     // R2.0.21: the end of a level goes through the state machine — next level, or the adventure screen / god dialogue
     // / ending after a stage; the same level again; the adventure screen after the game-over STATS (D-02).
     const engine = this.engine;
