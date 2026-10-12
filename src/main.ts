@@ -13,7 +13,7 @@ import { composeMenuDialog, hitMenu, loadMenuKit, menuWidgets, sliderValue, upsc
 import { HIGHSCORE_KEY, PROFILE_KEY, SAVE_KEY, initialApp, parseProfile, parseSave, parseScores, readJson, reduceApp, sanitizeName, writeJson, type AppEffect, type AppEvent, type AppScreen, type AppState, type RunState, type StorageLike } from './progress.js';
 import { ADV, advArrivalMaj, advButtonAt, advDoorOpaque, advPlaqueAt, advDoorSizes, advShakeStep, doorAt, drawAdventure, drawEnding, drawGodDialog, endingPlaqueAt, endingWidgets, godDialogWidgets, godPages, loadAdventureKit, revealProgress, revealTemple, upscaleAdventureKit, type AdvButtonId, type AdvTempleId, type AdventureKit, type AdventureView } from './adventure.js';
 import { RECORDS_KEY, RECORD_SCOPE_LABEL, emptyRecordsStore, levelRecord, migrationItems, parseRecordsStore, queueScore, queueTime, rankOf, recordLevelId, recordsEnabled, scoresView, syncRecords, type RecordScope, type RecordsStore } from './records.js';
-import { MM, continueDialogWidgets, drawContinueDialog, drawNameDialog, drawWelcome, loadWelcomeKit, mmHoverSequence, mmUfo, nameDialogWidgets, upscaleWelcomeKit, welcomeHit, welcomeLineWidth, type EyeMode, type MmStone, type MmStoneId, type PromptView, type UfoState, type WelcomeKit, type WelcomeView } from './welcome.js';
+import { MM, confirmNewDialogWidgets, continueDialogWidgets, drawConfirmNewDialog, drawContinueDialog, drawNameDialog, drawWelcome, loadWelcomeKit, mmHoverSequence, mmUfo, nameDialogWidgets, upscaleWelcomeKit, welcomeHit, welcomeLineWidth, type EyeMode, type MmStone, type MmStoneId, type PromptView, type UfoState, type WelcomeKit, type WelcomeView } from './welcome.js';
 
 declare const __BUILD__: string;
 /** `beforeinstallprompt` (Chromium, Edge, Android): kept to show « Installer Zuma » (D-38 §1). */
@@ -1097,10 +1097,11 @@ class Game {
     return this.statsKit?.strings ?? this.strings;
   }
 
-  /** Dialog over the welcome: the machine's name / continue prompt, or the rename dialog of the welcome line. */
+  /** Dialog over the welcome: the machine's name / continue / confirmation prompt, or the rename dialog of the welcome line. */
   private promptKind(): PromptView['kind'] | null {
     if (this.app.screen !== 'welcome') return null;
     if (this.app.prompt === 'continue') return 'continue';
+    if (this.app.prompt === 'confirm-new') return 'confirm-new';
     if (this.app.prompt === 'name') return 'name';
     return this.renaming ? 'rename' : null;
   }
@@ -1130,7 +1131,9 @@ class Game {
         this.welcome.pressed = null;
         this.welcome.focus = null;
       }
-      this.promptUi = { hover: null, pressed: null, focus: kind === 'continue' ? 'continue' : kind ? 'name-field' : null, text: naming ? this.promptUi.text : '' };
+      // R2.0.24: the confirmation opens on NON (a discarded run cannot be recovered).
+      const focus = kind === 'continue' ? 'continue' : kind === 'confirm-new' ? 'new-no' : kind ? 'name-field' : null;
+      this.promptUi = { hover: null, pressed: null, focus, text: naming ? this.promptUi.text : '' };
     }
   }
 
@@ -1176,21 +1179,33 @@ class Game {
 
   /** Dialog widget under a logical point. */
   private promptWidgetAt(kind: PromptView['kind'], p: Point): string | null {
-    const widgets = kind === 'continue' ? continueDialogWidgets(this.promptStrings()) : nameDialogWidgets(this.promptStrings());
+    const strings = this.promptStrings();
+    const widgets = kind === 'continue' ? continueDialogWidgets(strings) : kind === 'confirm-new' ? confirmNewDialogWidgets(strings) : nameDialogWidgets(strings);
     const hit = widgets.find(w => p.x >= w.rect.x && p.x <= w.rect.x + w.rect.w && p.y >= w.rect.y && p.y <= w.rect.y + w.rect.h);
     return hit?.id ?? null;
   }
 
-  /** Dialog buttons: OK of the name dialog, « Continuer » / « Rejouer » of the continue question. */
+  /**
+   * Dialog buttons: OK of the name dialog, « Continuer » / « Rejouer » of the continue question, OUI / NON of the
+   * confirmation that « Rejouer » opens (R2.0.24: the saved run is only discarded by OUI).
+   */
   private promptActivate(id: string): void {
-    if (id !== 'name-ok' && id !== 'continue' && id !== 'new-game') return;
+    if (id !== 'name-ok' && id !== 'continue' && id !== 'new-game' && id !== 'new-yes' && id !== 'new-no') return;
     this.audio.play({ key: 'button', gain: 1, rate: 1 });
     if (id === 'continue') {
       this.dispatch({ kind: 'continue' });
       return;
     }
     if (id === 'new-game') {
+      this.dispatch({ kind: 'new-game-ask' });
+      return;
+    }
+    if (id === 'new-yes') {
       this.dispatch({ kind: 'new-game' });
+      return;
+    }
+    if (id === 'new-no') {
+      this.dispatch({ kind: 'new-game-cancel' });
       return;
     }
     const name = sanitizeName(this.nameInput?.value ?? '');
@@ -1305,7 +1320,8 @@ class Game {
   /**
    * Keys on the welcome: in the name dialog Enter = OK (the field takes the other keys), Escape closes a rename; in the
    * continue question Left / Right / Tab move between « Continuer » and « Rejouer », Enter / Space activate, Escape
-   * closes it without any change; otherwise Up / Down / Tab move the focus over the enabled stones (drawn as hovered)
+   * closes it without any change (prompt-close); in its confirmation (R2.0.24) the same keys move between OUI and NON,
+   * Enter / Space activate the focused one and Escape answers NON; otherwise Up / Down / Tab move the focus over the enabled stones (drawn as hovered)
    * and Enter / Space activate. Returns true when the key was handled.
    */
   private welcomeKey(code: string): boolean {
@@ -1324,11 +1340,25 @@ class Game {
       this.focusNameInput(); // a key typed elsewhere goes to the field
       return false;
     }
+    if (kind === 'confirm-new') {
+      if (code === 'Escape') {
+        this.promptActivate('new-no');
+        return true;
+      }
+      if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'ArrowUp' || code === 'ArrowDown' || code === 'Tab') {
+        this.promptUi.focus = this.promptUi.focus === 'new-yes' ? 'new-no' : 'new-yes';
+        return true;
+      }
+      if (enter || code === 'Space') {
+        this.promptActivate(this.promptUi.focus ?? 'new-no');
+        return true;
+      }
+      return false;
+    }
     if (kind === 'continue') {
       if (code === 'Escape') {
-        // Closing the question changes nothing: the saved run stays (presentation-only dismiss).
-        this.app = { ...this.app, prompt: null };
-        this.syncPrompt();
+        // Closing the question changes nothing: the saved run stays and Aventure asks again.
+        this.dispatch({ kind: 'prompt-close' });
         return true;
       }
       if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'ArrowUp' || code === 'ArrowDown' || code === 'Tab') {
@@ -1626,8 +1656,10 @@ class Game {
     this.renderer.drawScene(ctx => {
       drawWelcome(ctx, this.welcomeKit, view);
       if (!kind) return;
-      const prompt: PromptView = { kind, text: ui.text, caret: kind !== 'continue' && Math.floor(time / 530) % 2 === 0, hover: ui.hover, pressed: ui.pressed, focus: ui.focus };
+      const naming = kind === 'name' || kind === 'rename';
+      const prompt: PromptView = { kind, text: ui.text, caret: naming && Math.floor(time / 530) % 2 === 0, hover: ui.hover, pressed: ui.pressed, focus: ui.focus, run: this.app.run };
       if (kind === 'continue') drawContinueDialog(ctx, this.statsKit, prompt, strings);
+      else if (kind === 'confirm-new') drawConfirmNewDialog(ctx, this.statsKit, prompt, strings);
       else drawNameDialog(ctx, this.statsKit, prompt, strings);
     });
   }
@@ -1645,7 +1677,8 @@ class Game {
     // R2.0.20 (D-38 §4): without the Fullscreen API (iPhone) the « Plein écran » check is not offered.
     const fullscreen = document.fullscreenEnabled === true && typeof document.documentElement.requestFullscreen === 'function';
     // R2.0.21: from the main menu the dialog is the OPTIONS out of game (title OPTIONS, footer « Terminé »).
-    return { install: g !== 'installed' && g !== 'none', fullscreen, ...(this.app.screen === 'level' ? {} : { inGame: false }) };
+    // R2.0.24: « Recommencer la partie » in game only.
+    return { install: g !== 'installed' && g !== 'none', fullscreen, restart: this.app.screen === 'level', ...(this.app.screen === 'level' ? {} : { inGame: false }) };
   }
 
   /** Fills and opens the install card; resolves when it is closed (« Jouer », « × », Escape, or installed). */
@@ -1845,11 +1878,15 @@ class Game {
   /**
    * Action of a menu widget (pointer release or Enter / Space on the focused widget). « Retour au menu principal »
    * asks LEAVE_GAME_? / QUIT_THE_GAME_? then leaves the level (R2.0.21: back to the main menu, the run stays saved at
-   * the start of its level); « Terminé » of the OPTIONS out of game comes back to the main menu.
+   * the start of its level); « Terminé » of the OPTIONS out of game comes back to the main menu. « Recommencer la
+   * partie » (R2.0.24) asks OUI / NON (NON focused): OUI abandons the run — the engine is dropped at once so the
+   * abandoned level cannot end while the new one loads, and no score is submitted — and starts a new adventure at 1-1;
+   * NON comes back to the menu, the game still paused.
    */
   private menuActivate(id: MenuWidgetId): void {
     const state = this.menuState;
-    const button = id === 'help' || id === 'main-menu' || id === 'back' || id === 'help-done' || id === 'leave' || id === 'cancel' || id === 'install';
+    const button = id === 'help' || id === 'main-menu' || id === 'back' || id === 'help-done' || id === 'leave' || id === 'cancel' || id === 'install'
+      || id === 'restart' || id === 'restart-yes' || id === 'restart-no';
     if (button) this.audio.play({ key: 'button', gain: 1, rate: 1 });
     switch (id) {
       case 'fullscreen': {
@@ -1887,6 +1924,19 @@ class Game {
         this.closeMenu();
         this.dispatch({ kind: 'leave' });
         return;
+      case 'restart':
+        state.view = 'restart';
+        state.focus = 'restart-no';
+        break;
+      case 'restart-no':
+        state.view = 'menu';
+        state.focus = 'restart';
+        break;
+      case 'restart-yes':
+        this.closeMenu();
+        this.engine = null;
+        this.dispatch({ kind: 'restart' });
+        return;
       case 'back':
         this.closeMenu();
         return;
@@ -1898,7 +1948,7 @@ class Game {
   }
 
   /**
-   * Keyboard while the menu is open: Escape closes (or returns to the menu view from help / confirm), Enter / Space
+   * Keyboard while the menu is open: Escape closes (or returns to the menu view from help / confirm / restart), Enter / Space
    * activate the focused widget (initial focus « Retour à la partie »), Up / Down move the focus over the enabled
    * widgets, Left / Right change « Sons » by 0.1. Returns true when the key was handled.
    */
@@ -1908,6 +1958,7 @@ class Game {
     if (code === 'Escape') {
       if (state.view === 'help') this.menuActivate('help-done');
       else if (state.view === 'confirm') this.menuActivate('cancel');
+      else if (state.view === 'restart') this.menuActivate('restart-no');
       else this.closeMenu();
       return true;
     }

@@ -494,11 +494,21 @@ function mmDrawVector(ctx: CanvasRenderingContext2D, view: WelcomeView, c: numbe
   }
 }
 
-// ------------------------------------------------------------------ dialogs (name, continue)
+// ------------------------------------------------------------------ dialogs (name, continue, confirmation)
 
 export type NameWidgetId = 'name-field' | 'name-ok';
 export type ContinueWidgetId = 'continue' | 'new-game';
-export interface PromptView { kind: 'name' | 'rename' | 'continue'; text: string; caret: boolean; hover: string | null; pressed: string | null; focus: string | null }
+export type ConfirmNewWidgetId = 'new-yes' | 'new-no';
+export interface PromptView {
+  kind: 'name' | 'rename' | 'continue' | 'confirm-new';
+  text: string;
+  caret: boolean;
+  hover: string | null;
+  pressed: string | null;
+  focus: string | null;
+  /** Saved run shown by the continue question (R2.0.24: level and score). */
+  run?: { stage: number; level: number; score: number } | null;
+}
 
 /** Fallbacks of the dialog strings (strings.json values). */
 const MM_PROMPT_STRINGS: Record<string, string> = {
@@ -507,6 +517,8 @@ const MM_PROMPT_STRINGS: Record<string, string> = {
   ENTER_YOUR_NAME: 'Entrez votre nom',
   'DO_YOU_WANT_TO_CONTINUE_YOUR_LAST_GAME_?': 'Voulez-vous continuer la dernière partie ?',
   SM_CONTINUE: 'Continuer', NEW_GAME: 'Rejouer',
+  'ARE_YOU_SURE_?': 'Vraiment ?', DIALOG_BUTTON_YES: 'OUI', DIALOG_BUTTON_NO: 'NON', LEVEL: 'Niveau', SCORE: 'Score :',
+  YOUR_GAME_WAS_SAVED_WHEN_YOU_QUIT: "Votre partie a été sauvegardée la dernière fois que vous l'avez quittée. Si vous ne la reprenez pas maintenant, elle sera perdue.",
 };
 
 function mmPromptString(strings: Record<string, string> | null, key: string): string {
@@ -543,11 +555,40 @@ export function continueDialogWidgets(strings: Record<string, string> | null): A
   ];
 }
 
+/**
+ * Confirmation before « Rejouer » discards the saved run (R2.0.24): OUI on the left, NON on the right, the buttons of
+ * the continue question; original strings DIALOG_BUTTON_YES / DIALOG_BUTTON_NO.
+ */
+export function confirmNewDialogWidgets(strings: Record<string, string> | null): Array<{ id: ConfirmNewWidgetId; rect: Rect; label: string }> {
+  const [left, right] = continueDialogWidgets(strings);
+  return [
+    { id: 'new-yes', rect: { ...left.rect }, label: mmPromptString(strings, 'DIALOG_BUTTON_YES') },
+    { id: 'new-no', rect: { ...right.rect }, label: mmPromptString(strings, 'DIALOG_BUTTON_NO') },
+  ];
+}
+
+/**
+ * The saved run under the continue question (R2.0.24): « Niveau S-L » and « Score : N » with the pack's LEVEL and SCORE
+ * strings (the score as the ending draws it, « %d », bounded at 0); no run → no line.
+ */
+export function continueRunLines(strings: Record<string, string> | null, run: { stage: number; level: number; score: number } | null | undefined): string[] {
+  if (!run) return [];
+  const n = (v: number): number => (Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+  return [`${mmPromptString(strings, 'LEVEL')} ${n(run.stage) + 1}-${n(run.level) + 1}`, `${mmPromptString(strings, 'SCORE')} ${n(run.score)}`];
+}
+
+/** Title and body key of each dialog: the original strings (the confirmation reuses ARE_YOU_SURE_? and the save warning). */
+const MM_PROMPT_KEYS: Record<PromptView['kind'], { title: string; body: string }> = {
+  name: { title: 'NEW_USER', body: 'ENTER_YOUR_NAME_TO_CREATE_A_NEW_USER_PROFILE' },
+  rename: { title: 'RENAME_USER', body: 'ENTER_YOUR_NAME' },
+  continue: { title: 'CONTINUE_?', body: 'DO_YOU_WANT_TO_CONTINUE_YOUR_LAST_GAME_?' },
+  'confirm-new': { title: 'ARE_YOU_SURE_?', body: 'YOUR_GAME_WAS_SAVED_WHEN_YOU_QUIT' },
+};
+
 /** Title and wrapped body lines of a dialog (`&cr;` counts as a space, so trailing ones vanish). */
 export function welcomePromptLayout(kind: PromptView['kind'], strings: Record<string, string> | null, measure: (s: string) => number): { title: string; lines: string[] } {
-  const title = mmPromptString(strings, kind === 'name' ? 'NEW_USER' : kind === 'rename' ? 'RENAME_USER' : 'CONTINUE_?');
-  const body = mmPromptString(strings, kind === 'name' ? 'ENTER_YOUR_NAME_TO_CREATE_A_NEW_USER_PROFILE' : kind === 'rename' ? 'ENTER_YOUR_NAME' : 'DO_YOU_WANT_TO_CONTINUE_YOUR_LAST_GAME_?');
-  return { title, lines: wrapText(body, MENU_LAYOUT.content.w, measure) };
+  const keys = MM_PROMPT_KEYS[kind] ?? MM_PROMPT_KEYS.continue;
+  return { title: mmPromptString(strings, keys.title), lines: wrapText(mmPromptString(strings, keys.body), MENU_LAYOUT.content.w, measure) };
 }
 
 export type MmButtonState = 'normal' | 'hover' | 'pressed';
@@ -646,13 +687,50 @@ export function drawNameDialog(ctx: CanvasRenderingContext2D, kit: StatsKit | nu
   mmDialogButton(ctx, kit, ok.rect, ok.label, mmButtonState(ok.id, view));
 }
 
-/** Continue dialog (0x44ef40): CONTINUE_? title, the question without its `&cr;`, « Continuer » / « Rejouer ». */
+/** Vertical placement of the continue question and its run lines, and of the confirmation text (R2.0.24). */
+export const WELCOME_CONFIRM = {
+  /** Question baseline when the run lines follow it (the question alone keeps MENU_LAYOUT.confirm.bodyBaseline). */
+  questionBaseline: 236,
+  /** Gap between the question and the run lines. */
+  runGap: 16,
+  /** First baseline of the save warning. */
+  warningBaseline: 236,
+};
+
+function mmMeasure(ctx: CanvasRenderingContext2D, kit: StatsKit | null): (s: string) => number {
+  const font = kit?.fonts.text ?? null;
+  return font ? (s: string): number => font.measure(s) : (s: string): number => { ctx.font = `bold 14px ${MM_VECTOR_FONT}`; return ctx.measureText(s).width; };
+}
+
+/**
+ * Continue dialog (0x44ef40): CONTINUE_? title, the question without its `&cr;`, then (R2.0.24) the saved level and
+ * score in the label yellow, « Continuer » / « Rejouer ».
+ */
 export function drawContinueDialog(ctx: CanvasRenderingContext2D, kit: StatsKit | null, view: PromptView, strings: Record<string, string> | null): void {
   const table = kit?.strings ?? strings;
-  const font = kit?.fonts.text ?? null;
-  const measure = font ? (s: string): number => font.measure(s) : (s: string): number => { ctx.font = `bold 14px ${MM_VECTOR_FONT}`; return ctx.measureText(s).width; };
-  const layout = welcomePromptLayout('continue', table, measure);
+  const layout = welcomePromptLayout('continue', table, mmMeasure(ctx, kit));
   mmDialogFrame(ctx, kit, layout.title);
-  mmDialogBody(ctx, kit, layout.lines, MENU_LAYOUT.confirm.bodyBaseline, true);
+  const runLines = continueRunLines(table, view.run);
+  if (runLines.length === 0) {
+    mmDialogBody(ctx, kit, layout.lines, MENU_LAYOUT.confirm.bodyBaseline, true);
+  } else {
+    const C = WELCOME_CONFIRM;
+    mmDialogBody(ctx, kit, layout.lines, C.questionBaseline, true);
+    const first = C.questionBaseline + layout.lines.length * WELCOME_DIALOG.lineHeight + C.runGap;
+    runLines.forEach((line, i) => {
+      const y = first + i * WELCOME_DIALOG.lineHeight;
+      if (kit) kit.fonts.text.draw(ctx, line, MENU_LAYOUT.title.x, y, { tint: STATS_COLORS.label, align: 'center' });
+      else mmText(ctx, line, MENU_LAYOUT.title.x, y - 5, STATS_COLORS.label, 14, 'center');
+    });
+  }
   for (const w of continueDialogWidgets(table)) mmDialogButton(ctx, kit, w.rect, w.label, mmButtonState(w.id, view));
+}
+
+/** Confirmation before discarding the saved run (R2.0.24): « Vraiment ? », the original save warning, OUI / NON. */
+export function drawConfirmNewDialog(ctx: CanvasRenderingContext2D, kit: StatsKit | null, view: PromptView, strings: Record<string, string> | null): void {
+  const table = kit?.strings ?? strings;
+  const layout = welcomePromptLayout('confirm-new', table, mmMeasure(ctx, kit));
+  mmDialogFrame(ctx, kit, layout.title);
+  mmDialogBody(ctx, kit, layout.lines, WELCOME_CONFIRM.warningBaseline, true);
+  for (const w of confirmNewDialogWidgets(table)) mmDialogButton(ctx, kit, w.rect, w.label, mmButtonState(w.id, view));
 }

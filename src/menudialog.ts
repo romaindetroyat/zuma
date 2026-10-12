@@ -14,8 +14,10 @@ import type { Bitmap, OriginalPack } from './original.js';
 import type { BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
 
-export type MenuView = 'menu' | 'help' | 'confirm';
-export type MenuWidgetId = 'music' | 'sfx' | 'fullscreen' | 'pixels' | 'help' | 'main-menu' | 'back' | 'help-done' | 'leave' | 'cancel' | 'install';
+export type MenuView = 'menu' | 'help' | 'confirm' | 'restart';
+export type MenuWidgetId =
+  | 'music' | 'sfx' | 'fullscreen' | 'pixels' | 'help' | 'main-menu' | 'back' | 'help-done' | 'leave' | 'cancel' | 'install'
+  | 'restart' | 'restart-yes' | 'restart-no';
 export interface MenuWidget { id: MenuWidgetId; kind: 'slider' | 'check' | 'button'; rect: Rect; label: string; enabled: boolean }
 
 /**
@@ -38,6 +40,12 @@ export const MENU_LAYOUT = {
   /** Help text area (controls, tips, badge) above the footer button. */
   helpText: { x: 146, y: 186, w: 348, bottom: 396 },
   confirm: { bodyBaseline: 282, lineHeight: 20, buttonW: 164 },
+  /**
+   * R2.0.24, in game with the restart option: « Aide » and « Recommencer » share the row of « Aide » in two halves
+   * (`helpW` px each, `gap` between) — the frame has no room for a fourth stacked button, and the long « Recommencer la
+   * partie » (212 px in the dialog font) would run over the DialogButton end caps of any button that fits the row.
+   */
+  restartRow: { helpW: 167, gap: 6 },
 };
 
 /** Original string keys and their French fallbacks (strings.json values) for a pack-less build. */
@@ -45,7 +53,16 @@ const MENU_STRINGS: Record<string, string> = {
   MENU: 'MENU', OPTIONS: 'OPTIONS', HELP: 'Aide', MUSIC_VOLUME: 'Musique', SOUND_EFFECTS: 'Sons', FULLSCREEN: 'Plein écran',
   BACK_TO_MAIN_MENU: 'Retour au menu principal', BACK_TO_GAME: 'Retour à la partie', DONE: 'Terminé', LEAVE: 'Quitter', CANCEL: 'ANNULER',
   'LEAVE_GAME_?': 'Quitter la partie ?', 'QUIT_THE_GAME_?': 'Voulez-vous vraiment&cr;quitter la partie ?',
+  DIALOG_BUTTON_YES: 'OUI', DIALOG_BUTTON_NO: 'NON',
 };
+/**
+ * « Recommencer la partie » (R2.0.24, user request): the original has no restart in its OPTIONS dialog nor a string
+ * for it, so the button « Recommencer », the title and the question (which names « la partie ») are ours, modelled on
+ * LEAVE_GAME_? / QUIT_THE_GAME_?; the answers are the original DIALOG_BUTTON_YES / DIALOG_BUTTON_NO.
+ */
+const RESTART_LABEL = 'Recommencer';
+const RESTART_TITLE = 'Recommencer ?';
+const RESTART_QUESTION = 'Voulez-vous vraiment&cr;recommencer la partie ?';
 /** « Pixels nets » has no original string (it replaces CUSTOM_CURSORS / 3D_HARDWARE_ACCELERATION). */
 const PIXELS_LABEL = 'Pixels nets';
 
@@ -62,6 +79,8 @@ export interface MenuOptions {
    * `BACK_TO_MAIN_MENU`, footer `DONE` « Terminé »; « Aide » stays. Default true (the in-game MENU).
    */
   inGame?: boolean;
+  /** R2.0.24: « Recommencer » (the run) beside « Aide » (in game only; default false). */
+  restart?: boolean;
 }
 /** « Installer » has no original string. */
 const INSTALL_LABEL = 'Installer';
@@ -86,24 +105,38 @@ export function menuWidgets(view: MenuView, strings: Record<string, string> | nu
       { id: 'help-done', kind: 'button', rect: { x: L.content.x + L.content.w - w, y: L.button.footer, w, h: L.button.h }, label: str('DONE'), enabled: true },
     ];
   }
-  if (view === 'confirm') {
+  if (view === 'confirm' || view === 'restart') {
     const w = L.confirm.buttonW;
+    const left: Rect = { x: L.content.x, y: L.button.footer, w, h: L.button.h };
+    const right: Rect = { x: L.content.x + L.content.w - w, y: L.button.footer, w, h: L.button.h };
+    if (view === 'restart') {
+      return [
+        { id: 'restart-yes', kind: 'button', rect: left, label: str('DIALOG_BUTTON_YES'), enabled: true },
+        { id: 'restart-no', kind: 'button', rect: right, label: str('DIALOG_BUTTON_NO'), enabled: true },
+      ];
+    }
     return [
-      { id: 'leave', kind: 'button', rect: { x: L.content.x, y: L.button.footer, w, h: L.button.h }, label: str('LEAVE'), enabled: true },
-      { id: 'cancel', kind: 'button', rect: { x: L.content.x + L.content.w - w, y: L.button.footer, w, h: L.button.h }, label: str('CANCEL'), enabled: true },
+      { id: 'leave', kind: 'button', rect: left, label: str('LEAVE'), enabled: true },
+      { id: 'cancel', kind: 'button', rect: right, label: str('CANCEL'), enabled: true },
     ];
   }
   const slider = (i: number): Rect => ({ x: L.slider.x, y: L.slider.firstY + i * L.slider.pitch, w: L.slider.w, h: L.slider.h });
   const check = (i: number): Rect => ({ x: L.check.xs[i], y: L.check.y, w: L.check.rectW, h: L.check.size.h });
   const button = (y: number): Rect => ({ x: L.content.x, y, w: L.content.w, h: L.button.h });
+  const inGame = options.inGame !== false;
+  const restart = inGame && options.restart === true;
+  const R = L.restartRow;
+  const helpRect: Rect = restart ? { ...button(L.button.help), w: R.helpW } : button(L.button.help);
+  const restartRect: Rect = { x: L.content.x + R.helpW + R.gap, y: L.button.help, w: L.content.w - R.helpW - R.gap, h: L.button.h };
   return [
     // No music is played before phases 6–7: the slider is shown greyed and inert.
     { id: 'music', kind: 'slider', rect: slider(0), label: str('MUSIC_VOLUME'), enabled: false },
     { id: 'sfx', kind: 'slider', rect: slider(1), label: str('SOUND_EFFECTS'), enabled: true },
     ...(options.fullscreen === false ? [] : [{ id: 'fullscreen' as const, kind: 'check' as const, rect: check(0), label: str('FULLSCREEN'), enabled: true }]),
     { id: 'pixels', kind: 'check', rect: check(1), label: PIXELS_LABEL, enabled: true },
-    { id: 'help', kind: 'button', rect: button(L.button.help), label: str('HELP'), enabled: true },
-    ...(options.inGame === false ? [] : [{ id: 'main-menu' as const, kind: 'button' as const, rect: button(L.button.mainMenu), label: str('BACK_TO_MAIN_MENU'), enabled: true }]),
+    { id: 'help', kind: 'button', rect: helpRect, label: str('HELP'), enabled: true },
+    ...(restart ? [{ id: 'restart' as const, kind: 'button' as const, rect: restartRect, label: RESTART_LABEL, enabled: true }] : []),
+    ...(inGame ? [{ id: 'main-menu' as const, kind: 'button' as const, rect: button(L.button.mainMenu), label: str('BACK_TO_MAIN_MENU'), enabled: true }] : []),
     { id: 'back', kind: 'button', rect: footer, label: str(options.inGame === false ? 'DONE' : 'BACK_TO_GAME'), enabled: true },
   ];
 }
@@ -201,10 +234,13 @@ export function composeMenuDialog(kit: MenuKit | null, state: MenuState, canvas?
   painter.frame();
   // Out of game (main menu) the dialog is titled OPTIONS, in game MENU (0x445310).
   const menuTitle = state.options?.inGame === false ? 'OPTIONS' : 'MENU';
-  const title = state.view === 'help' ? menuString(strings, 'HELP') : state.view === 'confirm' ? menuString(strings, 'LEAVE_GAME_?') : menuString(strings, menuTitle);
+  const title = state.view === 'help' ? menuString(strings, 'HELP')
+    : state.view === 'confirm' ? menuString(strings, 'LEAVE_GAME_?')
+      : state.view === 'restart' ? RESTART_TITLE : menuString(strings, menuTitle);
   painter.title(title);
   if (state.view === 'help') painter.helpText(state);
   if (state.view === 'confirm') painter.confirmText(menuString(strings, 'QUIT_THE_GAME_?'));
+  if (state.view === 'restart') painter.confirmText(RESTART_QUESTION);
   for (const w of widgets) {
     ctx.save();
     if (!w.enabled) ctx.globalAlpha = MENU_DISABLED_ALPHA;

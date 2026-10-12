@@ -16,7 +16,7 @@ const W = await import('../.compiled/welcome.js');
 const M = await import('../.compiled/menudialog.js');
 const read = file => fs.readFileSync(file, 'utf8');
 
-const SIZES = [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 7, 1];
+const SIZES = [5, 5, 5, 6, 6, 6, 7, 7, 7, 7, 7, 7, 1]; // the pack's 13 stages (as tests/r221-progress)
 const run = (stage, level, score = 0, lives = 3) => ({ stage, level, score, lives });
 const ROMAIN = { name: 'Romain', maxStage: 4 };
 const boot = (o = {}) => P.initialApp({ profile: ROMAIN, save: null, scores: P.defaultScores(), sizes: SIZES, startLives: 3, review: null, ...o });
@@ -171,12 +171,12 @@ const F = M.MENU_LAYOUT.frame;
 const inside = r => r.x >= F.x && r.y >= F.y && r.x + r.w <= F.x + F.w && r.y + r.h <= F.y + F.h;
 const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-test('in-game MENU with the restart option: « Recommencer la partie » beside « Aide », inside the frame, disjoint; default lists unchanged', () => {
+test('in-game MENU with the restart option: « Recommencer » beside « Aide » (two halves), inside the frame, disjoint; default lists unchanged', () => {
   for (const strings of [PACK, null]) {
     const w = M.menuWidgets('menu', strings, { restart: true });
     assert.deepEqual(w.map(x => x.id), ['music', 'sfx', 'fullscreen', 'pixels', 'help', 'restart', 'main-menu', 'back']);
     const restart = w.find(x => x.id === 'restart');
-    assert.equal(restart.label, 'Recommencer la partie');
+    assert.equal(restart.label, 'Recommencer', 'the long « Recommencer la partie » runs over the button caps; the question names the run');
     assert.equal(restart.kind, 'button');
     assert.ok(restart.enabled);
     const help = w.find(x => x.id === 'help');
@@ -184,6 +184,7 @@ test('in-game MENU with the restart option: « Recommencer la partie » beside �
     assert.ok(help.rect.x < restart.rect.x, 'Aide on the left');
     assert.equal(help.rect.x, M.MENU_LAYOUT.content.x);
     assert.equal(restart.rect.x + restart.rect.w, M.MENU_LAYOUT.content.x + M.MENU_LAYOUT.content.w, 'the row spans the content width');
+    assert.equal(help.rect.w, restart.rect.w, 'two equal halves');
     for (const x of w) assert.ok(inside(x.rect), `${x.id} inside the frame`);
     for (let i = 0; i < w.length; i++) for (let j = i + 1; j < w.length; j++) assert.ok(!overlap(w[i].rect, w[j].rect), `${w[i].id} / ${w[j].id}`);
   }
@@ -265,7 +266,7 @@ const method = (src, signature) => {
   return src.slice(start, end > 0 ? end : undefined);
 };
 
-test('main.js: MENU offers « Recommencer la partie » in game only; Oui drops the engine and dispatches restart, Non and Escape return to the menu', () => {
+test('main.js: MENU offers « Recommencer » in game only; Oui drops the engine and dispatches restart, Non and Escape return to the menu', () => {
   const main = read('.compiled/main.js');
   assert.match(method(main, '    menuOptions() {'), /restart: this\.app\.screen === 'level'/);
   const act = method(main, '    menuActivate(id) {');
@@ -274,7 +275,7 @@ test('main.js: MENU offers « Recommencer la partie » in game only; Oui drops t
   const yes = act.slice(act.indexOf("case 'restart-yes':"));
   assert.match(yes, /^case 'restart-yes':\s*this\.closeMenu\(\);\s*this\.engine = null;\s*this\.dispatch\(\{ kind: 'restart' \}\);\s*return;/);
   assert.match(act, /id === 'restart' \|\| id === 'restart-yes' \|\| id === 'restart-no'/, 'button sound');
-  assert.match(method(main, '    menuKey(code) {'), /state\.view === 'restart'\) this\.menuActivate\('restart-no'\)/, 'Escape = Non');
+  assert.match(method(main, '    menuKey(code) {'), /state\.view === 'restart'\)\s*this\.menuActivate\('restart-no'\)/, 'Escape = Non');
   assert.doesNotMatch(main, /kind: 'restart'[^}]*score/, 'no score travels with the restart');
 });
 

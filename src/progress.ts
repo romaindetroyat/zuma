@@ -280,8 +280,11 @@ export type AppScreen = 'welcome' | 'adventure' | 'level' | 'temple' | 'ending';
 
 export interface AppState {
   screen: AppScreen;
-  /** Modal dialogs over the welcome screen. */
-  prompt: 'name' | 'continue' | null;
+  /**
+   * Modal dialogs over the welcome screen: the name, the continue question (shown on every welcome entry while a run is
+   * saved, R2.0.24) and its Oui / Non confirmation before the saved run is discarded (`confirm-new`).
+   */
+  prompt: 'name' | 'continue' | 'confirm-new' | null;
   profile: Profile | null;
   scores: HighScore[];
   /** Current run, saved at every level start; null when none. */
@@ -306,6 +309,10 @@ export type AppEvent =
   | { kind: 'profile-detected'; name: string }
   | { kind: 'adventure' }
   | { kind: 'continue' } | { kind: 'new-game' }
+  /** R2.0.24: « Rejouer » asks Oui / Non first; Non comes back to the question; Escape closes the question. */
+  | { kind: 'new-game-ask' } | { kind: 'new-game-cancel' } | { kind: 'prompt-close' }
+  /** R2.0.24: « Recommencer la partie » confirmed in the in-game menu. */
+  | { kind: 'restart' }
   | { kind: 'select'; stage: number }
   | { kind: 'play' } | { kind: 'main-menu' }
   | { kind: 'won'; score: number; lives: number; date: string }
@@ -390,12 +397,18 @@ export function initialApp(input: {
   const state: AppState = {
     ...base,
     screen: 'welcome',
-    prompt: profile ? null : 'name',
+    // R2.0.24: with a saved run the continue question is shown at once (after the name when there is no profile).
+    prompt: profile ? welcomePrompt(input.save) : 'name',
     run: input.save,
     selected: input.save?.stage ?? progressDefaultStage({ profile, sizes: input.sizes }),
     review: false,
   };
   return { state, effects };
+}
+
+/** Prompt on a welcome entry (R2.0.24): the continue question whenever a run is saved, else none. */
+function welcomePrompt(run: RunState | null): AppState['prompt'] {
+  return run ? 'continue' : null;
 }
 
 /** Starts `run` on the level screen: the run is saved first (level start, 0x41d325), except without stages. */
@@ -413,18 +426,20 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
   switch (event.kind) {
     case 'name': {
       // Name dialog OK, first launch or rename from the welcome line (Q4: no name entry at record time).
-      if (state.screen !== 'welcome' || state.prompt === 'continue') return same;
+      if (state.screen !== 'welcome' || state.prompt === 'continue' || state.prompt === 'confirm-new') return same;
       const name = sanitizeName(event.name);
       const profile: Profile = name !== null
         ? { name, maxStage: state.profile?.maxStage ?? 0 }
         : { name: DEFAULT_PLAYER, maxStage: state.profile?.maxStage ?? 0, source: 'default' };
-      return { state: { ...state, profile, prompt: null }, effects: [{ kind: 'save-profile', profile }] };
+      // The first-launch name dialog hands over to the continue question when a run is saved (a rename keeps none).
+      const prompt = state.prompt === 'name' ? welcomePrompt(state.run) : null;
+      return { state: { ...state, profile, prompt }, effects: [{ kind: 'save-profile', profile }] };
     }
     case 'profile-detected': {
       // Identity reported by the host after boot: any screen; closes a pending name prompt.
       const profile = platformProfile(state.profile, event.name);
       if (!profile) return same;
-      const prompt = state.prompt === 'name' ? null : state.prompt;
+      const prompt = state.prompt === 'name' ? (state.screen === 'welcome' ? welcomePrompt(state.run) : null) : state.prompt;
       return { state: { ...state, profile, prompt }, effects: [{ kind: 'save-profile', profile }] };
     }
     case 'adventure': {
@@ -438,8 +453,20 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
     case 'continue':
       if (state.prompt !== 'continue' || !state.run) return same;
       return progressStart(state, state.run);
-    case 'new-game':
+    case 'new-game-ask':
+      // « Rejouer »: Oui / Non before the saved run is discarded (R2.0.24); nothing changes yet.
+      if (state.screen !== 'welcome' || state.prompt !== 'continue' || !state.run) return same;
+      return { state: { ...state, prompt: 'confirm-new' }, effects: [] };
+    case 'new-game-cancel':
+      if (state.prompt !== 'confirm-new') return same;
+      return { state: { ...state, prompt: 'continue' }, effects: [] };
+    case 'prompt-close':
+      // Escape on the continue question: closed, the run stays saved (Aventure asks again).
       if (state.prompt !== 'continue') return same;
+      return { state: { ...state, prompt: null }, effects: [] };
+    case 'new-game':
+      // Oui of the confirmation (the R2.0.21 direct answer from the question is still accepted by the machine).
+      if (state.prompt !== 'continue' && state.prompt !== 'confirm-new') return same;
       return {
         state: { ...state, prompt: null, run: null, screen: 'adventure', selected: progressDefaultStage(state), opening: null },
         effects: [{ kind: 'save-run', run: null }],
@@ -461,8 +488,9 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
       return progressStart(state, run);
     }
     case 'main-menu':
+      // Back on the welcome: the continue question again while a run is saved (R2.0.24).
       if (state.screen !== 'adventure') return same;
-      return { state: { ...state, screen: 'welcome', opening: null }, effects: [] };
+      return { state: { ...state, screen: 'welcome', prompt: welcomePrompt(state.run), opening: null }, effects: [] };
     case 'won': {
       if (state.screen !== 'level' || !state.run) return same;
       const route = afterWin(state.run, event.score, event.lives, state.sizes);
@@ -520,6 +548,12 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
       }
       return { state: { ...state, screen: 'adventure', selected: progressDefaultStage(state), opening: null }, effects: [] };
     }
+    case 'restart': {
+      // « Recommencer la partie » → Oui (R2.0.24): the run is abandoned — its score is neither entered in the table nor
+      // sent as a shared record — and a new adventure starts at 1-1 with score 0 and the start lives, saved in its place.
+      if (state.screen !== 'level') return same;
+      return progressStart(state, { stage: 0, level: 0, score: 0, lives: state.startLives }, { selected: 0 });
+    }
     case 'temple-done': {
       if (state.screen !== 'temple') return same;
       if (state.temple === 5) return { state: { ...state, screen: 'ending', temple: null }, effects: [] };
@@ -529,7 +563,7 @@ function progressReduce(state: AppState, event: AppEvent): AppStep {
     case 'ending-done':
       // End of the ending screen → main menu (0x44b3e0); the run is over.
       if (state.screen !== 'ending') return same;
-      return { state: { ...state, screen: 'welcome', run: null, ending: null, opening: null }, effects: [] };
+      return { state: { ...state, screen: 'welcome', prompt: null, run: null, ending: null, opening: null }, effects: [] };
     default:
       return same;
   }
