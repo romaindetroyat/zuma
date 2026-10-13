@@ -1,17 +1,27 @@
 ---
-status: investigating
+status: awaiting_human_verify
 trigger: "Quand on met le jeu en pause en appuyant sur Menu, et qu'on reprend le jeu, le son est décalé des actions. C'est vrai sur Mac et sur iphone. Corrige ça pour que le son ne se décale pas en cas de pause"
 created: 2026-10-12T00:00:00Z
-updated: 2026-10-13T05:10:00Z
+updated: 2026-10-13T05:40:00Z
 ---
 
 ## Current Focus
 
-second_pass: true (user on R2.0.25: « On a toujours le décalage après une pause » — ≥ 1 s late, Mac + iPhone, installed app and Safari/Chrome tab)
-hypothesis: (A) cues started on a context that is not running (suspended / interrupted) queue at a frozen currentTime and sound only when a later gesture resumes it; (B) reproduce in Chromium with the real autoplay policy; (C) any other ~1 s delay
-test: Chromium (no --autoplay-policy flag), real clicks / keys, per-cue log of ctx.state, currentTime, getOutputTimestamp
-expecting: a cue logged with state != running or a currentTime that does not advance → A confirmed
-next_action: write the Playwright probe in the scratchpad and run it against dist/ (build --local) on port 87xx
+second_pass: true — user on R2.0.25: « On a toujours le décalage après une pause » (≥ 1 s, clearly visible; Mac and iPhone; installed app and Safari / Chrome tab; R2.0.25 installed before testing)
+hypothesis: the ≥ 1 s lag is not reproducible in Blink and cannot be produced by the game's scheduling; it comes from the audio engine of the device — either a context that is not live when a cue starts (suspended / interrupted / stalled clock: the cue waits and sounds at the next start, ≈ one tap later) or a running WebKit context whose output drifts late (known, unfixed WebKit behaviour, up to 1.5 s); R2.0.25's blind swap on resume neither prevented the first nor caught a drift that comes back later
+test: R2.0.26 build on the user's devices, with https://zuma-49c.pages.dev/?debug=audio opened in Safari (Mac and iPhone): play, MENU ≥ 10 s, « Retour au jeu », shoot; read the overlay (state, retard, départ, reconstructions, sons annulés)
+expecting: no late sound; if a lag is still heard, the overlay screenshot says which branch (retard ≫ départ → measured drift, rebuilt at the next tap; sons annulés > 0 → non-live context; retard normal while heard late → the lag is outside what WebKit reports, e.g. Bluetooth / AirPlay route)
+next_action: wait for the user's check (R2.0.26 build and deploy by the orchestrator) and, if the lag persists, the ?debug=audio screenshot
+
+reasoning_checkpoint:
+  hypothesis: "Sounds are heard ≥ 1 s late after a pause because the cue is started on a context that is not live (held at its frozen currentTime and heard when the context next starts) or because the running WebKit context's output drifted late; R2.0.25 neither guarded the first nor measured the second"
+  confirming_evidence:
+    - "R2.0.25 play() starts every cue at ctx.currentTime whatever ctx.state is; nothing watched the clock or the output timestamp"
+    - "Chromium, real autoplay policy: a cue played on a context that cannot resume is held (start logged on state=suspended, when == frozen currentTime) — R2.0.25 would play it at the next resume; with R2.0.26 it is revoked after 100 ms (revoked=1) and the next click plays on time"
+    - "Chromium: every way back from the MENU (Escape, Enter, click, tap; 4 / 8 / 40 s) is on time (lag 35-50 ms), so the ≥ 1 s comes from the device's engine, consistent with WebKit reports of 1-1.5 s AudioContext delays (Apple forums 699192, WebKit bug 221334)"
+  falsification_test: "With R2.0.26 the user still hears ≥ 1 s late sounds while the ?debug=audio overlay shows state running, retard close to départ and sons annulés 0 → the lag is in a part of the output path WebKit does not report (route / Bluetooth / AirPlay) and neither branch is the cause"
+  fix_rationale: "Revoking cues the clock did not reach in time removes the 'heard a tap later' mechanism at its root, whatever suspends the context; measuring getOutputTimestamp against the context's own start and rebuilding at the next gesture self-heals a drifting pipeline instead of guessing when it drifts; the overlay turns the next report into data"
+  blind_spots: "No WebKit engine here (only Chromium in /opt/pw-browsers): whether WebKit's getOutputTimestamp reflects the GPU-process ring-buffer write-ahead is unverified; the user's output route (AirPods, AirPlay, HDMI) is unknown; « Chrome » may be Chrome on iPhone (WebKit)"
 
 ## Symptoms
 
@@ -38,6 +48,18 @@ started: reported on R2.0.24 (deployed), Mac and iPhone
 - hypothesis: suspending the AudioContext on pause and resuming it on unpause would fix it
   evidence: WebKit suspend()/resume() stop and restart the AudioOutputUnit without resetting m_startFrame / m_currentFrame (the write-ahead and its stale content survive); a restart is another chance of underrun ("common at stream start"); it would also silence the menu clicks — rejected in favour of a fresh context
   timestamp: 2026-10-12T15:45Z
+
+- hypothesis: (second pass, B) Blink reproduces a ≥ 1 s lag after a pause with the real autoplay policy
+  evidence: Chromium 1194 without --autoplay-policy, real clicks / taps / keys, Escape / Enter / click / touch tap on « Retour au jeu », pauses 4 / 8 / 40 s: every cue on a running context at when == currentTime, 1-23 ms after the input; getOutputTimestamp lag 35-50 ms before and after; a running Blink context cannot hold more than its FIFO (≈ 0.25 s)
+  timestamp: 2026-10-13T05:20Z
+
+- hypothesis: (second pass, A) R2.0.25's fresh context stays suspended in Chrome because the gesture gate fails
+  evidence: Chrome starts contexts on sticky activation: ctx#2 is 'running' at construction on every path; Escape is not an activation (userActivation.isActive false) → swap deferred to the next pointerdown, which has one; unlock listeners are re-armed by syncListeners. (In WebKit a new context starts on window.hasTransientActivation() — 5 s window — not checked on device.)
+  timestamp: 2026-10-13T05:20Z
+
+- hypothesis: (second pass, C) a performance.now-derived schedule, a delay field, the warning beat or the rAF loop delays cues by ~1 s after a pause
+  evidence: only extralife / gap cues have a delay (≤ 0.6 s, by design, before and after a pause alike); cueAllowed only drops; the warning beat calls play() at currentTime; loop() runs no engine step while paused (no event backlog); sound and picture come from the same engine step
+  timestamp: 2026-10-13T05:25Z
 
 ## Evidence
 
@@ -81,9 +103,14 @@ started: reported on R2.0.24 (deployed), Mac and iPhone
   found: play() schedules at ctx.currentTime whatever ctx.state is (suspended / interrupted / a running context whose clock is stalled) — such a cue is held at the frozen time and heard whenever the context next starts (the next gesture: about one tap later, ≈ 1 s); nothing measures the real output delay; the swap is blind (always on resume, never when lag appears later); no on-device diagnostic
   implication: the fix must (1) never let a cue be heard late: a cue started while the context is not live is revoked if the context does not start within a short grace, (2) measure the output lag and rebuild the context in the next gesture when it is too high, (3) expose a diagnostic overlay for the user's devices
 
+- timestamp: 2026-10-13T05:45Z
+  checked: R2.0.26 end to end in Chromium (build --local, ?level=1-1&debug=1&debug=audio, real clicks): normal play, MENU 6 s + Enter, a cue on a context forced suspended with resume() refused, then an injected 1.2 s output lag (getOutputTimestamp shifted)
+  found: normal play lag 35-37 ms, ref 35-37 ms, 0 revoked; after the pause ctx#2 (rebuild 'pause'), lag 36 ms; the cue on the stuck context was started at state=suspended, when == frozen currentTime and revoked after the grace (revoked=1), the next click resumed the context and played on time; with 1.2 s injected the overlay showed « retard 1236 ms (départ 35 ms) … à refaire: lag », the next click rebuilt the context (ctx#3, rebuilds 2 (lag)) and the lag fell back to 35 ms; overlay drawn top-left only with ?debug=audio
+  implication: both mechanisms work on a real engine; npm test 627/627 (r226: 11 tests), check and guard green
+
 ## Resolution
 
-root_cause: Not in the game logic — every cue already starts at ctx.currentTime and nothing is queued during the pause (measured in Chromium). The single AudioContext created at the first gesture lived for the whole session and ran silent through the MENU pause; on WebKit (Safari macOS and every iPhone browser) its output pipeline only ever gains latency — the GPU process reads a ring buffer that the WebContent process fills, each render underrun adds one hardware buffer of write-ahead that is never reclaimed, and suspend()/resume() keep it — so once the pipeline slipped during the pause every later sound was heard late by the same amount.
-fix: AudioManager.resumeAfterPause() (src/audio.ts) — on every return to the game from a pause (closeMenu, togglePause un-pausing, closeStats of the live STATS; src/main.ts) a fresh AudioContext replaces the old one, created inside the resuming gesture and unlocked like the first (playback session kept, silent one-sample source, resume(), gesture listeners re-armed while it does not run); decoded AudioBuffers and the « Sons » volume are carried over; loops/pulses stop at once, the old context is closed OLD_CONTEXT_RELEASE_MS = 1500 ms later so the « Retour au jeu » click plays out. Without transient activation (navigator.userActivation.isActive false — e.g. Escape, iOS touch pointerdown) the swap waits for the next unlock() that has one; a context younger than 1.5 s is kept (at most two contexts at once); a decode cut short by the swap does not demote its key to the synth. No suspend on pause.
-verification: tests/r225-audio-pause.test.mjs (8 tests; fake AudioContext whose write-ahead never shrinks: 173 ms late after the pause without the fix vs 2.7 ms before it → equal with the fix); npm test 615/615, npm run check, npm run -s guard green; Chromium end-to-end (build --local, Playwright): menu 8 s → Escape → new context running, old one closed after 1.5 s, shots after resume start on the new context at its currentTime with the reused buffers, latency estimate 33-40 ms as before. Real WebKit (Mac Safari, iPhone) still to be checked by the user.
-files_changed: [src/audio.ts, src/main.ts, tests/r225-audio-pause.test.mjs]
+root_cause: (second pass) The game's scheduling is on time (Chromium: every cue at currentTime, 35-50 ms output lag, on every way back from a pause). The ≥ 1 s lag lives in the device's audio engine, and R2.0.25 left two doors open: (1) play() started cues at ctx.currentTime whatever the context state — on a context that is not live (suspended, iOS « interrupted », or « running » with a stalled clock) the cue waited at the frozen time and was heard when the context next started, i.e. about one tap (≈ 1 s) later; (2) a running WebKit context whose output drifts late (WebKit reports of 1-1.5 s AudioContext delays) was replaced only blindly at the moment of resume, never measured, so a drift that appears or comes back later stayed for the rest of the level. R2.0.25's first-pass analysis (WebKit ring-buffer write-ahead that only grows) remains a plausible source of (2) but was not observable here.
+fix: R2.0.26 — src/audio.ts: every one-shot is watched until its context's clock passes its start (track / settlePending); one still waiting LATE_CUE_GRACE_MS (100 ms) after it was due is revoked (stop(0) + output disconnected) and the context is asked to resume — never heard late, a context that starts within the grace (Safari's first gesture) still plays it. AudioManager.tick(), called every frame from main.ts loop(): clock watch (running but not moving for CLOCK_STALL_MS = stalled, not live), output lag = currentTime − (contextTime + (now − performanceTime)/1000) from getOutputTimestamp once the clock passed 1 s; the median of the first 10 samples is the context's reference; a 15-frame median LAG_LIMIT_S (150 ms) above it, a reference 150 ms above the latency the browser reports (≤ MAX_LAG_RETRIES = 2 contexts in a row: no rebuild loop on a slow Bluetooth / AirPlay route), a clock stalled or a context not running 1 s after a gesture resume → rebuild at the next gesture (unlock(), listeners re-armed while a rebuild waits; at most one automatic request per 3 s). R2.0.25's fresh context on resume is kept. ?debug=audio (audioDebugEnabled) draws audioDebugLines(diagnostics()) top-left: state, currentTime, sample rate, base/output latency, measured lag and the context's reference, contexts created, rebuilds and last reason, pending rebuild, revoked / pending cues, transient activation, sound on/volume. Decoded buffers, « Sons » volume and the iOS unlock (playback session, silent buffer, silent <audio>, resume in gesture) unchanged.
+verification: tests/r226-audio-lag.test.mjs (11 tests, RED first: fake AudioContext with suspended / interrupted / stalled states and getOutputTimestamp) + r225 (8) green; npm test 627/627, npm run check, npm run -s guard green; Chromium E2E (see last evidence): stuck-context cue revoked and next click on time, injected 1.2 s lag rebuilt at the next click back to 35 ms. Real WebKit (Mac Safari, iPhone) still to be checked by the user, with ?debug=audio if anything is still late.
+files_changed: [src/audio.ts, src/main.ts, tests/r225-audio-pause.test.mjs, tests/r226-audio-lag.test.mjs]
