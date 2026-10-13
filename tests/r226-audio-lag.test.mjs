@@ -303,6 +303,6 @@ test('main.js: the audio monitor runs every frame; the overlay is drawn only wit
   const loop = main.slice(main.indexOf('    loop(time) {'), main.indexOf('\n    }', main.indexOf('    loop(time) {')));
   assert.match(loop, /this\.audio\.tick\(\)/, 'tick() every frame, every screen');
   assert.match(loop, /if \(this\.audioDebug\)\s*this\.drawAudioDebug\(\)/);
-  assert.match(main, /audioDebug = audioDebugEnabled\(/);
+  assert.match(main, /audioDebug = [^;]*audioDebugEnabled\(location\.search\)/);
   assert.match(main, /audioDebugLines\(this\.audio\.diagnostics\(\)\)/);
 });

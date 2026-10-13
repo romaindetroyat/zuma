@@ -2,7 +2,7 @@
 import { CANDIDATE, ENGINE_VERSION, SeededRandom, Track, ZumaEngine, defaultParTime, type EngineConfig, type GameEvent, type Point } from './core.js';
 import { EXPLOSION_RGB, ballCss, cueAllowed, makeColorBurst, makeSparks, soundCues, type ColorBurst, type SoundCue } from './feedback.js';
 import { LEVELS, levelFor, type LevelDef } from './levels.js';
-import { AudioManager, loopLevels, warningLevel } from './audio.js';
+import { AudioManager, audioDebugEnabled, audioDebugLines, loopLevels, warningLevel } from './audio.js';
 import { OriginalPack, tintSheet, upscaleSheet, type Bitmap, type PackGraphics, type PackSettings } from './original.js';
 import { loadBitmapFont, type BitmapFont } from './bitmapfont.js';
 import { upscaleBitmap } from './upscale.js';
@@ -88,6 +88,8 @@ class Game {
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: Renderer;
   private readonly audio = new AudioManager();
+  /** `?debug=audio` (R2.0.26, sound-lag-after-pause): audio diagnostics drawn in the top-left corner; nothing else changes. */
+  private readonly audioDebug = typeof location !== 'undefined' && audioDebugEnabled(location.search);
   private pack: OriginalPack | null = null;
   /** Original strings (`strings.json`) for the in-game messages (GET_READY / GO); null without the pack. */
   private strings: Record<string, string> | null = null;
@@ -537,6 +539,8 @@ class Game {
 
   private loop(time: number): void {
     requestAnimationFrame(t => this.loop(t));
+    // R2.0.26: the audio monitor (clock, measured output lag, late cues revoked) runs on every screen.
+    this.audio.tick();
     // R2.0.21 (D-01, D-02, D-03): off the level screen the main menu, the adventure screen, the god dialogue over the
     // frozen board or the ending is drawn; no engine steps.
     if (this.app.screen !== 'level') {
@@ -545,6 +549,7 @@ class Game {
       else if (this.app.screen === 'temple') this.drawTempleFrame();
       else if (this.app.screen === 'ending') this.drawEndingFrame();
       else this.drawWelcomeFrame(time);
+      if (this.audioDebug) this.drawAudioDebug();
       return;
     }
     const engine = this.engine;
@@ -573,6 +578,27 @@ class Game {
     this.fx.bursts = this.fx.bursts.filter(b => engine.tick - b.start < 40);
     this.fx.floats = this.fx.floats.filter(f => engine.tick - f.start < 70);
     this.renderer.draw(engine, this.fx, this.hud(engine), this.frame);
+    if (this.audioDebug) this.drawAudioDebug();
+  }
+
+  /** `?debug=audio`: the AudioManager diagnostics in a small block over the top-left corner of the stage. */
+  private drawAudioDebug(): void {
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) return;
+    const lines = audioDebugLines(this.audio.diagnostics());
+    const scale = this.renderer.scale;
+    ctx.save();
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textBaseline = 'top';
+    const width = Math.max(...lines.map(l => ctx.measureText(l).width)) + 8;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+    ctx.fillRect(2, 2, width, lines.length * 13 + 6);
+    ctx.fillStyle = '#7CFC00';
+    lines.forEach((line, i) => ctx.fillText(line, 6, 5 + i * 13));
+    ctx.restore();
   }
 
   /**

@@ -144,6 +144,106 @@ const LOOP_GAINS: Record<LoopKey, number> = { rolling: ROLLING_GAIN, ufo: UFO_GA
 /** Delay before the context replaced by resumeAfterPause is closed: its last one-shots (≤ 1 s) play out first. */
 export const OLD_CONTEXT_RELEASE_MS = 1500;
 
+/**
+ * R2.0.26 (sound-lag-after-pause, second pass): a one-shot started while the context is not live (suspended, iOS
+ * `interrupted`, or `running` with a clock that does not move) waits at the frozen currentTime and would be heard whenever
+ * the context next starts — a tap later. It is kept only if the context runs within this grace, else revoked (stopped
+ * before its start, output disconnected): better silent than late.
+ */
+export const LATE_CUE_GRACE_MS = 100;
+/** A `running` context whose currentTime has not moved for this long is stalled (not live). */
+export const CLOCK_STALL_MS = 250;
+/** A context stalled, or not running although resumed in a gesture, for this long is rebuilt at the next gesture. */
+export const STUCK_RENEW_MS = 1000;
+/** Output lag (s) above the context's reference that gets it rebuilt at the next gesture. */
+export const LAG_LIMIT_S = 0.15;
+/** The lag of a context is measured once its clock has run this long (s): the first output timestamps are unsettled. */
+export const LAG_SETTLE_S = 1;
+/** Samples (frames) whose median is the reference lag of a context, and the median window of the current lag. */
+const LAG_REF_SAMPLES = 10;
+const LAG_WINDOW = 15;
+/** Rebuilds of a context that is late from its start (unreported route latency) before it is accepted as is. */
+export const MAX_LAG_RETRIES = 2;
+/** Minimum interval between two automatic rebuild requests. */
+const AUTO_RENEW_INTERVAL_MS = 3000;
+
+/** `AudioContext.getOutputTimestamp()` result (fields may be missing or zero before the output starts). */
+export interface OutputTimestamp { contextTime?: number; performanceTime?: number }
+
+/**
+ * Seconds between scheduling a sound at `currentTime` and hearing it: the context time being heard at `nowMs` is
+ * `contextTime + (nowMs − performanceTime) / 1000`. Null without a usable timestamp (output not started, API missing).
+ */
+export function outputLag(currentTime: number, ts: OutputTimestamp | null | undefined, nowMs: number): number | null {
+  const contextTime = Number(ts?.contextTime);
+  const performanceTime = Number(ts?.performanceTime);
+  if (!(contextTime > 0) || !(performanceTime > 0) || !Number.isFinite(currentTime) || !Number.isFinite(nowMs)) return null;
+  const lag = currentTime - (contextTime + (nowMs - performanceTime) / 1000);
+  return Number.isFinite(lag) ? lag : null;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** What the `?debug=audio` overlay shows (AudioManager.diagnostics()). */
+export interface AudioDiagnostics {
+  state: string;
+  currentTime: number | null;
+  sampleRate: number | null;
+  baseLatency: number | null;
+  outputLatency: number | null;
+  /** Measured output lag (s, median of the last frames), null when not measurable. */
+  lag: number | null;
+  /** Lag the current context started with (s). */
+  lagRef: number | null;
+  stalled: boolean;
+  /** AudioContexts created since the page loaded. */
+  contexts: number;
+  /** Contexts replaced (pause, lag, stall, stuck). */
+  rebuilds: number;
+  lastRebuild: string | null;
+  /** A rebuild waiting for the next gesture, with its reason. */
+  renewPending: string | null;
+  /** One-shots revoked because the context did not run in time. */
+  revoked: number;
+  /** One-shots waiting for the context to run. */
+  pending: number;
+  activation: boolean | null;
+  enabled: boolean;
+  volume: number;
+}
+
+/** True when the page was opened with `?debug=audio` (diagnostic overlay; nothing else changes). Never throws. */
+export function audioDebugEnabled(search: string | null | undefined): boolean {
+  try {
+    return new URLSearchParams(search ?? '').getAll('debug').includes('audio');
+  } catch {
+    return false;
+  }
+}
+
+const ms = (s: number | null): string => (s === null || !Number.isFinite(s) ? '—' : `${Math.round(s * 1000)} ms`);
+
+/** Lines of the `?debug=audio` overlay (French UI, numbers as measured). */
+export function audioDebugLines(d: AudioDiagnostics): string[] {
+  const clock = d.currentTime === null ? 't=—' : `t=${d.currentTime.toFixed(2)} s`;
+  const rate = d.sampleRate ? ` ${d.sampleRate} Hz` : '';
+  return [
+    `AUDIO ${d.state}${d.stalled ? ' (horloge figée)' : ''}  ${clock}${rate}`,
+    `latence base ${ms(d.baseLatency)}  sortie ${ms(d.outputLatency)}`,
+    `retard ${ms(d.lag)}  (départ ${ms(d.lagRef)})`,
+    `contextes ${d.contexts}  reconstructions ${d.rebuilds}${d.lastRebuild ? ` (${d.lastRebuild})` : ''}${d.renewPending ? `  à refaire: ${d.renewPending}` : ''}`,
+    `sons annulés ${d.revoked}  en attente ${d.pending}  geste ${d.activation === null ? '?' : d.activation ? 'oui' : 'non'}`,
+    `sons ${d.enabled ? 'oui' : 'coupés'}  volume ${Math.round(d.volume * 100)} %`,
+  ];
+}
+
+/** A one-shot started while the context was not live: its source(s) and the node to disconnect to silence it. */
+interface PendingCue { ctx: AudioContext; at: number; when: number; delayMs: number; sources: AudioScheduledSourceNode[]; out: AudioNode }
+
 /** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
 const LOOP_IDLE_SECONDS = 2;
 
@@ -272,6 +372,8 @@ export interface AudioEnv {
   window?: EventTarget | null;
   /** Play the silent `<audio>` on unlock (isWebKit). */
   webkit?: boolean;
+  /** Wall clock in ms on the `performance.now()` time line (getOutputTimestamp's performanceTime). */
+  now?: () => number;
 }
 
 /** The live browser environment; empty fields under Node. */
@@ -284,6 +386,7 @@ export function browserAudioEnv(): AudioEnv {
     document: typeof document !== 'undefined' ? document : null,
     window: w ?? null,
     webkit: isWebKit(w),
+    now: typeof performance !== 'undefined' ? () => performance.now() : () => Date.now(),
   };
 }
 
@@ -306,6 +409,27 @@ export class AudioManager {
   private pulses = new Map<PulseKey, Pulse>();
   /** resumeAfterPause() came without transient activation: the fresh context is made at the next unlock(). */
   private renewPending = false;
+  /** Why the pending rebuild was asked (pause, lag, stall, stuck), for the diagnostics. */
+  private renewReason: string | null = null;
+  /** One-shots started while the context was not live (revoked after LATE_CUE_GRACE_MS). */
+  private pending: PendingCue[] = [];
+  /** Clock watch: last currentTime seen and when (wall ms) it last moved; since when the context is not running. */
+  private clockSeen = -1;
+  private clockMovedAt = 0;
+  private stalled = false;
+  private notRunningSince: number | null = null;
+  /** Wall ms of the last resume() asked inside a gesture (unlock), null once running. */
+  private resumeAskedAt: number | null = null;
+  /** Output lag: last samples, reference of the current context, rebuilds of late-from-start contexts in a row. */
+  private lagSamples: number[] = [];
+  private lagRefSamples: number[] = [];
+  private lagRef: number | null = null;
+  private lagRetries = 0;
+  private lastAutoRenew = -Infinity;
+  private contexts = 0;
+  private rebuilds = 0;
+  private lastRebuild: string | null = null;
+  private revokedCount = 0;
 
   /** Silent `<audio>` already played (once per page). */
   private mediaPrimed = false;
@@ -365,7 +489,8 @@ export class AudioManager {
    * Must be called from a user gesture. Creates the context (session type set first), decodes every pack sound in
    * parallel (D-07), resumes a suspended / interrupted context and, while the context is not running, starts a
    * one-sample silent source inside the gesture (primeContext); on WebKit the silent `<audio>` is played once
-   * (primeMediaChannel). Never throws.
+   * (primeMediaChannel). A rebuild asked by resumeAfterPause or by the monitor (tick: lag, stall, stuck) is made here
+   * when the page has transient activation. Never throws.
    */
   unlock(): void {
     if (!this.ctx) {
@@ -377,17 +502,25 @@ export class AudioManager {
       } catch {
         return;
       }
+      this.contexts++;
+      this.resetWatch();
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.8 * this.volume;
       this.master.connect(this.ctx.destination);
       this.watchState(this.ctx);
       void this.preload();
     } else if (this.renewPending && hasTransientActivation(this.env.navigator)) {
+      const reason = this.renewReason ?? 'pause';
       this.renewPending = false;
-      this.renew();
+      this.renewReason = null;
+      this.renew(reason);
+      this.syncListeners();
     }
     if (!this.ctx) return;
-    if (this.ctx.state !== 'running') primeContext(this.ctx);
+    if (this.ctx.state !== 'running') {
+      primeContext(this.ctx);
+      this.resumeAskedAt ??= this.now();
+    }
     if (this.env.webkit && !this.mediaPrimed) this.mediaPrimed = primeMediaChannel(this.env.document);
     this.resume();
   }
@@ -401,7 +534,8 @@ export class AudioManager {
    * minimal latency: it is created and unlocked here like the first one (silent source + resume inside the gesture), the
    * decoded buffers and the volume are kept, the old context is closed OLD_CONTEXT_RELEASE_MS later. Without transient
    * activation (Escape is not one; WebKit would leave the new context suspended) the swap waits for the next unlock()
-   * that has one. Before the first unlock this does nothing. Never throws.
+   * that has one. Before the first unlock this does nothing. Never throws. R2.0.26: the lag that comes back later is
+   * caught by tick() (measured output lag, stalled clock) and cues are never heard late (play()).
    */
   resumeAfterPause(): void {
     if (!this.ctx) return;
@@ -410,11 +544,18 @@ export class AudioManager {
     if (this.ctx.state === 'running' && this.ctx.currentTime * 1000 < OLD_CONTEXT_RELEASE_MS) return;
     if (!hasTransientActivation(this.env.navigator)) {
       this.renewPending = true;
+      this.renewReason = 'pause';
+      this.syncListeners();
       return;
     }
     this.renewPending = false;
-    if (!this.renew() || !this.ctx) return;
-    if (this.ctx.state !== 'running') primeContext(this.ctx);
+    this.renewReason = null;
+    if (!this.renew('pause') || !this.ctx) return;
+    this.syncListeners();
+    if (this.ctx.state !== 'running') {
+      primeContext(this.ctx);
+      this.resumeAskedAt ??= this.now();
+    }
     this.resume();
   }
 
@@ -422,8 +563,9 @@ export class AudioManager {
    * Replaces the context by a new one with its own master gain (0.8 × volume); loops and pulses of the old one are
    * stopped at once, its master disconnected and the context closed OLD_CONTEXT_RELEASE_MS later. The gesture listeners
    * follow the new context (re-armed while it does not run). False, old context kept, when the new one cannot be built.
+   * One-shots still waiting on the old context stay watched against its own clock (the « Retour au jeu » click plays).
    */
-  private renew(): boolean {
+  private renew(reason: string): boolean {
     const old = this.ctx;
     const Ctor = this.env.AudioContext;
     if (!old || !Ctor) return false;
@@ -446,6 +588,11 @@ export class AudioManager {
     const oldMaster = this.master;
     this.ctx = next;
     this.master = master;
+    this.contexts++;
+    this.rebuilds++;
+    this.lastRebuild = reason;
+    if (reason === 'lag') this.lagRetries++;
+    this.resetWatch();
     this.watchState(next);
     this.syncListeners();
     // The old context finishes what it was playing (the « button » click of « Retour au jeu ») before it is closed.
@@ -456,8 +603,22 @@ export class AudioManager {
     return true;
   }
 
+  /** Clock, stall and lag watch of a context that has just been made. */
+  private resetWatch(): void {
+    this.clockSeen = -1;
+    this.clockMovedAt = this.now();
+    this.stalled = false;
+    this.notRunningSince = null;
+    this.resumeAskedAt = null;
+    this.lagSamples = [];
+    this.lagRefSamples = [];
+    this.lagRef = null;
+  }
+
   /** Resumes a context the browser suspended, or that iOS `interrupted` (call, other app, lock). */
   private resume(): void {
+    // Whatever waited too long on the frozen clock must not sound when the context starts now.
+    this.settlePending();
     const ctx = this.ctx;
     const state: string = ctx?.state ?? 'closed';
     if (!ctx || (state !== 'suspended' && state !== 'interrupted')) return;
@@ -477,14 +638,149 @@ export class AudioManager {
     }
   }
 
+  /** Listeners armed while the context does not run or a rebuild waits for a gesture (touchend / click on iOS). */
   private syncListeners(): void {
-    const running = this.ctx?.state === 'running';
-    if (running && this.unlockTarget) {
+    const settled = this.ctx?.state === 'running' && !this.renewPending;
+    if (settled && this.unlockTarget) {
       for (const type of UNLOCK_EVENTS) this.unlockTarget.removeEventListener(type, this.onGesture);
       this.unlockTarget = null;
-    } else if (!running && !this.unlockTarget && this.bound) {
+    } else if (!settled && !this.unlockTarget && this.bound) {
       this.attach(this.bound);
     }
+  }
+
+  /** Wall clock (ms, performance.now time line). */
+  private now(): number {
+    try {
+      const t = this.env.now ? this.env.now() : performance.now();
+      return Number.isFinite(t) ? t : Date.now();
+    } catch {
+      return Date.now();
+    }
+  }
+
+  /** Asks a rebuild at the next gesture (never more often than AUTO_RENEW_INTERVAL_MS). */
+  private requestRenew(reason: string, now: number): void {
+    if (this.renewPending || now - this.lastAutoRenew < AUTO_RENEW_INTERVAL_MS) return;
+    this.lastAutoRenew = now;
+    this.renewPending = true;
+    this.renewReason = reason;
+    this.syncListeners();
+  }
+
+  /**
+   * Call every frame (any screen). Watches the context: a `running` clock that stops moving for CLOCK_STALL_MS is
+   * stalled; stalled, or not running although resumed in a gesture, for STUCK_RENEW_MS → rebuild at the next gesture.
+   * Measures the output lag with getOutputTimestamp once the clock passed LAG_SETTLE_S: the median of the first frames
+   * is the context's reference; a lag LAG_LIMIT_S above it (the pipeline slipped), or a reference LAG_LIMIT_S above the
+   * latency the browser reports (at most MAX_LAG_RETRIES contexts in a row), → rebuild at the next gesture. Revokes the
+   * one-shots the clock did not reach in time. Never throws.
+   */
+  tick(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = this.now();
+    try {
+      this.settlePending(now);
+      const running = ctx.state === 'running';
+      const t = ctx.currentTime;
+      if (!running) {
+        this.stalled = false;
+        this.clockSeen = t;
+        this.clockMovedAt = now;
+        this.notRunningSince ??= now;
+        if (this.resumeAskedAt !== null && now - this.resumeAskedAt > STUCK_RENEW_MS) this.requestRenew('stuck', now);
+        return;
+      }
+      this.notRunningSince = null;
+      this.resumeAskedAt = null;
+      if (t !== this.clockSeen) {
+        this.clockSeen = t;
+        this.clockMovedAt = now;
+        this.stalled = false;
+      } else if (now - this.clockMovedAt > CLOCK_STALL_MS) {
+        this.stalled = true;
+        if (now - this.clockMovedAt > STUCK_RENEW_MS) this.requestRenew('stall', now);
+      }
+      if (this.stalled || t < LAG_SETTLE_S || typeof ctx.getOutputTimestamp !== 'function') return;
+      const lag = outputLag(t, ctx.getOutputTimestamp(), now);
+      if (lag === null) return;
+      this.lagSamples.push(lag);
+      if (this.lagSamples.length > LAG_WINDOW) this.lagSamples.shift();
+      const expected = (Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : 0) + (Number.isFinite(ctx.outputLatency) ? ctx.outputLatency : 0);
+      if (this.lagRef === null) {
+        this.lagRefSamples.push(lag);
+        if (this.lagRefSamples.length < LAG_REF_SAMPLES) return;
+        this.lagRef = median(this.lagRefSamples);
+        if (this.lagRef - expected <= LAG_LIMIT_S) this.lagRetries = 0;
+      }
+      if (this.lagRef - expected > LAG_LIMIT_S && this.lagRetries < MAX_LAG_RETRIES) this.requestRenew('lag', now);
+      else if (this.lagSamples.length >= LAG_WINDOW && median(this.lagSamples) > this.lagRef + LAG_LIMIT_S) this.requestRenew('lag', now);
+    } catch {
+      /* a browser without part of the API: nothing measured */
+    }
+  }
+
+  /** Snapshot for the `?debug=audio` overlay. */
+  diagnostics(): AudioDiagnostics {
+    const ctx = this.ctx;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    let activation: boolean | null = null;
+    try {
+      const a = (this.env.navigator as { userActivation?: { isActive?: unknown } } | null | undefined)?.userActivation;
+      if (a && typeof a.isActive === 'boolean') activation = a.isActive;
+    } catch { /* no API */ }
+    return {
+      state: this.state,
+      currentTime: num(ctx?.currentTime),
+      sampleRate: num(ctx?.sampleRate),
+      baseLatency: num(ctx?.baseLatency),
+      outputLatency: num(ctx?.outputLatency),
+      lag: this.lagSamples.length ? median(this.lagSamples) : null,
+      lagRef: this.lagRef,
+      stalled: this.stalled,
+      contexts: this.contexts,
+      rebuilds: this.rebuilds,
+      lastRebuild: this.lastRebuild,
+      renewPending: this.renewPending ? this.renewReason ?? 'pause' : null,
+      revoked: this.revokedCount,
+      pending: this.pending.length,
+      activation,
+      enabled: this.enabled,
+      volume: this.volume,
+    };
+  }
+
+  /** Watches a one-shot until its context's clock passes its start time. */
+  private track(ctx: AudioContext, sources: AudioScheduledSourceNode[], out: AudioNode, when: number, delay: number): void {
+    this.pending.push({ ctx, at: this.now(), when, delayMs: delay * 1000, sources, out });
+    if (this.pending.length > 64) this.revoke(this.pending.shift()!);
+  }
+
+  /**
+   * One-shots whose context clock went past their start are playing (dropped from the watch); those still waiting
+   * LATE_CUE_GRACE_MS after they were due are revoked.
+   */
+  private settlePending(now = this.now()): void {
+    if (this.pending.length === 0) return;
+    const keep: PendingCue[] = [];
+    for (const cue of this.pending) {
+      let clock = Number.NaN;
+      try { clock = cue.ctx.currentTime; } catch { /* closed */ }
+      if (clock > cue.when) continue;
+      if (now - cue.at > cue.delayMs + LATE_CUE_GRACE_MS) this.revoke(cue);
+      else keep.push(cue);
+    }
+    this.pending = keep;
+  }
+
+  /** Silences a one-shot for good: stopped before its start, output disconnected. */
+  private revoke(cue: PendingCue): void {
+    for (const src of cue.sources) {
+      try { src.stop(0); } catch { /* already stopped */ }
+    }
+    try { cue.out.disconnect(); } catch { /* already disconnected */ }
+    this.revokedCount++;
   }
 
   private attach(target: EventTarget): void {
@@ -537,9 +833,14 @@ export class AudioManager {
     }
   }
 
-  /** Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` / `extralife`), panned by `cue.pan`. */
+  /**
+   * Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` / `extralife`), panned by `cue.pan`. R2.0.26:
+   * the cue is watched until the context clock passes its start (track); on a context that is not running it is
+   * revoked unless the context runs within LATE_CUE_GRACE_MS (never heard late), and the context is asked to resume.
+   */
   play(cue: SoundCue): void {
     if (!this.enabled || !this.ctx || !this.master) return;
+    if (this.ctx.state !== 'running') this.resume();
     const delay = clampDelay(cue.delay);
     const pan = clampPan(cue.pan);
     if (this.available.has(cue.key)) {
@@ -555,6 +856,7 @@ export class AudioManager {
         src.connect(gain).connect(out);
         const now = this.ctx.currentTime;
         src.start(now + delay);
+        this.track(this.ctx, [src], gain, now + delay, delay);
         return;
       }
       // Still decoding: stay silent rather than doubling the original with the synth.
@@ -693,6 +995,7 @@ export class AudioManager {
     osc.connect(gain);
     osc.start(now);
     osc.stop(now + spec.duration + 0.02);
+    const sources: AudioScheduledSourceNode[] = [osc];
     if (spec.noise) {
       const length = Math.floor(ctx.sampleRate * spec.duration);
       const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
@@ -702,6 +1005,8 @@ export class AudioManager {
       src.buffer = buffer;
       src.connect(gain);
       src.start(now);
+      sources.push(src);
     }
+    this.track(ctx, sources, gain, now, delay);
   }
 }
