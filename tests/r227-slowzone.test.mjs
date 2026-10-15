@@ -64,23 +64,23 @@ test('the rear segment moves exactly as if the parked front segment did not exis
 });
 
 test('exploding balls keep the run linked until their removal, then the rear segment gets its own target (0x4239ed)', () => {
-  // 40 balls, front at 1800 (past the danger line), rear at 552; balls 10–12 explode: the rear segment (0–9, front at 840)
-  // is before the band once they are removed. Neighbours 9 and 13 have different colours (no attraction).
+  // 40 balls, front at 1800 (past the danger line), rear at 552; balls 5–7 explode: the rear segment (0–4, front at 680)
+  // is before the band once they are removed. Neighbours 4 and 8 have different colours (no attraction).
   const balls = segment(1800, 40);
   const g = board(balls, 12.5);
   const chain = g.chains[0];
-  const run = chain.balls.slice(10, 13);
-  assert.notEqual(chain.balls[9].color, chain.balls[13].color);
+  const run = chain.balls.slice(5, 8);
+  assert.notEqual(chain.balls[4].color, chain.balls[8].color);
   const due = g.tick + CONFIG.destroyTicks;
   for (const b of run) b.destroyingUntil = due;
-  chain.removals.push({ ids: run.map(b => b.id), leftId: chain.balls[9].id, rightId: chain.balls[13].id, shotId: -1, depth: 1, due });
+  chain.removals.push({ ids: run.map(b => b.id), leftId: chain.balls[4].id, rightId: chain.balls[8].id, shotId: -1, depth: 1, due });
   const during = [];
   while (g.tick < due - 1) { g.step(); during.push(chain.speed); }
   assert.ok(during.every(v => Math.abs(v - 12.5) < 1e-9), `links survive the destruction: the head is still the front at 1800 (${Math.max(...during)})`);
   g.step();
   assert.equal(chain.balls.length, 37, 'removed');
   for (let t = 0; t < 90; t++) g.step();
-  near(chain.speed, 50, 1e-9, 'after the removal the rear segment (front at ≈ 845) climbs to the cruise speed at 50 px/s²');
+  near(chain.speed, 50, 1e-9, 'after the removal the rear segment (front at ≈ 685) climbs to the cruise speed at 50 px/s²');
 });
 
 test('an unbroken chain still follows its head (one run: the last ball, 0x418a44)', () => {

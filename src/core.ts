@@ -1086,16 +1086,31 @@ export class ZumaEngine {
 
   /**
    * Pusher target (0x418780): `speed`, × zumaSlowFactor while the chain's ZUMA slowdown runs, ÷ slowFactor
-   * under the SLOW power-up, × the end-of-track slow zone for the most advanced alive ball.
+   * under the SLOW power-up, × the end-of-track slow zone for `slowZoneHead` (R2.0.27: the front of the rear
+   * segment, no longer the most advanced ball of the whole chain).
    */
-  private pusherTarget(chain: Chain, alive: Ball[]): number {
+  private pusherTarget(chain: Chain): number {
     const { speed, slowFactor, slowDistance, dangerDistance, endSlowFactor, zumaSlowFactor } = this.config;
     let target = speed;
     if (chain.zumaSlowLeft > 0) target *= zumaSlowFactor;
     if (this.slowTicks > 0) target /= slowFactor;
-    let head = -Infinity;
-    for (const b of alive) if (b.s > head) head = b.s;
-    return target * endZoneFactor(head, chain.track.length, slowDistance, dangerDistance, endSlowFactor);
+    return target * endZoneFactor(this.slowZoneHead(chain), chain.track.length, slowDistance, dangerDistance, endSlowFactor);
+  }
+
+  /**
+   * Head of the slow zone (curve+0x68, 0x418a28–0x418a77): the first ball from the rear whose link to the next ball
+   * (ball+0x30) is clear — the front of the rear run, the one the pusher pushes — or the last ball when every link
+   * is set. A link is set by contact and cleared for the ball behind a removed ball (0x423970 → 0x408760(0)), so it
+   * survives the destruction delay: the curve list is walked with its exploding balls, links emulated by contact.
+   * A segment parked ahead (gap) therefore does not slow the rear segment down (debug slowdown-full-chain).
+   */
+  private slowZoneHead(chain: Chain): number {
+    const list = chain.balls;
+    if (list.length === 0) return -Infinity;
+    for (let i = 0; i + 1 < list.length; i++) {
+      if (list[i + 1].s - list[i].s > this.gap(list[i], list[i + 1]) + CONTACT_EPS) return list[i].s;
+    }
+    return list[list.length - 1].s;
   }
 
   /**
@@ -1109,8 +1124,8 @@ export class ZumaEngine {
    * band) the speed runs a sawtooth up to 0.1 px/maj under it (R2.0.24, debug level-settings-audit).
    * Always computed, even while a rollback or a recoil keeps the pusher from advancing.
    */
-  private updatePusher(chain: Chain, alive: Ball[]): void {
-    const target = this.pusherTarget(chain, alive);
+  private updatePusher(chain: Chain): void {
+    const target = this.pusherTarget(chain);
     if (chain.speed === null) {
       chain.speed = this.feeding ? feedSpeed(this.config.speed, feedDistance(chain.track, this.config.startFraction)) : target;
       return;
@@ -1168,7 +1183,7 @@ export class ZumaEngine {
       for (let i = first[c]; i <= last[c]; i++) alive[i].s += d;
     };
 
-    this.updatePusher(chain, alive);
+    this.updatePusher(chain);
 
     if (this.backwardsTicks > 0) {
       for (const b of alive) b.s -= this.config.backwardsSpeed * dt;
