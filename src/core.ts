@@ -39,7 +39,11 @@
  * grabbed within 36 px and consumes the projectile. A game has `lives` frogs: a loss does lives − 1 and the game is
  * over at 0. From R2.0.21 (06-RESEARCH.md Q5c, D-09): the 24-tick pusher stop (40 maj) is armed only when the
  * rearmost ball of a chain — the one the pusher pushes — is removed at the end of its destruction (0x423a10), never
- * by an insertion.
+ * by an insertion. From R2.0.27 (scoring audit, second pass): a flying projectile is updated once per maj like the
+ * original (0x423330: firespeed px, no sweep), leaves the board at x < 0, y < 0, x − 16 > 640 or y − 16 > 480, touches
+ * the first ball of the curves in order whose insertion-side point is not a tunnel point (0x421e10 / 0x405d00), and the
+ * gap detector samples curve POINTS 1, 33, 65… and stays silent while the projectile is still on the sample that fired
+ * (0x414c60 / 0x401f30).
  *
  * Units: the original runs at 100 Hz (1 maj = 10 ms); the engine at `tickHz` 60.
  * maj × 0.6 = ticks, px/maj × 100 = px/s, px/maj² × 10 000 = px/s².
@@ -253,6 +257,11 @@ export interface Projectile {
    * (`next.s − prev.s`, 0x414e19, truncated); Infinity while the list is empty.
    */
   gapMinWidth: number;
+  /**
+   * Per curve, the detector sample that fired last (projectile+0xa0 + 4 × curve, 0x401f30 / 0x401f10): while the
+   * projectile is still within the ball radius of it, the detector of that curve does nothing (0x414cc4–0x414d08).
+   */
+  gapHold?: Array<{ x: number; y: number } | undefined>;
 }
 
 export interface Removal {
@@ -353,7 +362,7 @@ export interface EngineConfig {
   /** Target multiplier while the ZUMA slowdown runs (original 0.25). */
   zumaSlowFactor: number;
   drainSpeed: number;
-  /** Projectile speed in px per tick. */
+  /** Projectile speed in px per tick; the projectile moves × tickHz / 100 of it per 100 Hz update (firespeed 6 → 10 px/tick). */
   projectileSpeed: number;
   /** Distance from the frog centre to the projectile start point (the mouth), in px. */
   muzzleOffset: number;
@@ -1685,76 +1694,99 @@ export class ZumaEngine {
 
   // ------------------------------------------------------------ projectiles
 
+  /**
+   * Flying projectiles, one original update (0x423330) per maj of the tick: the projectile moves by its per-update
+   * velocity (0x401fa0, firespeed px — no sweep between two updates), then off-screen test, coin, contact and, only
+   * without contact, the gap detector of every curve.
+   */
   private moveProjectiles(): void {
-    const { width, height, ballRadius, ballSpacing, coinRadius, coinPoints } = this.config;
-    const margin = ballSpacing * 2;
     const keep: Projectile[] = [];
     for (const p of this.projectiles) {
-      p.x += p.vx;
-      p.y += p.vy;
-      if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) {
-        this.streak = 0;
-        this.stats.misses++;
-        this.emit('miss', { id: p.id });
-        continue;
-      }
-      // Coin grab (0x423330, tested before the chain): scores and keeps the streak; the original then destroys the
-      // projectile — no insertion, no miss (D-31, coinConsumesShot) — while `false` lets it fly on (R2.0.18).
-      const coin = this.coin;
-      if (coin && Math.hypot(p.x - coin.x, p.y - coin.y) < coinRadius) {
-        this.coin = null;
-        this.stats.coins++;
-        this.addScore(coinPoints);
-        this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints, shotId: p.id }); // the retry deadline is not moved (0x4233fb)
-        if (this.config.coinConsumesShot) continue;
-      }
-      let hit: Ball | undefined;
-      let hitChain: Chain | undefined;
-      let bestDist = Infinity;
-      for (const chain of this.chains) {
-        const alive = this.alive(chain);
-        for (const b of alive) {
-          if (b.s < 0 || b.s > chain.track.length) continue;
-          // 0x408f52: a ball on a tunnel point is not touchable; the projectile flies on.
-          if (chain.track.tunnelAt(b.s)) continue;
-          const bp = chain.track.pointAt(b.s);
-          const d = Math.hypot(p.x - bp.x, p.y - bp.y);
-          if (d < 2 * ballRadius && d < bestDist) {
-            bestDist = d;
-            hit = b;
-            hitChain = chain;
-          }
-        }
-      }
-      if (hit && hitChain) {
-        this.land(p, hit, hitChain);
-        continue;
-      }
-      // 0x423749–0x4237a5: the gap detector runs on every curve only when no curve was hit this update.
-      for (const chain of this.chains) this.trackGap(p, chain);
-      keep.push(p);
+      let flying = true;
+      for (let k = 0; k < this.majSteps && flying; k++) flying = this.updateProjectile(p);
+      if (flying) keep.push(p);
     }
     this.projectiles = keep;
   }
 
   /**
-   * Original gap detector (0x414c60) for one curve: the first curve sample — every 2 × radius = 32 px from s = 1,
-   * tunnel points skipped — closer than the ball radius (16) to the projectile; the gap is between the first ball of
-   * the raw list (exploding balls included, they stay in the curve list) beyond that sample and its predecessor;
-   * width = truncated centre distance, > 0; one entry per front ball (AddGap 0x414660). No gap before the rearmost
-   * ball nor beyond the head.
+   * One 100 Hz update of a flying projectile; false once it is gone (miss, coin, landed). `vx`/`vy` are px per tick:
+   * one update moves them × tickHz / 100 (firespeed 6 px). Off-screen as 0x4237a9–0x423800: x < 0, y < 0,
+   * x − radius > width or y − radius > height. Contact (0x423749 → 0x421e10): curves in order, the FIRST ball of the
+   * raw list (rear to front) closer than 2 × radius, not exploding, whose insertion-side point trunc(s) ± radius is
+   * not a tunnel point (0x405d00). Without contact on any curve, the gap detector of every curve (0x423773–0x4237a5).
+   */
+  private updateProjectile(p: Projectile): boolean {
+    const { width, height, ballRadius, coinRadius, coinPoints, tickHz } = this.config;
+    const f = tickHz / 100;
+    p.x += p.vx * f;
+    p.y += p.vy * f;
+    if (p.x < 0 || p.y < 0 || p.x - ballRadius > width || p.y - ballRadius > height) {
+      this.streak = 0;
+      this.stats.misses++;
+      this.emit('miss', { id: p.id });
+      return false;
+    }
+    // Coin grab (0x423330, tested before the chain): scores and keeps the streak; the original then destroys the
+    // projectile — no insertion, no miss (D-31, coinConsumesShot) — while `false` lets it fly on (R2.0.18).
+    const coin = this.coin;
+    if (coin && Math.hypot(p.x - coin.x, p.y - coin.y) < coinRadius) {
+      this.coin = null;
+      this.stats.coins++;
+      this.addScore(coinPoints);
+      this.emit('coin', { id: coin.id, x: coin.x, y: coin.y, points: coinPoints, shotId: p.id }); // the retry deadline is not moved (0x4233fb)
+      if (this.config.coinConsumesShot) return false;
+    }
+    for (const chain of this.chains) {
+      const track = chain.track;
+      for (const b of chain.balls) {
+        if (b.destroyingUntil !== undefined) continue;
+        if (b.s < 0 || b.s > track.length) continue;
+        const bp = track.pointAt(b.s);
+        const dx = p.x - bp.x;
+        const dy = p.y - bp.y;
+        if (dx * dx + dy * dy >= 4 * ballRadius * ballRadius) continue;
+        // 0x405d00: the point where the ball would go in (trunc(pos) ± radius) must not be a tunnel point.
+        const t = track.tangentAt(b.s);
+        const ahead = dx * t.x + dy * t.y >= 0;
+        if (track.tunnelAt(Math.trunc(b.s) + (ahead ? ballRadius : -ballRadius))) continue;
+        this.land(p, b, chain);
+        return false;
+      }
+    }
+    for (const chain of this.chains) this.trackGap(p, chain);
+    return true;
+  }
+
+  /**
+   * Original gap detector (0x414c60) for one curve. While the projectile is still within the ball radius (16) of the
+   * sample that fired last on this curve, nothing (0x401f30, 0x414cc4–0x414d08); otherwise that memory is cleared and
+   * the first sample — curve point 1, 33, 65… (every 2 × radius), tunnel points skipped — closer than the radius is
+   * remembered (0x401f10) and gives the gap between the first ball of the raw list (exploding balls included, they
+   * stay in the curve list) beyond that sample and its predecessor; width = truncated centre distance, > 0; one entry
+   * per front ball (AddGap 0x414660). No gap before the rearmost ball nor beyond the head.
    */
   private trackGap(p: Projectile, chain: Chain): void {
     const r = this.config.ballRadius;
-    let found: number | null = null;
+    const hold = (p.gapHold ??= []);
+    const last = hold[chain.index];
+    if (last) {
+      const dx = last.x - p.x;
+      const dy = last.y - p.y;
+      if (dx * dx + dy * dy < r * r) return;
+      hold[chain.index] = undefined;
+    }
+    let found: { s: number; x: number; y: number } | null = null;
     for (const sample of this.gapSamples(chain.track)) {
       const dx = sample.x - p.x;
       const dy = sample.y - p.y;
-      if (dx * dx + dy * dy < r * r) { found = sample.s; break; }
+      if (dx * dx + dy * dy < r * r) { found = sample; break; }
     }
     if (found === null) return;
+    hold[chain.index] = found;
+    const at = found.s;
     const list = chain.balls;
-    const k = list.findIndex(b => b.s > found);
+    const k = list.findIndex(b => b.s > at);
     if (k <= 0) return;
     const w = Math.trunc(list[k].s - list[k - 1].s);
     if (!(w > 0)) return;
@@ -1771,16 +1803,29 @@ export class ZumaEngine {
     p.gapMinWidth = p.gapWidths.length > 0 ? Math.min(...p.gapWidths) : Infinity;
   }
 
-  /** Curve samples of the gap detector, cached per track: s = 1, 33, 65… (2 × radius), tunnel points excluded. */
+  /**
+   * Curve samples of the gap detector, cached per track: curve points 1, 33, 65… (every 2 × radius, 0x414d9f), tunnel
+   * points excluded (byte +0x20). On a dense curve (≤ 2 px per point: the pack curves, 1.005 px) the sample is the
+   * curve POINT — its screen position and its arc length; on a sparse polyline (procedural levels, tests) a point
+   * stands for 1 px of arc, s = 1, 33, 65….
+   */
   private gapSamples(track: Track): Array<{ s: number; x: number; y: number }> {
     let samples = GAP_SAMPLES.get(track);
     if (!samples) {
       samples = [];
       const step = 2 * this.config.ballRadius;
-      for (let s = 1; s < track.length; s += step) {
-        if (track.tunnelAt(s)) continue;
-        const q = track.pointAt(s);
-        samples.push({ s, x: q.x, y: q.y });
+      const n = track.points.length;
+      if (track.length <= 2 * (n - 1)) {
+        for (let i = 1; i < n; i += step) {
+          if ((track.layers[i] & 1) === 1) continue;
+          samples.push({ s: track.cumulative[i], x: track.points[i].x, y: track.points[i].y });
+        }
+      } else {
+        for (let s = 1; s < track.length; s += step) {
+          if (track.tunnelAt(s)) continue;
+          const q = track.pointAt(s);
+          samples.push({ s, x: q.x, y: q.y });
+        }
       }
       GAP_SAMPLES.set(track, samples);
     }
