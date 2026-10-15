@@ -52,7 +52,7 @@
  * first chain is exposed through `balls`, `removals` and `track` for the
  * single-chain regression fixtures.
  */
-export const ENGINE_VERSION = '2.0.26';
+export const ENGINE_VERSION = '2.0.27';
 
 /** mulberry32: small, fast, reproducible. */
 export class SeededRandom {
