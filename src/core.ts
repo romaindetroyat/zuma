@@ -1714,6 +1714,16 @@ export class ZumaEngine {
    * velocity (0x401fa0, firespeed px — no sweep between two updates), then off-screen test, coin, contact and, only
    * without contact, the gap detector of every curve.
    */
+  /**
+   * Drawing position of a flying projectile: its last 100 Hz update plus the fraction of an update already elapsed
+   * (`majClock`), so the 6 / 12 px per-frame pattern of 100 Hz updates shown at 60 Hz reads as steady motion.
+   * Display only — contact and gaps use the update positions.
+   */
+  projectileDrawPos(p: Projectile): Point {
+    const f = (this.config.tickHz / 100) * this.majClock;
+    return { x: p.x + p.vx * f, y: p.y + p.vy * f };
+  }
+
   private moveProjectiles(): void {
     const keep: Projectile[] = [];
     for (const p of this.projectiles) {

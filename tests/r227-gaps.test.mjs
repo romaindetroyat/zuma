@@ -147,3 +147,14 @@ test('contact takes the curves in order and the FIRST ball of the list within 32
   assert.equal(g.chains[0].balls.length, 2);
   assert.equal(g.chains[1].balls.length, 1);
 });
+
+test('r227: the projectile is drawn at its last 100 Hz update plus the elapsed fraction of an update (steady motion)', async () => {
+  const { ZumaEngine, Track, CANDIDATE } = await import('../.compiled/core.js');
+  const engine = new ZumaEngine([new Track([[0, 100], [640, 100]])], { x: 320, y: 400 }, { ...CANDIDATE, speed: 0, powerChance: 0 }, 1);
+  const p = { x: 100, y: 200, vx: 0, vy: -10 };
+  engine.majClock = 0;
+  assert.deepEqual(engine.projectileDrawPos(p), { x: 100, y: 200 });
+  engine.majClock = 0.5;
+  const d = engine.projectileDrawPos(p);
+  assert.ok(Math.abs(d.y - 197) < 1e-9, String(d.y)); // half an update of 6 px
+});

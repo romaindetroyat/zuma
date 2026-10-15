@@ -520,7 +520,10 @@ export class Renderer {
   }
 
   private drawProjectiles(engine: ZumaEngine, frame: number): void {
-    for (const p of engine.projectiles) this.drawBall(p.color, p.x, p.y, (p.x + p.y) * 0.5, 1, 1, undefined, frame);
+    for (const p of engine.projectiles) {
+      const d = engine.projectileDrawPos(p);
+      this.drawBall(p.color, d.x, d.y, (d.x + d.y) * 0.5, 1, 1, undefined, frame);
+    }
   }
 
   // ------------------------------------------------------------------ frog
