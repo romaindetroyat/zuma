@@ -108,7 +108,7 @@ test('Track.nearest(p, skipTunnel): segments whose two vertices are in a tunnel 
   assert.deepEqual(all.nearest({ x: 5, y: 5 }, true), { s: 0, dist: Infinity }, 'nothing left');
 });
 
-// ------------------------------------------------------------ collision : une bille en tunnel n'est pas touchable (0x408f52)
+// ------------------------------------------------------------ collision : une bille en tunnel n'est pas touchable (0x405d00 depuis R2.0.27 : point d'insertion ± 16)
 
 const tunnelLine = () => new Track(sampled(640, 240, x => (x >= 300 && x <= 400 ? 1 : 0)));
 const tunnelFixture = s => {
@@ -131,7 +131,8 @@ test('collision: a projectile flies through a ball sitting in a tunnel and misse
   stepUntil(h, 'insert', 60);
   assert.equal(h.balls.length, 2, 'landed at the contact');
   const core = fs.readFileSync('.compiled/core.js', 'utf8');
-  assert.match(core, /tunnelAt\(b\.s\)\)\s*continue/, 'contact loop skips tunnel balls');
+  // R2.0.27 (0x405d00): the contact tests the insertion-side point trunc(s) ± radius, not the centre (0x408f52 is the aim ray).
+  assert.match(core, /tunnelAt\(Math\.trunc\(b\.s\) \+ \(ahead \? ballRadius : -ballRadius\)\)\)\s*continue/, 'contact loop skips balls whose insertion side is in a tunnel');
   assert.match(core, /if \(track\.tunnelAt\(s\)\)\s*continue/, 'the gap detector samples skip tunnel points (0x414d6e)');
 });
 

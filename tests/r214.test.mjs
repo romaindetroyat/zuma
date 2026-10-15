@@ -79,12 +79,14 @@ test('projectiles leave from muzzleOffset', () => {
   far.command({ kind: 'shoot', x: 320, y: 0 });
   far.step();
   assert.equal(far.projectiles.length, 1);
-  assert.ok(Math.abs(far.projectiles[0].y - (400 - 24 - CANDIDATE.projectileSpeed)) < 1e-9, `y=${far.projectiles[0].y}`);
+  // R2.0.27: the first tick runs one 100 Hz update (majClock 1.67 → 1), i.e. projectileSpeed × 60 / 100 px (0x401fa0).
+  const update = (CANDIDATE.projectileSpeed * CANDIDATE.tickHz) / 100;
+  assert.ok(Math.abs(far.projectiles[0].y - (400 - 24 - update)) < 1e-9, `y=${far.projectiles[0].y}`);
   assert.equal(far.projectiles[0].x, 320);
   const near = fixture([]);
   near.command({ kind: 'shoot', x: 320, y: 0 });
   near.step();
-  assert.ok(Math.abs(near.projectiles[0].y - (400 - CANDIDATE.ballRadius - CANDIDATE.projectileSpeed)) < 1e-9, `y=${near.projectiles[0].y}`);
+  assert.ok(Math.abs(near.projectiles[0].y - (400 - CANDIDATE.ballRadius - update)) < 1e-9, `y=${near.projectiles[0].y}`);
 });
 
 test('rollFrame is monotone in s, wraps around the circumference and covers every frame', () => {

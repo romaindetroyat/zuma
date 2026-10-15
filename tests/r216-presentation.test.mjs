@@ -248,12 +248,13 @@ test('end to end: the STATS values of the r215 cleared level are the expected li
   //   points  = 30 (run of three: 3 × 10) + 500 (levelBonus × 1 curve at clearing) + 100 × 28 steps = 3330,
   //             steps = ⌈(2000 − 352) / 60⌉ = 28 (the last destruction sits at s = 352 → x = 352 on the straight track);
   //   combos / coins / gaps = 0 (a direct destruction, no coin, no gap), chain = comboMax = 1 (one match, depth 1);
-  //   time    = formatSeconds(⌊levelTicks / 60⌋) with levelTicks = clearTick − goTick = 46 − 0 (feeding off → go at tick 0) → « 0 s »;
+  //   time    = formatSeconds(⌊levelTicks / 60⌋) with levelTicks = clearTick − goTick = 47 − 0 (feeding off → go at tick 0) → « 0 s »;
   //   R2.0.19 (D-34): the run is removed 24 ticks after the match (40 maj), no longer 40 — 22 + 24 = 46 (was 62, « 1 s »);
+  //   R2.0.27: the projectile moves per 100 Hz update (7.2 px at projectileSpeed 12) — contact at tick 11, match 23 → 47;
   //   objective = « 25 s » (parTime); bonus = aceTimeBonus(0, 25) = ⌊250 × 25 / 25⌋ × 100 + 100 = 25100 → « +25100 »;
   //   record  = the current time when no best time is stored → « 0 s ».
   assert.equal(destroy.x, 352);
-  assert.equal(g.levelTicks, 46);
+  assert.equal(g.levelTicks, 47);
   assert.equal(g.timeBonus, aceTimeBonus(0, 25));
   const input = {
     levelScore: g.levelScore, combos: g.stats.combos, coins: g.stats.coins, gaps: g.stats.gaps, maxStreak: g.stats.maxStreak, maxCombo: g.stats.maxCombo,
