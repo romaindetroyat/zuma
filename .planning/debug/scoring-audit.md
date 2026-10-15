@@ -1,8 +1,9 @@
 ---
-status: resolved (user kept the original gap amounts, 2026-10-12)
+status: investigating (second pass on gap shots, 2026-10-15)
 trigger: "« J'ai l'impression que les scores ne reflètent pas vraiment les scores du jeu d'origine. Je voudrais que tu vérifies notamment les scores attribués quand on tire dans les brèches. J'ai l'impression que c'est sous noté... »"
 created: 2026-10-12T00:00:00Z
-updated: 2026-10-12T12:00:00Z
+updated: 2026-10-15T00:00:00Z
+second_trigger: "« Je doute aussi de la qualité du calcul des points lors de tirs dans les brèches, et je doute aussi que toutes les brèches soient bien considérées. J'ai l'impression que parfois ça compte comme une brèche alors que ça ne devrait pas, et parfois l'inverse. »"
 ---
 
 ## Current Focus
@@ -161,3 +162,48 @@ root_cause: trackGap measured the free width (centre − 32) on a continuous ban
 fix: core.ts — trackGap rewritten after 0x414c60 (cached samples, raw list, centre width, front-ball key) and called only when no chain was hit; land() removes the landing gap; Projectile.gapWidths; Ball.waiting; settle() waiting rule with linked() (42 px); destroyRun() adds 1 per waiting ball and computes the chain bonus for any depth-1 match (emits `streak`); onJunction() → endWaiting() (0x408e30).
 verification: tests/r224-scoring.test.mjs 6 RED → GREEN; r213/r214/r217/r218 expectations moved to the centre width; npm test 585/585, npm run check, npm run -s guard green; harness ours vs original-emulation 108 370 / 110 100.
 files_changed: [src/core.ts, tests/r224-scoring.test.mjs, tests/r213.test.mjs, tests/r214.test.mjs, tests/r217.test.mjs, tests/r218.test.mjs]
+
+## Second pass (2026-10-15) — gap detection, multiplicity, sampling
+
+Current Focus (second pass):
+hypothesis: our trackGap differs from 0x414c60 in ways the first pass did not read: (a) the per-projectile, per-curve
+  cached sample index (projectile+0xa0+4·curve, 0x401f30/0x401f10) that silences the detector while the projectile is
+  still within 16 px of the sample that last fired; (b) sample screen positions (original: curve POINT index 1+32k,
+  ours: arc length 1+32k, 0.5 % drift); (c) 60 Hz / 10 px steps vs 100 Hz / 6 px updates.
+test: emulator of 0x414c60/0x421e10/0x422032/0x421cac independent of core.ts + differential harness on pack levels
+expecting: mismatches classified per cause; each cause either confirmed (fix + RED test) or eliminated
+next_action: write scratchpad gap2/emu.mjs + gap2/diff.mjs, run on all 22 pack graphics
+
+### Evidence (second pass)
+
+- timestamp: 2026-10-15
+  checked: 0x414c60 head (0x414cc4–0x414d1e) and 0x401f30 / 0x401f10
+  found: `cached = proj[0xa0 + 4·curve]`; if 0 < cached < nPoints and dist²(points[cached], proj) < 16² → return
+  (nothing); else proj[0xa0 + 4·curve] = 0, then scan; the scan stores the index that fired (0x414dc5) before walking
+  the balls. Missed by the first pass.
+  implication: while the projectile stays on a sample, a change of the ball ahead of it (exploding run removed, chain
+  moving) cannot add a second gap; ours (no cache) counted DOUBLE there.
+- timestamp: 2026-10-15
+  checked: 0x414d40–0x414daa
+  found: the samples are curve POINT indices 1 + 32k (36-byte points, byte +0x20 = tunnel), compared with the ball
+  position in point units; ours sampled arc length 1 + 32k → on pack curves (1.005 px per point) the sample disc
+  drifts by 0.16 px per sample, ≈ 10–15 px at the far end of a curve.
+- timestamp: 2026-10-15
+  checked: 0x423330 / 0x401fa0 / 0x4237a9–0x423800 / 0x421e10 / 0x405d00 / Widget::Resize 0x4abf3a (+0x38 = width, +0x3c = height)
+  found: one move per 100 Hz update (pos += v, no sweep); miss when x < 0 or y < 0 or x − 16 > 640 or y − 16 > 480;
+  contact = curves in order, FIRST ball of the raw list within 32 px (d² < 4·16²), not exploding, insertion-side point
+  trunc(pos) ± 16 not a tunnel point (0x405d00; the centre test 0x408f52 is the aim-guide ray 0x408f00, not contact).
+  implication: ours moved 10 px per 60 Hz tick (disc chords < 10 px skipped), kept a 64 px margin on every side, took
+  the nearest ball and tested the tunnel at the ball centre.
+- timestamp: 2026-10-15
+  checked: differential harness scratchpad/gap2/diff.mjs + emu.mjs (independent emulator; engine timeline recorded at
+  each projectile update; ours-model variant reproduces the engine on 21 078/21 078 shots), 3 seeds × 22 levels ×
+  (fixture + play), ~21 000 shots
+  found: before — 154 mismatching shots out of ~19 000 landed (1 037 ours gap shots / 1 071 original): false negatives
+  63, false positives 29, wrong count 25, wrong amount 37. Attribution (one factor reverted): sampling cadence ~68,
+  sample positions ~77, collision tunnel side ~22, collision order ~2, bounds ~5, cache ~4 (all DOUBLE → single).
+- timestamp: 2026-10-15
+  checked: 0x420b80 display
+  found: one « +%d » (0x54cdd4, wide) of edx = 10n + 100·combo + gap sum + chain bonus, the same edx passed to AddScore
+  0x417380; GAP_BONUS / DOUBLE / TRIPLE strings carry no amount (count ≤ 1 / 2 / ≥ 3, max over the group)
+  implication: main.ts already shows `+${points}` = addScore(points) and label-only gap texts — no display mismatch.
