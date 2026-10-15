@@ -1,0 +1,1012 @@
+/**
+ * Sound dispatch. Original Zuma resources are loaded when a local build supplies
+ * them under assets/sounds/<key>.<ogg|m4a> (see sounds/manifest.json); otherwise
+ * each cue is synthesised with WebAudio so the game stays audible without any
+ * proprietary file. Every pack sound is decoded in parallel on the first user
+ * gesture (D-07) so the first occurrence of a cue is already the original. The rolling
+ * loop plays at a constant gain whenever the chain moves and the warning beat at a
+ * constant gain with the original interval: neither is modulated by the speed (D-17, §5).
+ */
+import { clamp01, type SoundCue } from './feedback.js';
+import { assetUrl } from './original.js';
+
+interface Synth { type: OscillatorType; from: number; to: number; duration: number; gain: number; noise?: boolean }
+
+const SYNTH: Record<string, Synth> = {
+  fire: { type: 'triangle', from: 520, to: 180, duration: 0.09, gain: 0.25 },
+  insert: { type: 'square', from: 300, to: 240, duration: 0.05, gain: 0.18 },
+  merge: { type: 'sine', from: 220, to: 260, duration: 0.06, gain: 0.15 },
+  swap: { type: 'sine', from: 600, to: 900, duration: 0.07, gain: 0.15 },
+  destroy1: { type: 'sine', from: 440, to: 660, duration: 0.18, gain: 0.3 },
+  destroy2: { type: 'sine', from: 494, to: 740, duration: 0.18, gain: 0.3 },
+  destroy3: { type: 'sine', from: 554, to: 830, duration: 0.18, gain: 0.3 },
+  destroy4: { type: 'sine', from: 622, to: 932, duration: 0.18, gain: 0.3 },
+  destroy5: { type: 'sine', from: 698, to: 1046, duration: 0.18, gain: 0.3 },
+  combo: { type: 'triangle', from: 880, to: 1320, duration: 0.25, gain: 0.2 },
+  streak: { type: 'square', from: 660, to: 1320, duration: 0.3, gain: 0.2 },
+  gap: { type: 'triangle', from: 1200, to: 1800, duration: 0.2, gain: 0.25 },
+  zuma: { type: 'sawtooth', from: 220, to: 880, duration: 0.8, gain: 0.3 },
+  levelwin: { type: 'triangle', from: 440, to: 1760, duration: 1.2, gain: 0.3 },
+  lose: { type: 'sawtooth', from: 400, to: 60, duration: 1.0, gain: 0.3 },
+  gameover: { type: 'sawtooth', from: 300, to: 40, duration: 1.6, gain: 0.3 },
+  powerbomb: { type: 'sawtooth', from: 160, to: 30, duration: 0.6, gain: 0.4, noise: true },
+  powerslow: { type: 'sine', from: 800, to: 200, duration: 0.7, gain: 0.3 },
+  powerback: { type: 'square', from: 300, to: 700, duration: 0.5, gain: 0.25 },
+  poweraccuracy: { type: 'triangle', from: 1000, to: 2000, duration: 0.4, gain: 0.25 },
+  warning: { type: 'sine', from: 180, to: 110, duration: 0.14, gain: 0.3 },
+  extralife: { type: 'triangle', from: 660, to: 1320, duration: 0.22, gain: 0.25 },
+  coinappear: { type: 'sine', from: 1400, to: 2100, duration: 0.15, gain: 0.2 },
+  coinvanish: { type: 'sine', from: 900, to: 450, duration: 0.2, gain: 0.2 },
+};
+
+/** Start offset of a cue, seconds: `SoundCue.delay` bounded to 0..1, absent or non-finite → 0 (T-05-24). */
+export function clampDelay(delay: number | undefined): number {
+  return clamp01(Number(delay));
+}
+
+/** Stereo position of a cue, −1..1; absent or non-finite → 0 (centre, T-05-34). */
+export function clampPan(pan: number | undefined): number {
+  const p = Number(pan);
+  if (!Number.isFinite(p)) return 0;
+  return Math.max(-1, Math.min(1, p));
+}
+
+/** MIME types probed with `canPlayType` for each container shipped by the importer (D-06). */
+const MIME: Record<string, string> = {
+  ogg: 'audio/ogg; codecs="vorbis"',
+  m4a: 'audio/mp4; codecs="mp4a.40.2"',
+};
+
+/** First listed format the browser reports playable (`canPlayType` non-empty); unknown formats are skipped. */
+export function pickFormat(formats: string[], canPlay: (mime: string) => string): string | null {
+  for (const format of formats) {
+    const mime = MIME[format];
+    if (mime && canPlay(mime)) return format;
+  }
+  return null;
+}
+
+/**
+ * Distance (track px) between the head ball and the skull under which the warning beat
+ * starts: the original `danger` setting, 600 px (0x41a9ac; never overridden by levels.xml).
+ */
+export const WARNING_DISTANCE = 600;
+/** Beat gain: the original plays `warning1` at full volume whatever the distance (0x418a74). */
+export const WARNING_GAIN = 1;
+
+/** Threat level 0..1 from the head ball's distance to the skull: 0 outside WARNING_DISTANCE, 1 at the skull. */
+export function warningLevel(headDistance: number | null, playing: boolean): number {
+  if (!playing || headDistance === null) return 0;
+  return clamp01(1 - headDistance / WARNING_DISTANCE);
+}
+
+/**
+ * Seconds between two beats for `remainingPx` to the skull (0x418a74, §5): the alert waits
+ * `100 + 4000 × rem / danger` ms, but the next one cannot fire before the trail light has run
+ * from the head to the skull at 11 px per update plus 60 updates — `(rem / 11 + 60)` × 10 ms.
+ * 4.1 s on entering the zone, 2.1 s at 300 px, ≈ 0.77 s at 100 px, 0.6 s at the skull.
+ */
+export function warningIntervalAt(remainingPx: number): number {
+  const r = Number.isFinite(remainingPx) ? Math.max(0, Math.min(WARNING_DISTANCE, remainingPx)) : 0;
+  return Math.max(0.1 + 4 * r / WARNING_DISTANCE, (r / 11 + 60) / 100);
+}
+
+/** Seconds until the next warning beat from the threat level (1 − distance / WARNING_DISTANCE). */
+export function warningInterval(level: number): number {
+  return warningIntervalAt((1 - clamp01(level)) * WARNING_DISTANCE);
+}
+
+/** Gain of a warning beat: constant (the level is accepted for symmetry with warningInterval). */
+export function warningGain(_level?: number): number {
+  return WARNING_GAIN;
+}
+
+/** Looping pack sounds: the chain rolling (D-17) and the UFO of the main menu (`ufo1`, R2.0.21, spike 06 Q1). */
+export const LOOP_KEYS = ['rolling', 'ufo'] as const;
+export type LoopKey = (typeof LOOP_KEYS)[number];
+export type PulseKey = 'warning';
+
+/**
+ * Gain of the rolling loop while the chain moves (D-17: constant, no modulation by the speed). 0.35 is the user's
+ * choice (D-29, U32); the original plays the sample at 1.0 × the « Sons » slider, one channel per curve (0x419610) —
+ * a single loop here.
+ */
+export const ROLLING_GAIN = 0.35;
+/** Displacement (px/s of the fastest ball) above which the chain is heard rolling. */
+export const ROLLING_MIN_SPEED = 2;
+/** Attack when the chain starts rolling (the original restarts at 1.0 at once; 50 ms avoid the click). */
+export const ROLLING_ATTACK_SECONDS = 0.05;
+/** Linear fade when the chain stops: the original fades from 0.98 by 0.02 per update, ≈ 0.5 s (0x402880). */
+export const ROLLING_FADE_SECONDS = 0.5;
+
+/** Loop level derived from the simulation: rolling is on (1) above ROLLING_MIN_SPEED while playing, else off (0) (D-17). */
+export function loopLevels(input: { speed: number; playing: boolean }): { rolling: 0 | 1 } {
+  const rolling = input.playing && Number.isFinite(input.speed) && input.speed > ROLLING_MIN_SPEED ? 1 : 0;
+  return { rolling };
+}
+
+/**
+ * Ramp to schedule when a loop's target level goes from `previous` (null = never set, i.e. 0) to
+ * `target`: null when unchanged, else 50 ms up to `target × ROLLING_GAIN` or ROLLING_FADE_SECONDS
+ * down to 0. Re-arming the ramp every frame restarted the 150 ms fade from the current value
+ * (exponential-like decay, deferred-items 05-07): the ramp is now armed once per target change.
+ */
+export function rampPlan(previous: number | null, target: number, gain = ROLLING_GAIN): { to: number; seconds: number } | null {
+  if ((previous ?? 0) === target) return null;
+  return target > 0 ? { to: target * gain, seconds: ROLLING_ATTACK_SECONDS } : { to: 0, seconds: ROLLING_FADE_SECONDS };
+}
+
+/** Gain of the UFO loop of the main menu at level 1 (plan choice: the original level of SOUND_UFO was not read). */
+export const UFO_GAIN = 0.8;
+/** Full-level gain of each loop. */
+const LOOP_GAINS: Record<LoopKey, number> = { rolling: ROLLING_GAIN, ufo: UFO_GAIN };
+
+/** Delay before the context replaced by resumeAfterPause is closed: its last one-shots (≤ 1 s) play out first. */
+export const OLD_CONTEXT_RELEASE_MS = 1500;
+
+/**
+ * R2.0.26 (sound-lag-after-pause, second pass): a one-shot started while the context is not live (suspended, iOS
+ * `interrupted`, or `running` with a clock that does not move) waits at the frozen currentTime and would be heard whenever
+ * the context next starts — a tap later. It is kept only if the context runs within this grace, else revoked (stopped
+ * before its start, output disconnected): better silent than late.
+ */
+export const LATE_CUE_GRACE_MS = 100;
+/** A `running` context whose currentTime has not moved for this long is stalled (not live). */
+export const CLOCK_STALL_MS = 250;
+/** A context stalled, or not running although resumed in a gesture, for this long is rebuilt at the next gesture. */
+export const STUCK_RENEW_MS = 1000;
+/** Output lag (s) above the context's reference that gets it rebuilt at the next gesture. */
+export const LAG_LIMIT_S = 0.15;
+/** The lag of a context is measured once its clock has run this long (s): the first output timestamps are unsettled. */
+export const LAG_SETTLE_S = 1;
+/** Samples (frames) whose median is the reference lag of a context, and the median window of the current lag. */
+const LAG_REF_SAMPLES = 10;
+const LAG_WINDOW = 15;
+/** Rebuilds of a context that is late from its start (unreported route latency) before it is accepted as is. */
+export const MAX_LAG_RETRIES = 2;
+/** Minimum interval between two automatic rebuild requests. */
+const AUTO_RENEW_INTERVAL_MS = 3000;
+
+/** `AudioContext.getOutputTimestamp()` result (fields may be missing or zero before the output starts). */
+export interface OutputTimestamp { contextTime?: number; performanceTime?: number }
+
+/**
+ * Seconds between scheduling a sound at `currentTime` and hearing it: the context time being heard at `nowMs` is
+ * `contextTime + (nowMs − performanceTime) / 1000`. Null without a usable timestamp (output not started, API missing).
+ */
+export function outputLag(currentTime: number, ts: OutputTimestamp | null | undefined, nowMs: number): number | null {
+  const contextTime = Number(ts?.contextTime);
+  const performanceTime = Number(ts?.performanceTime);
+  if (!(contextTime > 0) || !(performanceTime > 0) || !Number.isFinite(currentTime) || !Number.isFinite(nowMs)) return null;
+  const lag = currentTime - (contextTime + (nowMs - performanceTime) / 1000);
+  return Number.isFinite(lag) ? lag : null;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** What the `?debug=audio` overlay shows (AudioManager.diagnostics()). */
+export interface AudioDiagnostics {
+  state: string;
+  currentTime: number | null;
+  sampleRate: number | null;
+  baseLatency: number | null;
+  outputLatency: number | null;
+  /** Measured output lag (s, median of the last frames), null when not measurable. */
+  lag: number | null;
+  /** Lag the current context started with (s). */
+  lagRef: number | null;
+  stalled: boolean;
+  /** AudioContexts created since the page loaded. */
+  contexts: number;
+  /** Contexts replaced (pause, lag, stall, stuck). */
+  rebuilds: number;
+  lastRebuild: string | null;
+  /** A rebuild waiting for the next gesture, with its reason. */
+  renewPending: string | null;
+  /** One-shots revoked because the context did not run in time. */
+  revoked: number;
+  /** One-shots waiting for the context to run. */
+  pending: number;
+  activation: boolean | null;
+  enabled: boolean;
+  volume: number;
+}
+
+/** True when the page was opened with `?debug=audio` (diagnostic overlay; nothing else changes). Never throws. */
+export function audioDebugEnabled(search: string | null | undefined): boolean {
+  try {
+    return new URLSearchParams(search ?? '').getAll('debug').includes('audio');
+  } catch {
+    return false;
+  }
+}
+
+const ms = (s: number | null): string => (s === null || !Number.isFinite(s) ? '—' : `${Math.round(s * 1000)} ms`);
+
+/** Lines of the `?debug=audio` overlay (French UI, numbers as measured). */
+export function audioDebugLines(d: AudioDiagnostics): string[] {
+  const clock = d.currentTime === null ? 't=—' : `t=${d.currentTime.toFixed(2)} s`;
+  const rate = d.sampleRate ? ` ${d.sampleRate} Hz` : '';
+  return [
+    `AUDIO ${d.state}${d.stalled ? ' (horloge figée)' : ''}  ${clock}${rate}`,
+    `latence base ${ms(d.baseLatency)}  sortie ${ms(d.outputLatency)}`,
+    `retard ${ms(d.lag)}  (départ ${ms(d.lagRef)})`,
+    `contextes ${d.contexts}  reconstructions ${d.rebuilds}${d.lastRebuild ? ` (${d.lastRebuild})` : ''}${d.renewPending ? `  à refaire: ${d.renewPending}` : ''}`,
+    `sons annulés ${d.revoked}  en attente ${d.pending}  geste ${d.activation === null ? '?' : d.activation ? 'oui' : 'non'}`,
+    `sons ${d.enabled ? 'oui' : 'coupés'}  volume ${Math.round(d.volume * 100)} %`,
+  ];
+}
+
+/** A one-shot started while the context was not live: its source(s) and the node to disconnect to silence it. */
+interface PendingCue { ctx: AudioContext; at: number; when: number; delayMs: number; sources: AudioScheduledSourceNode[]; out: AudioNode }
+
+/** Seconds a loop stays allocated at level 0 before its source is stopped (T-04-12). */
+const LOOP_IDLE_SECONDS = 2;
+
+/** `target` = the last level the gain was ramped towards (0 at creation: the attack is armed by the first call). */
+interface Loop { src: AudioBufferSourceNode; gain: GainNode; idleSince: number | null; target: number }
+/** A repeated one-shot: the latest level sets the gain and the delay of the next beat. */
+interface Pulse { level: number; timer: number }
+
+/** Sound manifest produced by tools/import-original.mjs: format 2 lists the containers per key; legacy is a key array. */
+function parseManifest(raw: unknown): Record<string, string[]> {
+  const sounds: Record<string, string[]> = {};
+  if (Array.isArray(raw)) {
+    for (const key of raw) if (typeof key === 'string') sounds[key] = ['ogg'];
+    return sounds;
+  }
+  if (raw && typeof raw === 'object' && (raw as { format?: unknown }).format === 2) {
+    const list = (raw as { sounds?: unknown }).sounds;
+    if (list && typeof list === 'object') {
+      for (const [key, formats] of Object.entries(list as Record<string, unknown>)) {
+        if (Array.isArray(formats)) sounds[key] = formats.filter((f): f is string => typeof f === 'string');
+      }
+    }
+  }
+  return sounds;
+}
+
+/**
+ * Safari's Audio Session API (iOS / iPadOS 16.4+). UAT 9 (quick 261011-ios-sound-menu): `ambient` (05-14) follows the
+ * silent switch and the user heard nothing, so the game now asks for `playback` — it sounds with the switch on, as
+ * D-38 §6 first required, and interrupts other audio like a media player.
+ */
+export const AUDIO_SESSION_TYPE = 'playback';
+
+/** Sets `navigator.audioSession.type` to AUDIO_SESSION_TYPE; false when absent or not settable (never throws). */
+export function setAudioSession(nav: unknown): boolean {
+  try {
+    const session = (nav as { audioSession?: { type: string } } | null | undefined)?.audioSession;
+    if (!session) return false;
+    session.type = AUDIO_SESSION_TYPE;
+    return session.type === AUDIO_SESSION_TYPE;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Starts a one-sample silent buffer on the destination: WebKit only unlocks Web Audio for good when a source starts
+ * inside the gesture handler, `resume()` alone is not always enough. Returns false without the API (never throws).
+ */
+export function primeContext(ctx: Pick<AudioContext, 'createBuffer' | 'createBufferSource' | 'destination' | 'sampleRate'> | null | undefined): boolean {
+  if (!ctx) return false;
+  try {
+    const buffer = ctx.createBuffer(1, 1, ctx.sampleRate || 44100);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 10 ms of 8-bit 8 kHz silence (124 bytes): the clip played by primeMediaChannel. */
+export const SILENT_WAV = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+
+/** The part of `document` the audio unlock uses. */
+export interface AudioDocument {
+  createElement(tag: 'audio'): HTMLAudioElement;
+  readonly visibilityState?: DocumentVisibilityState;
+  addEventListener?(type: string, listener: () => void): void;
+}
+
+/**
+ * Plays a silent inline `<audio>` (muted when `play()` starts, unmuted at once, volume 0) from the gesture: on iOS
+ * before 16.4 (no Audio Session API) a playing media element moves the page to the media channel, so Web Audio no
+ * longer follows the silent switch. Returns false when it could not be started (never throws, rejection swallowed).
+ */
+export function primeMediaChannel(doc: Pick<AudioDocument, 'createElement'> | null | undefined): boolean {
+  if (!doc) return false;
+  try {
+    const el = doc.createElement('audio');
+    el.setAttribute('playsinline', '');
+    el.setAttribute('webkit-playsinline', '');
+    el.setAttribute('x-webkit-airplay', 'deny');
+    el.preload = 'auto';
+    el.src = SILENT_WAV;
+    el.volume = 0;
+    el.muted = true;
+    const played = el.play() as Promise<void> | undefined;
+    el.muted = false;
+    if (played && typeof played.catch === 'function') played.catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Transient user activation of the page (`navigator.userActivation.isActive`, Safari 16.4+, Chrome 72+): false only
+ * when the API says so; without it the caller is assumed to run in a gesture. Never throws.
+ */
+export function hasTransientActivation(nav: unknown): boolean {
+  try {
+    const activation = (nav as { userActivation?: { isActive?: unknown } } | null | undefined)?.userActivation;
+    return !activation || activation.isActive !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** WebKit (Safari, every iOS browser) by feature detection on WebKit-only globals, not the user agent. */
+export function isWebKit(win: unknown): boolean {
+  const w = win as { GestureEvent?: unknown; webkitAudioContext?: unknown } | null | undefined;
+  return !!w && (typeof w.GestureEvent !== 'undefined' || typeof w.webkitAudioContext !== 'undefined');
+}
+
+type AudioContextCtor = new () => AudioContext;
+
+/** Browser objects the AudioManager touches, injectable for the Node tests; every field may be missing. */
+export interface AudioEnv {
+  AudioContext?: AudioContextCtor | null;
+  navigator?: unknown;
+  document?: AudioDocument | null;
+  /** Default target of the gesture listeners and source of `pageshow`. */
+  window?: EventTarget | null;
+  /** Play the silent `<audio>` on unlock (isWebKit). */
+  webkit?: boolean;
+  /** Wall clock in ms on the `performance.now()` time line (getOutputTimestamp's performanceTime). */
+  now?: () => number;
+}
+
+/** The live browser environment; empty fields under Node. */
+export function browserAudioEnv(): AudioEnv {
+  const w = typeof window !== 'undefined' ? window : undefined;
+  const Ctor = w ? (w.AudioContext ?? (w as unknown as { webkitAudioContext?: AudioContextCtor }).webkitAudioContext) : undefined;
+  return {
+    AudioContext: Ctor ?? null,
+    navigator: typeof navigator !== 'undefined' ? navigator : undefined,
+    document: typeof document !== 'undefined' ? document : null,
+    window: w ?? null,
+    webkit: isWebKit(w),
+    now: typeof performance !== 'undefined' ? () => performance.now() : () => Date.now(),
+  };
+}
+
+/** Gesture events that may unlock the audio on iOS (touchstart / pointerdown are not always activations, D-38 §6). */
+const UNLOCK_EVENTS = ['touchend', 'pointerup', 'click'] as const;
+
+export class AudioManager {
+  enabled = true;
+  /** « Sons » slider of the menu, 0..1 (D-24); the master gain is 0.8 × volume. `enabled` (key M) stays a separate mute. */
+  private sfxVolume = 1;
+  private ctx: AudioContext | null = null;
+  private master: GainNode | null = null;
+  private buffers = new Map<string, AudioBuffer>();
+  /** Keys the pack provides in a playable format; a key is removed when its decode fails (synth fallback). */
+  private available = new Set<string>();
+  /** Chosen container per key. */
+  private formats = new Map<string, string>();
+  private loading = new Set<string>();
+  private loops = new Map<LoopKey, Loop>();
+  private pulses = new Map<PulseKey, Pulse>();
+  /** resumeAfterPause() came without transient activation: the fresh context is made at the next unlock(). */
+  private renewPending = false;
+  /** Why the pending rebuild was asked (pause, lag, stall, stuck), for the diagnostics. */
+  private renewReason: string | null = null;
+  /** One-shots started while the context was not live (revoked after LATE_CUE_GRACE_MS). */
+  private pending: PendingCue[] = [];
+  /** Clock watch: last currentTime seen and when (wall ms) it last moved; since when the context is not running. */
+  private clockSeen = -1;
+  private clockMovedAt = 0;
+  private stalled = false;
+  private notRunningSince: number | null = null;
+  /** Wall ms of the last resume() asked inside a gesture (unlock), null once running. */
+  private resumeAskedAt: number | null = null;
+  /** Output lag: last samples, reference of the current context, rebuilds of late-from-start contexts in a row. */
+  private lagSamples: number[] = [];
+  private lagRefSamples: number[] = [];
+  private lagRef: number | null = null;
+  private lagRetries = 0;
+  private lastAutoRenew = -Infinity;
+  private contexts = 0;
+  private rebuilds = 0;
+  private lastRebuild: string | null = null;
+  private revokedCount = 0;
+
+  /** Silent `<audio>` already played (once per page). */
+  private mediaPrimed = false;
+  /** Gesture listeners: their target while bound, null when detached (context running). */
+  private unlockTarget: EventTarget | null = null;
+  /** Target given to bindUnlock (null before): the listeners are re-armed on it after an interruption. */
+  private bound: EventTarget | null = null;
+  private readonly onGesture = (): void => this.unlock();
+
+  constructor(private readonly assetBase = 'assets/', private readonly env: AudioEnv = browserAudioEnv()) {}
+
+  /** State of the context: `none` before the first gesture, else suspended / running / interrupted / closed. */
+  get state(): string {
+    return this.ctx?.state ?? 'none';
+  }
+
+  get volume(): number {
+    return this.sfxVolume;
+  }
+
+  /** Sets the « Sons » volume, bounded 0..1 (non-finite → 1, T-05-31), applied to the master gain at once. */
+  setVolume(v: number): void {
+    this.sfxVolume = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+    if (this.master) this.master.gain.value = 0.8 * this.volume;
+  }
+
+  /** Reads the manifest produced by `build --local` and picks one playable format per key. */
+  async discover(): Promise<void> {
+    try {
+      const res = await fetch(assetUrl('sounds/manifest.json', this.assetBase), { cache: 'no-store' });
+      if (!res.ok) return;
+      const sounds = parseManifest((await res.json()) as unknown);
+      const canPlay = this.probe();
+      for (const [key, formats] of Object.entries(sounds)) {
+        const format = pickFormat(formats, canPlay);
+        if (!format) continue;
+        this.formats.set(key, format);
+        this.available.add(key);
+      }
+    } catch {
+      /* no original assets: synthesis only */
+    }
+  }
+
+  /** `canPlayType` of a throw-away <audio>; without one, assume Vorbis/Ogg. */
+  private probe(): (mime: string) => string {
+    try {
+      const audio = document.createElement('audio');
+      if (typeof audio.canPlayType === 'function') return mime => audio.canPlayType(mime);
+    } catch {
+      /* no DOM */
+    }
+    return mime => (mime.startsWith('audio/ogg') ? 'maybe' : '');
+  }
+
+  /**
+   * Must be called from a user gesture. Creates the context (session type set first), decodes every pack sound in
+   * parallel (D-07), resumes a suspended / interrupted context and, while the context is not running, starts a
+   * one-sample silent source inside the gesture (primeContext); on WebKit the silent `<audio>` is played once
+   * (primeMediaChannel). A rebuild asked by resumeAfterPause or by the monitor (tick: lag, stall, stuck) is made here
+   * when the page has transient activation. Never throws.
+   */
+  unlock(): void {
+    if (!this.ctx) {
+      const Ctor = this.env.AudioContext;
+      if (!Ctor) return;
+      setAudioSession(this.env.navigator);
+      try {
+        this.ctx = new Ctor();
+      } catch {
+        return;
+      }
+      this.contexts++;
+      this.resetWatch();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.8 * this.volume;
+      this.master.connect(this.ctx.destination);
+      this.watchState(this.ctx);
+      void this.preload();
+    } else if (this.renewPending && hasTransientActivation(this.env.navigator)) {
+      const reason = this.renewReason ?? 'pause';
+      this.renewPending = false;
+      this.renewReason = null;
+      this.renew(reason);
+      this.syncListeners();
+    }
+    if (!this.ctx) return;
+    if (this.ctx.state !== 'running') {
+      primeContext(this.ctx);
+      this.resumeAskedAt ??= this.now();
+    }
+    if (this.env.webkit && !this.mediaPrimed) this.mediaPrimed = primeMediaChannel(this.env.document);
+    this.resume();
+  }
+
+  /**
+   * Call when the game resumes after a pause (MENU closed, P, live STATS closed), from the gesture that resumes it.
+   * The output latency of a long-lived AudioContext is not guaranteed to come back down: on WebKit (Safari macOS, every
+   * iOS browser) Web Audio is rendered into a ring buffer read by the GPU process, each render underrun adds one
+   * hardware buffer of write-ahead that is never reclaimed, and suspend() / resume() keep it — after the long silent
+   * stretch of a pause every sound was heard late (R2.0.25, sound-lag-after-pause). A fresh context starts again at the
+   * minimal latency: it is created and unlocked here like the first one (silent source + resume inside the gesture), the
+   * decoded buffers and the volume are kept, the old context is closed OLD_CONTEXT_RELEASE_MS later. Without transient
+   * activation (Escape is not one; WebKit would leave the new context suspended) the swap waits for the next unlock()
+   * that has one. Before the first unlock this does nothing. Never throws. R2.0.26: the lag that comes back later is
+   * caught by tick() (measured output lag, stalled clock) and cues are never heard late (play()).
+   */
+  resumeAfterPause(): void {
+    if (!this.ctx) return;
+    // A context that has run for less than OLD_CONTEXT_RELEASE_MS is fresh: a MENU opened and closed in a row creates
+    // no context at all (at most two exist at once).
+    if (this.ctx.state === 'running' && this.ctx.currentTime * 1000 < OLD_CONTEXT_RELEASE_MS) return;
+    if (!hasTransientActivation(this.env.navigator)) {
+      this.renewPending = true;
+      this.renewReason = 'pause';
+      this.syncListeners();
+      return;
+    }
+    this.renewPending = false;
+    this.renewReason = null;
+    if (!this.renew('pause') || !this.ctx) return;
+    this.syncListeners();
+    if (this.ctx.state !== 'running') {
+      primeContext(this.ctx);
+      this.resumeAskedAt ??= this.now();
+    }
+    this.resume();
+  }
+
+  /**
+   * Replaces the context by a new one with its own master gain (0.8 × volume); loops and pulses of the old one are
+   * stopped at once, its master disconnected and the context closed OLD_CONTEXT_RELEASE_MS later. The gesture listeners
+   * follow the new context (re-armed while it does not run). False, old context kept, when the new one cannot be built.
+   * One-shots still waiting on the old context stay watched against its own clock (the « Retour au jeu » click plays).
+   */
+  private renew(reason: string): boolean {
+    const old = this.ctx;
+    const Ctor = this.env.AudioContext;
+    if (!old || !Ctor) return false;
+    let next: AudioContext;
+    let master: GainNode;
+    try {
+      next = new Ctor();
+    } catch {
+      return false;
+    }
+    try {
+      master = next.createGain();
+      master.gain.value = 0.8 * this.volume;
+      master.connect(next.destination);
+    } catch {
+      try { void next.close().catch(() => undefined); } catch { /* not closable */ }
+      return false;
+    }
+    this.stopLoops();
+    const oldMaster = this.master;
+    this.ctx = next;
+    this.master = master;
+    this.contexts++;
+    this.rebuilds++;
+    this.lastRebuild = reason;
+    if (reason === 'lag') this.lagRetries++;
+    this.resetWatch();
+    this.watchState(next);
+    this.syncListeners();
+    // The old context finishes what it was playing (the « button » click of « Retour au jeu ») before it is closed.
+    setTimeout(() => {
+      try { oldMaster?.disconnect(); } catch { /* already disconnected */ }
+      try { void old.close().catch(() => undefined); } catch { /* old WebKit: no close() */ }
+    }, OLD_CONTEXT_RELEASE_MS);
+    return true;
+  }
+
+  /** Clock, stall and lag watch of a context that has just been made. */
+  private resetWatch(): void {
+    this.clockSeen = -1;
+    this.clockMovedAt = this.now();
+    this.stalled = false;
+    this.notRunningSince = null;
+    this.resumeAskedAt = null;
+    this.lagSamples = [];
+    this.lagRefSamples = [];
+    this.lagRef = null;
+  }
+
+  /** Resumes a context the browser suspended, or that iOS `interrupted` (call, other app, lock). */
+  private resume(): void {
+    // Whatever waited too long on the frozen clock must not sound when the context starts now.
+    this.settlePending();
+    const ctx = this.ctx;
+    const state: string = ctx?.state ?? 'closed';
+    if (!ctx || (state !== 'suspended' && state !== 'interrupted')) return;
+    try {
+      void ctx.resume().then(() => this.syncListeners(), () => undefined);
+    } catch {
+      /* resume refused outside a gesture */
+    }
+  }
+
+  /** Gesture listeners follow the context: detached once it runs, re-armed when it is suspended or interrupted again. */
+  private watchState(ctx: AudioContext): void {
+    try {
+      ctx.addEventListener('statechange', () => this.syncListeners());
+    } catch {
+      /* old WebKit: resume().then still syncs */
+    }
+  }
+
+  /** Listeners armed while the context does not run or a rebuild waits for a gesture (touchend / click on iOS). */
+  private syncListeners(): void {
+    const settled = this.ctx?.state === 'running' && !this.renewPending;
+    if (settled && this.unlockTarget) {
+      for (const type of UNLOCK_EVENTS) this.unlockTarget.removeEventListener(type, this.onGesture);
+      this.unlockTarget = null;
+    } else if (!settled && !this.unlockTarget && this.bound) {
+      this.attach(this.bound);
+    }
+  }
+
+  /** Wall clock (ms, performance.now time line). */
+  private now(): number {
+    try {
+      const t = this.env.now ? this.env.now() : performance.now();
+      return Number.isFinite(t) ? t : Date.now();
+    } catch {
+      return Date.now();
+    }
+  }
+
+  /** Asks a rebuild at the next gesture (never more often than AUTO_RENEW_INTERVAL_MS). */
+  private requestRenew(reason: string, now: number): void {
+    if (this.renewPending || now - this.lastAutoRenew < AUTO_RENEW_INTERVAL_MS) return;
+    this.lastAutoRenew = now;
+    this.renewPending = true;
+    this.renewReason = reason;
+    this.syncListeners();
+  }
+
+  /**
+   * Call every frame (any screen). Watches the context: a `running` clock that stops moving for CLOCK_STALL_MS is
+   * stalled; stalled, or not running although resumed in a gesture, for STUCK_RENEW_MS → rebuild at the next gesture.
+   * Measures the output lag with getOutputTimestamp once the clock passed LAG_SETTLE_S: the median of the first frames
+   * is the context's reference; a lag LAG_LIMIT_S above it (the pipeline slipped), or a reference LAG_LIMIT_S above the
+   * latency the browser reports (at most MAX_LAG_RETRIES contexts in a row), → rebuild at the next gesture. Revokes the
+   * one-shots the clock did not reach in time. Never throws.
+   */
+  tick(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = this.now();
+    try {
+      this.settlePending(now);
+      const running = ctx.state === 'running';
+      const t = ctx.currentTime;
+      if (!running) {
+        this.stalled = false;
+        this.clockSeen = t;
+        this.clockMovedAt = now;
+        this.notRunningSince ??= now;
+        if (this.resumeAskedAt !== null && now - this.resumeAskedAt > STUCK_RENEW_MS) this.requestRenew('stuck', now);
+        return;
+      }
+      this.notRunningSince = null;
+      this.resumeAskedAt = null;
+      if (t !== this.clockSeen) {
+        this.clockSeen = t;
+        this.clockMovedAt = now;
+        this.stalled = false;
+      } else if (now - this.clockMovedAt > CLOCK_STALL_MS) {
+        this.stalled = true;
+        if (now - this.clockMovedAt > STUCK_RENEW_MS) this.requestRenew('stall', now);
+      }
+      if (this.stalled || t < LAG_SETTLE_S || typeof ctx.getOutputTimestamp !== 'function') return;
+      const lag = outputLag(t, ctx.getOutputTimestamp(), now);
+      if (lag === null) return;
+      this.lagSamples.push(lag);
+      if (this.lagSamples.length > LAG_WINDOW) this.lagSamples.shift();
+      const expected = (Number.isFinite(ctx.baseLatency) ? ctx.baseLatency : 0) + (Number.isFinite(ctx.outputLatency) ? ctx.outputLatency : 0);
+      if (this.lagRef === null) {
+        this.lagRefSamples.push(lag);
+        if (this.lagRefSamples.length < LAG_REF_SAMPLES) return;
+        this.lagRef = median(this.lagRefSamples);
+        if (this.lagRef - expected <= LAG_LIMIT_S) this.lagRetries = 0;
+      }
+      if (this.lagRef - expected > LAG_LIMIT_S && this.lagRetries < MAX_LAG_RETRIES) this.requestRenew('lag', now);
+      else if (this.lagSamples.length >= LAG_WINDOW && median(this.lagSamples) > this.lagRef + LAG_LIMIT_S) this.requestRenew('lag', now);
+    } catch {
+      /* a browser without part of the API: nothing measured */
+    }
+  }
+
+  /** Snapshot for the `?debug=audio` overlay. */
+  diagnostics(): AudioDiagnostics {
+    const ctx = this.ctx;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    let activation: boolean | null = null;
+    try {
+      const a = (this.env.navigator as { userActivation?: { isActive?: unknown } } | null | undefined)?.userActivation;
+      if (a && typeof a.isActive === 'boolean') activation = a.isActive;
+    } catch { /* no API */ }
+    return {
+      state: this.state,
+      currentTime: num(ctx?.currentTime),
+      sampleRate: num(ctx?.sampleRate),
+      baseLatency: num(ctx?.baseLatency),
+      outputLatency: num(ctx?.outputLatency),
+      lag: this.lagSamples.length ? median(this.lagSamples) : null,
+      lagRef: this.lagRef,
+      stalled: this.stalled,
+      contexts: this.contexts,
+      rebuilds: this.rebuilds,
+      lastRebuild: this.lastRebuild,
+      renewPending: this.renewPending ? this.renewReason ?? 'pause' : null,
+      revoked: this.revokedCount,
+      pending: this.pending.length,
+      activation,
+      enabled: this.enabled,
+      volume: this.volume,
+    };
+  }
+
+  /** Watches a one-shot until its context's clock passes its start time. */
+  private track(ctx: AudioContext, sources: AudioScheduledSourceNode[], out: AudioNode, when: number, delay: number): void {
+    this.pending.push({ ctx, at: this.now(), when, delayMs: delay * 1000, sources, out });
+    if (this.pending.length > 64) this.revoke(this.pending.shift()!);
+  }
+
+  /**
+   * One-shots whose context clock went past their start are playing (dropped from the watch); those still waiting
+   * LATE_CUE_GRACE_MS after they were due are revoked.
+   */
+  private settlePending(now = this.now()): void {
+    if (this.pending.length === 0) return;
+    const keep: PendingCue[] = [];
+    for (const cue of this.pending) {
+      let clock = Number.NaN;
+      try { clock = cue.ctx.currentTime; } catch { /* closed */ }
+      if (clock > cue.when) continue;
+      if (now - cue.at > cue.delayMs + LATE_CUE_GRACE_MS) this.revoke(cue);
+      else keep.push(cue);
+    }
+    this.pending = keep;
+  }
+
+  /** Silences a one-shot for good: stopped before its start, output disconnected. */
+  private revoke(cue: PendingCue): void {
+    for (const src of cue.sources) {
+      try { src.stop(0); } catch { /* already stopped */ }
+    }
+    try { cue.out.disconnect(); } catch { /* already disconnected */ }
+    this.revokedCount++;
+  }
+
+  private attach(target: EventTarget): void {
+    for (const type of UNLOCK_EVENTS) target.addEventListener(type, this.onGesture, { passive: true });
+    this.unlockTarget = target;
+  }
+
+  /**
+   * R2.0.20 (D-38 §6) and UAT 9: iOS does not always take `touchstart` / `pointerdown` as an activation gesture, so the
+   * context is also unlocked on `touchend`, `pointerup` and `click`; these listeners stay until the context runs and
+   * come back if it is suspended or interrupted. The context is resumed when the page is visible again
+   * (`visibilitychange`) or restored from the back-forward cache (`pageshow`).
+   */
+  bindUnlock(target: EventTarget | null | undefined = this.env.window): void {
+    if (!target || this.bound) return;
+    this.bound = target;
+    if (this.ctx?.state !== 'running') this.attach(target);
+    const doc = this.env.document;
+    try {
+      doc?.addEventListener?.('visibilitychange', () => {
+        if (doc.visibilityState === 'visible') this.resume();
+      });
+      this.env.window?.addEventListener('pageshow', () => this.resume());
+    } catch {
+      /* no events */
+    }
+  }
+
+  /** Fetches and decodes every available key at once; each failure only disables that key. */
+  private async preload(): Promise<void> {
+    await Promise.all([...this.available].map(key => this.load(key)));
+  }
+
+  /**
+   * Node a one-shot connects to: the master, or a StereoPannerNode at `pan` feeding it when the cue is panned and
+   * the browser has one (otherwise the cue plays centred).
+   */
+  private output(pan: number): AudioNode | null {
+    const ctx = this.ctx;
+    const master = this.master;
+    if (!ctx || !master) return null;
+    if (pan === 0 || typeof ctx.createStereoPanner !== 'function') return master;
+    try {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = pan;
+      panner.connect(master);
+      return panner;
+    } catch {
+      return master;
+    }
+  }
+
+  /**
+   * Plays a cue now, or `cue.delay` seconds later (the delayed `gapbonus1` / `extralife`), panned by `cue.pan`. R2.0.26:
+   * the cue is watched until the context clock passes its start (track); on a context that is not running it is
+   * revoked unless the context runs within LATE_CUE_GRACE_MS (never heard late), and the context is asked to resume.
+   */
+  play(cue: SoundCue): void {
+    if (!this.enabled || !this.ctx || !this.master) return;
+    if (this.ctx.state !== 'running') this.resume();
+    const delay = clampDelay(cue.delay);
+    const pan = clampPan(cue.pan);
+    if (this.available.has(cue.key)) {
+      const buffer = this.buffers.get(cue.key);
+      if (buffer) {
+        const out = this.output(pan);
+        if (!out) return;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buffer;
+        src.playbackRate.value = cue.rate;
+        const gain = this.ctx.createGain();
+        gain.gain.value = cue.gain;
+        src.connect(gain).connect(out);
+        const now = this.ctx.currentTime;
+        src.start(now + delay);
+        this.track(this.ctx, [src], gain, now + delay, delay);
+        return;
+      }
+      // Still decoding: stay silent rather than doubling the original with the synth.
+      void this.load(cue.key);
+      return;
+    }
+    this.synth(cue, delay, pan);
+  }
+
+  /**
+   * Drives a looping pack sound (rolling, ufo) at pitch 1. `level` 0..1 scales the loop's gain (LOOP_GAINS):
+   * a rising target ramps in over 50 ms, a nil target fades out over ROLLING_FADE_SECONDS
+   * (D-17), each ramp armed once per target change (rampPlan); a loop left at 0 for
+   * LOOP_IDLE_SECONDS is stopped (the idle clock runs on every call).
+   */
+  setLoop(key: LoopKey, level: number): void {
+    const ctx = this.ctx;
+    const master = this.master;
+    const target = this.enabled && ctx && master ? Math.max(0, Math.min(1, level)) : 0;
+    let loop = this.loops.get(key);
+    if (!loop) {
+      if (target <= 0 || !ctx || !master) return;
+      const buffer = this.buffers.get(key);
+      if (!buffer) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(gain).connect(master);
+      src.start();
+      loop = { src, gain, idleSince: null, target: 0 };
+      this.loops.set(key, loop);
+    }
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const g = loop.gain.gain;
+    const plan = rampPlan(loop.target, target, LOOP_GAINS[key]);
+    if (plan) {
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(plan.to, now + plan.seconds);
+      loop.target = target;
+    }
+    if (target > 0) {
+      loop.idleSince = null;
+      return;
+    }
+    if (loop.idleSince === null) loop.idleSince = ctx.currentTime;
+    else if (ctx.currentTime - loop.idleSince > LOOP_IDLE_SECONDS) this.stopLoop(key, loop);
+  }
+
+  /**
+   * Repeated beat (the original `warning1`, 0.37 s, is a single hit — not a loop).
+   * `level` 0..1: 0 stops the scheduling (the current beat finishes on its own);
+   * above 0 the beat plays now if it was silent, then again every
+   * `warningInterval(level)` seconds at `warningGain(level)`, both re-read at each beat
+   * so the rhythm tightens progressively as the chain approaches the skull.
+   */
+  pulse(key: PulseKey, level: number): void {
+    const target = this.enabled && this.ctx && this.master ? clamp01(level) : 0;
+    const pulse = this.pulses.get(key);
+    if (target <= 0) {
+      if (pulse) this.stopPulse(key, pulse);
+      return;
+    }
+    if (pulse) {
+      pulse.level = target;
+      return;
+    }
+    this.pulses.set(key, { level: target, timer: 0 });
+    this.beat(key);
+  }
+
+  private beat(key: PulseKey): void {
+    const pulse = this.pulses.get(key);
+    if (!pulse) return;
+    this.play({ key, gain: warningGain(pulse.level), rate: 1 });
+    pulse.timer = window.setTimeout(() => this.beat(key), warningInterval(pulse.level) * 1000);
+  }
+
+  private stopPulse(key: PulseKey, pulse: Pulse): void {
+    window.clearTimeout(pulse.timer);
+    this.pulses.delete(key);
+  }
+
+  /** Stops and releases every loop and pulse (level change, panels, pause). */
+  stopLoops(): void {
+    for (const [key, loop] of this.loops) this.stopLoop(key, loop);
+    for (const [key, pulse] of this.pulses) this.stopPulse(key, pulse);
+  }
+
+  private stopLoop(key: LoopKey, loop: Loop): void {
+    try { loop.src.stop(); } catch { /* already stopped */ }
+    loop.src.disconnect();
+    loop.gain.disconnect();
+    this.loops.delete(key);
+  }
+
+  private async load(key: string): Promise<void> {
+    if (!this.ctx || this.loading.has(key) || this.buffers.has(key)) return;
+    this.loading.add(key);
+    let decoder: AudioContext | null = this.ctx;
+    try {
+      const format = this.formats.get(key) ?? 'ogg';
+      const res = await fetch(assetUrl(`sounds/${key}.${format}`, this.assetBase));
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.arrayBuffer();
+      decoder = this.ctx;
+      if (!decoder) return;
+      this.buffers.set(key, await decoder.decodeAudioData(data));
+    } catch {
+      // A decode cut short by the context swap of resumeAfterPause is retried on the new context at the next cue.
+      if (decoder === this.ctx) this.available.delete(key);
+    } finally {
+      this.loading.delete(key);
+    }
+  }
+
+  /** Synthesised fallback; `delay` shifts the whole envelope (the simplest equivalent of a delayed start), `pan` places it. */
+  private synth(cue: SoundCue, delay = 0, pan = 0): void {
+    const ctx = this.ctx;
+    const out = this.output(pan);
+    if (!ctx || !out) return;
+    const spec = SYNTH[cue.key] ?? SYNTH.insert;
+    const now = ctx.currentTime + delay;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(spec.gain * cue.gain, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + spec.duration);
+    gain.connect(out);
+    const osc = ctx.createOscillator();
+    osc.type = spec.type;
+    osc.frequency.setValueAtTime(spec.from * cue.rate, now);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(20, spec.to * cue.rate), now + spec.duration);
+    osc.connect(gain);
+    osc.start(now);
+    osc.stop(now + spec.duration + 0.02);
+    const sources: AudioScheduledSourceNode[] = [osc];
+    if (spec.noise) {
+      const length = Math.floor(ctx.sampleRate * spec.duration);
+      const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(gain);
+      src.start(now);
+      sources.push(src);
+    }
+    this.track(ctx, sources, gain, now, delay);
+  }
+}

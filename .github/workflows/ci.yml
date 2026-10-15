@@ -3,10 +3,17 @@ on:
   push:
   pull_request:
 jobs:
-  hygiene:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
       - name: Ensure private assets are not committed
         run: |
-          ! find . -type f \( -name '*.exe' -o -name '*.ogg' -o -name '*.mo3' -o -name '*.pack.json' \) | grep .
+          ! find . -path ./node_modules -prune -o -type f \( -name '*.exe' -o -name '*.ogg' -o -name '*.mo3' -o -name '*.pack.json' -o -name '*.cab' -o -name '*.dat' \) -print | grep .

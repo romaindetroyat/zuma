@@ -1,0 +1,155 @@
+# Roadmap: Zuma PWA
+
+## Milestones
+
+- ✅ **v1.0 Baseline R2.0.13** - Phases 1-3 (shipped 2026-10-10, PR #1)
+- 🚧 **v1.1 Fidélité & progression** - Phases 4-7 (planned)
+- 📋 **v2.0 Modes & éditeur** - à définir
+
+## Phases
+
+<details>
+<summary>✅ v1.0 Baseline R2.0.13 (Phases 1-3) - SHIPPED 2026-10-10</summary>
+
+### Phase 1: Moteur de simulation
+**Goal**: Règles de chaîne verrouillées par tests
+**Requirements**: ENG-01..ENG-08
+**Plans**: 1 plan (rétro-documenté)
+
+Plans:
+- [x] 01-01: `src/core.ts` + `tests/r206`, `r211`, `r213`
+
+### Phase 2: Présentation
+**Goal**: Rendu canvas, HUD, STATS, audio
+**Requirements**: UI-01..UI-04
+**Plans**: 1 plan (rétro-documenté)
+
+Plans:
+- [x] 02-01: `src/render.ts`, `src/audio.ts`, `src/feedback.ts`, `index.html`, `public/style.css`
+
+### Phase 3: Ressources, outillage et PWA
+**Goal**: Import des ressources originales, garde-fou, PWA, CI
+**Requirements**: AST-01, AST-02, PWA-01
+**Plans**: 1 plan (rétro-documenté)
+
+Plans:
+- [x] 03-01: `tools/`, `src/original.ts`, `public/sw.js`, `.github/workflows/ci.yml`
+
+</details>
+
+### 🚧 v1.1 Fidélité & progression (Planned)
+
+**Milestone Goal:** Le jeu se joue comme l'original sur les temples 1 à 3 et conserve la progression du joueur.
+
+#### Phase 4: Point de validation jouable
+**Goal**: Jouer R2.0.13 avec les ressources originales, recueillir le ressenti et corriger les écarts évidents
+**Depends on**: Phase 3
+**Requirements**: GAME-02, GAME-05
+**Success Criteria** (what must be TRUE):
+  1. L'utilisateur a joué au moins 3 niveaux originaux (standalone ou `npm run dev`) et ses retours sont consignés dans `.planning/phases/04-*/UAT.md`
+  2. La grenouille originale tient la bille en bouche et la suivante dans l'écoutille, avec un tir partant de la bouche
+  3. Vitesse de chaîne, recul et power-ups ne provoquent plus de remarque bloquante
+  4. `npm test` reste vert et chaque correction de règle ajoute un test
+**Plans:** 3 plans
+
+Plans:
+- [x] 04-01-PLAN.md — Importateur corrigé (fond 640×480, thumb.jpg, extensions image, .m4a), fond 1:1 + overlays sous les billes, DPR et option « Pixels nets »
+- [x] 04-02-PLAN.md — Moteur : insertion progressive (width/mergeTicks), détection différée, muzzleOffset, rollFrame ; verrous r214 ; baseline R2.0.14
+- [x] 04-03-PLAN.md — Rendu de l'insertion, grenouille fidèle (bouche/écoutille/langue/clignement), audio original (formats, préchargement, boucles rolling/warning), vérification de bout en bout
+
+#### Phase 5: Règles originales complètes
+**Goal**: Interpréter tous les réglages de `levels.xml` et ajouter les éléments de niveau manquants
+**Depends on**: Phase 4
+**Requirements**: GAME-01, GAME-03, GAME-04
+**Success Criteria** (what must be TRUE):
+  1. `configFromSettings` couvre `single`, `zumaslow`, `zumaback`, couleurs par temple et `partime`, documentés dans le README et testés
+  2. Les pièces bonus apparaissent aux TreasurePoints, disparaissent après délai et rapportent des points avec leur son
+  3. Chaque niveau démarre par « Attention / PARTEZ » et se termine par la vidange, le pop et le bonus de temps
+**Plans:** 17 plans
+
+Plans:
+- [x] 05-01-PLAN.md — Importateur (polices bitmap, strings.json, sons pièces/pop, garde) + `src/bitmapfont.ts` (parseur/mise en page PopCap testés en Node)
+- [x] 05-02-PLAN.md — Moteur : pièces aux TreasurePoints, état `clearing` + décompte, bonus de temps d'expert, `go`, zumaslow/zumaback, R2.0.15
+- [x] 05-03-PLAN.md — STATS natif composé depuis dialogbox/GodHead/DialogButton + polices, record de temps par niveau, retrait du mode image R2.0.12
+- [x] 05-04-PLAN.md — Rendu pièces/décompte/« Attention · PARTEZ », câblage partime/zumaslow/zumaback, documentation des hypothèses, vérification finale
+- [x] 05-05-PLAN.md — Moteur conforme à Zuma.exe : rampe de vitesse, arrêt du pousseur, zone lente, arrivée rapide (`start` %), repeat/single originaux, munitions immédiates, décompte 60 px/+100, ACE TIME, pièces 500, R2.0.16
+- [x] 05-06-PLAN.md — Présentation : alerte à 600 px (4,1 s → 0,6 s), roulement à gain constant, bannière ZUMA, « +100 » du décompte, STATS (couleurs, interlignes, décompte du BONUS dans le dialogue)
+- [x] 05-07-PLAN.md — Notes R2.0.16, README, CONCERNS, UAT, standalone et preuves Playwright, vérification finale
+- [x] 05-08-PLAN.md — UAT 5 : bonus de saut et score originaux (spike 02), libellés COMBO / ENCHAÎNEMENT, grille du STATS (D-20), compte à rebours borné + mode rapide (D-21), fondu du roulement, netteté 2 × EPX et STATS à l'échelle du canvas (D-19), R2.0.17
+- [x] 05-09-PLAN.md — Notes R2.0.17, README (score, netteté), CONCERNS, UAT (U22–U25, sixième session), standalone et preuves Playwright, vérification finale
+- [x] 05-10-PLAN.md — UAT 6 : tunnels et priorités CURV (D-23), menu de jeu natif = dialogue OPTIONS en jeu (D-24), fenêtre et « Pixels nets » en pixels d'appareil (D-25), entrées (D-26), vies tous les 50 000 (D-27), cadence originale des pièces (D-28), roulement adouci (D-29), décompte simultané multi-chaînes (D-30), R2.0.18
+- [x] 05-11-PLAN.md — Notes R2.0.18, README (commandes, tunnels, vies, pièces, menu), CONCERNS (C1–C4, déviation D-30), UAT (U26–U33, septième session), standalone et preuves Playwright, vérification finale
+- [x] 05-12-PLAN.md — UAT 7 : destruction 0,4 s, attraction accélérée et rebond au contact (D-34), recul ZUMA par chaîne et billes perdues par l'entrée (D-35), pièce à 36 px qui consomme le tir (D-31), trois grenouilles et barre du haut recalée (D-33), sons du power-up / contact / impact (D-32), R2.0.19
+- [x] 05-13-PLAN.md — Notes R2.0.19, README, CONCERNS (D-31 gardé contre le souvenir de l'utilisateur, D-32 sans son, points ouverts du spike 04), UAT (U34–U38, huitième session), standalone, vérification finale
+- [x] 05-14-PLAN.md — UAT 8 : bouton OK du STATS selon la règle des boutons de pied du `Dialog` (D-36), PWA = jeu complet avec le pack embarqué (`--deploy`), service worker qui précache shell + pack (hors ligne, « Nouvelle version disponible »), installabilité (icônes PNG, manifeste, guide par plateforme) et iPhone / iPad (marges sûres, échange au doigt, rotation, audio) (D-38, D-42), R2.0.20
+- [x] 05-15-PLAN.md — Notes R2.0.20, README (ouvrir / installer sur chaque appareil, hors ligne, mises à jour), CONCERNS (modèle légal D-42, stockage iOS), UAT (U39–U40, neuvième session), vérification finale
+- [ ] 05-16-PLAN.md — Hébergement privé Cloudflare (squelette) : `tools/deploy.mjs` (API REST, téléversement direct Pages sur `main`, BLAKE3 pur), provisionnement idempotent (projet `zuma`, One-time PIN, Access « Romain uniquement » 730 h sur `*.pages.dev` + aperçus, Bypass `/public`), parades SW / manifeste, vérification HTTP, plan de retrait, UAT Mac / PC / iPhone / iPad avant la synchronisation des scores (D-42, D-38)
+- [ ] 05-17-PLAN.md — Hébergement privé, option B : `_worker.js` Pages (mode avancé) servant l'artefact depuis D1 (`zuma-assets`, table `blobs` en morceaux base64, clés `sha256:`, manifeste inscrit dans le worker), insertions limitées aux fichiers absents (budget de lignes), liaison `ASSETS_DB` et déploiement `main` par le seul jeton du compte, `--dry-run` sur API simulée ; déploiement réel par l'orchestrateur après autorisation
+
+#### Phase 6: Progression et menus
+**Goal**: Aventure par temples, sauvegarde et menu principal
+**Depends on**: Phase 5
+**Requirements**: PROG-01, PROG-02, PROG-03
+**Success Criteria** (what must be TRUE):
+  1. L'app s'ouvre sur l'écran de bienvenue du jeu original (menu principal), jamais directement dans un niveau
+  2. La partie suit `StageProgression` avec l'écran d'aventure / transitions entre temples de l'original
+  3. Après le dernier niveau (13-1), la partie s'arrête sur l'écran de fin original, avec score final et tableau des meilleurs scores ; elle ne recommence pas
+  4. La difficulté est analysée contre l'original et la règle originale d'arrêt de la file est appliquée (arrêt seulement à la destruction de la bille arrière, D-09, accord de l'utilisateur)
+  5. Fermer puis rouvrir la PWA propose de reprendre la partie au niveau atteint, avec score et vies (si compatible avec 1–4)
+**Plans:** 5 plans (contexte : `phases/06-progression-et-menus/06-CONTEXT.md`, recherche : `06-RESEARCH.md`)
+
+Plans:
+- [x] 06-01-PLAN.md — Difficulté (D-09) : arrêt du pousseur au seul retrait de la bille arrière, plus jamais à l'insertion (0x423a10), verrous r221, outil `tools/sim-difficulty.mjs` testé sur les niveaux procéduraux, baseline R2.0.21
+- [x] 06-02-PLAN.md — Progression et état d'application purs (`src/progress.ts`) : étages / temples / fin après 13-1, meilleurs scores (10, clé `adventure`, démonstration sans noms PopCap), profil, sauvegarde et reprise, machine d'états accueil → aventure → niveau → dieu → fin avec effets
+- [x] 06-03-PLAN.md — Écran principal de l'original (`src/welcome.ts`) : ciel, soleil et lueur, yeux, pierres actives / inactives, survol `choral1`, OVNI, nom du profil, reprise « Continuer / Rejouer », OPTIONS hors partie, chemin 2×, importateur (images et polices des trois écrans)
+- [x] 06-04-PLAN.md — Écran d'aventure (temples, portes, plaque des scores, STAGE, Jouer / Menu principal), dialogue du dieu avec `chant6`, écran de fin (`happyending`, « Félicitations », tableau des 10 avec la place), routage après niveau, game over, sortie par le menu
+- [x] 06-05-PLAN.md — Notes R2.0.21, README, CONCERNS, `06-UAT.md` (première session), vérification finale (standalone `file://`, `--deploy` + `--dry-run`, preuves DPR 2), déploiement privé par l'orchestrateur après accord
+
+#### Phase 6.1: Records partagés (INSERTED)
+**Goal**: Records communs à tous les invités (avec le prénom) et records personnels sur tous les appareils
+**Depends on**: Phase 6
+**Requirements**: PROG-02
+**Success Criteria** (what must be TRUE):
+  1. Le meilleur temps d'un niveau s'affiche avec le prénom de son auteur
+  2. Sur la version hébergée, les meilleurs scores et temps sont communs à tous les joueurs invités, et chacun retrouve aussi ses records personnels sur tous ses appareils
+  3. Hors ligne, le jeu fonctionne et envoie les nouveaux records au retour du réseau ; le standalone reste local
+  4. Aucune adresse n'est stockée ni commitée ; le prénom est apposé par le serveur
+**Plans:** 6 plans (contexte : `phases/06.1-records-partages/06.1-CONTEXT.md`)
+
+Plans:
+- [x] 06.1-01-PLAN.md — Règles client pures (`src/records.ts`) : copie du serveur, file « le meilleur gagne » dans `zuma.records.v1`, bornes D-10, vues TOUS / MOI, meilleur temps avec son auteur, reprise D-08, client `api/records` à fetch injecté ; effet `record-score` de la machine d'états (vague 1)
+- [x] 06.1-02-PLAN.md — Worker : `GET/POST /api/records` sur la base `SCORES_DB` (`tools/recordsapi.mjs`), prénom apposé depuis `players`, Origin / JSON / taille / bornes / débit par identité, SQL fermé testé sur SQLite ; service worker qui laisse passer `/api/` (vague 1)
+- [x] 06.1-03-PLAN.md — Déploiement : base `zuma-scores` + schéma + liaison `SCORES_DB` idempotents dans `tools/deploy.mjs`, niveaux du pack transmis au worker, `--plan` / `--dry-run` / `--rollback-plan` / `--verify` à jour, garanties (aucun DELETE, SQL limité) (vague 2)
+- [x] 06.1-04-PLAN.md — Affichage d'origine : prénom de l'auteur et record personnel dans la grille du STATS, portée TOUS / MOI sur les plaques RECORDS (aventure, fin) et hit-tests (vague 1)
+- [x] 06.1-05-PLAN.md — Branchement `main.ts` : file des scores et temps, synchronisation non bloquante (chargement, `online`, après chaque niveau), reprise D-08, STATS, plaques et bascule ; contrat client ↔ worker de bout en bout ; preuves Playwright DPR 2 avec `api/records` simulé (vague 2)
+- [x] 06.1-06-PLAN.md — Livraison R2.0.22 : baseline, notes, README (hébergement, records, ajout d'un joueur), CONCERNS, `06.1-UAT.md`, standalone, `--deploy` + `--dry-run`, déploiement réel par l'orchestrateur après accord (vague 3)
+
+#### Phase 7: Finitions audio, visuelles et mobiles
+**Goal**: Musique, animations secondaires, ergonomie tactile, captures automatisées
+**Depends on**: Phase 6
+**Requirements**: AV-01, AV-02, AV-03, QA-01
+**Success Criteria** (what must be TRUE):
+  1. Une musique de fond joue quand le pack contient une piste convertie, silence propre sinon
+  2. Couvercle de trou, scintillement des power-ups et trainée de visée sont animés
+  3. Sur mobile en paysage, on vise et on tire au doigt et on échange via un bouton visible
+  4. La CI produit des captures du mode vectoriel et échoue si le rendu lève une erreur
+**Plans**: TBD
+
+### 📋 v2.0 Modes & éditeur (Planned)
+
+**Milestone Goal:** Modes Gauntlet/Pratique/Survie et éditeur de courbes (MODE-01, MODE-02, PWA-02).
+
+## Progress
+
+**Execution Order:** 4 → 5 → 6 → 6.1 → 7
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Moteur de simulation | v1.0 | 1/1 | Complete | 2026-10-10 |
+| 2. Présentation | v1.0 | 1/1 | Complete | 2026-10-10 |
+| 3. Ressources, outillage et PWA | v1.0 | 1/1 | Complete | 2026-10-10 |
+| 4. Point de validation jouable | v1.1 | 6/6 | Complete (UAT partielle : STATS natif reporté en phase 5) | 2026-10-10 |
+| 5. Règles originales complètes | v1.1 | 15/17 | In progress (05-16 UAT 9, 05-17) | - |
+| 6. Progression et menus | v1.1 | 5/5 | Complete (déployé R2.0.21 ; UAT utilisateur en attente) | 2026-10-11 |
+| 6.1 Records partagés | v1.1 | 6/6 | Complete (déployé R2.0.22 ; UAT utilisateur en attente) | 2026-10-11 |
+| 7. Finitions audio, visuelles et mobiles | v1.1 | 0/TBD | Not started | - |

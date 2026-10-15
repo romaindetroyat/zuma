@@ -1,0 +1,107 @@
+/* Zuma PWA — layout and panels. The playfield is a fixed 640×480 canvas scaled to fit. */
+:root {
+  color-scheme: dark;
+  --bg: #120c06;
+  --panel: #241709;
+  --panel-edge: #c9a85a;
+  --text: #f7ecc8;
+  --accent: #f0b429;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: "Trebuchet MS", Verdana, sans-serif; }
+body { display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; }
+.stage { position: relative; width: min(100vw, calc(100vh * 4 / 3)); aspect-ratio: 4 / 3; }
+/* R2.0.18 (D-25): main.ts sets --k = fitScale(window, dpr, « Pixels nets ») and the class `sized`; the 4:3 rule above is
+   the fallback until then. */
+.stage.sized { width: calc(640px * var(--k)); height: calc(480px * var(--k)); aspect-ratio: auto; }
+#game { display: block; width: 100%; height: 100%; image-rendering: auto; background: #000; cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
+.overlay.open { display: flex; }
+.panel { background: var(--panel); border: 2px solid var(--panel-edge); border-radius: 14px; padding: 20px 24px; min-width: 60%; max-width: 92%; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); }
+.panel h2 { margin: 0 0 14px; text-align: center; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.stats-ok { font: inherit; font-weight: bold; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--panel-edge); background: #3a2812; color: var(--text); cursor: pointer; }
+.stats-ok:hover { background: #4d3417; }
+.hint { margin: 4px 0 0; font-size: 12px; opacity: 0.75; text-align: center; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; font-size: 14px; }
+dt { opacity: 0.8; }
+dd { margin: 0; font-weight: bold; }
+.tip { font-size: 13px; font-style: italic; opacity: 0.85; margin: 0 0 14px; text-align: center; }
+
+/* Boot overlay: visible until the game loop starts, or forever when scripts cannot run. */
+.boot { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; background: var(--bg); color: var(--text); }
+.boot.hidden { display: none; }
+.boot-title { margin: 0; font-size: 28px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.boot.error #boot-message { color: #ff8a80; font-weight: bold; }
+
+/* « Pixels nets » (R2.0.18, D-25): --k in whole device pixels, native 640×480 store enlarged without smoothing. */
+.stage.pixelated #game { image-rendering: pixelated; }
+
+/* R2.0.11 — STATS is one opaque monolithic panel: one title, one data layer, one tip, one OK. */
+.zuma-stats{display:block;background:radial-gradient(circle at 50% 0%,#4a3313 0%,#241709 60%,#160e05 100%);opacity:1}
+.zuma-stats h2{display:block}
+.zuma-stats dl{display:grid}
+.zuma-stats .tip{display:block}
+.stats-ok{display:block;width:100%;background:linear-gradient(#f0b429,#c98a12);color:#1a1004}
+
+/* R2.0.14 — STATS keeps the reference structure (columns, rule, gap, tip, one OK) in vector mode… */
+.stats-idol{display:none}
+.stats-columns{display:grid;grid-template-columns:1fr 1fr;gap:4px 28px;margin:0 0 12px;font-size:14px}
+.stats-left>div,.stats-right>div{display:flex;justify-content:space-between;gap:16px;line-height:1.6;white-space:nowrap}
+.stats-columns span{opacity:.8}
+.stats-columns strong{font-variant-numeric:lining-nums tabular-nums}
+.stats-rule{height:1px;margin:5px 0;background:var(--panel-edge);opacity:.6}
+.stats-gap{height:6px}
+.stats-tip{margin:0 0 14px;font-size:13px;text-align:center;opacity:.85}
+.stats-tip b{color:var(--accent)}
+
+/* …and, with the private pack, becomes the original dialog itself, composed at run time
+   (R2.0.15, plan 05-03): main.ts paints dialogbox (9-slice), GodHead, DialogButton and the
+   bitmap fonts on a 640×480 canvas and lays it as the inline background of .zuma-stats.
+   Every text of the structure is hidden (the picture carries them); the transparent OK
+   control sits on the painted button (R2.0.20, D-36: the original Dialog footer button 138/640, 373/480,
+   364/640, 48/480 — statsdialog.ts STATS_OK_RULE) whose three states are painted, so no CSS highlight. No superimposed panel; the stylesheet never references the picture. */
+#stats.stats-original{background:transparent}
+#stats.stats-original .zuma-stats{position:absolute;inset:0;min-width:0;max-width:none;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;background-size:100% 100%;background-repeat:no-repeat;overflow:hidden;animation:statsIn .32s ease-out}
+#stats.stats-original .zuma-stats h2,#stats.stats-original .stats-columns span,#stats.stats-original .stats-columns strong,#stats.stats-original .stats-tip,#stats.stats-original .stats-rule,#stats.stats-original .stats-gap,#stats.stats-original .stats-idol{opacity:0;pointer-events:none}
+#stats.stats-original .stats-columns{position:absolute;inset:0;display:block;margin:0}
+#stats.stats-original .stats-ok{position:absolute;left:21.5625%;top:77.7083%;width:56.875%;height:10%;margin:0;padding:0;border:0;border-radius:6px;background:transparent;color:transparent;font-size:0;box-shadow:none;cursor:pointer;outline-offset:2px}
+#stats.stats-original .stats-ok:hover,#stats.stats-original .stats-ok:active,#stats.stats-original .stats-ok:focus-visible{background:transparent}
+@keyframes statsIn{from{opacity:0}to{opacity:1}}
+
+/* R2.0.17 (plan 05-08, D-19): the dialog is composed at the canvas scale into a child <canvas class="stats-picture">
+   of .zuma-stats (inserted first, under the OK control) instead of an inline background: one resampling only. */
+#stats.stats-original .stats-picture{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none}
+
+/* R2.0.18 (plan 05-10, D-24): the in-game MENU is the original OPTIONS dialog composed on a canvas (menudialog.ts)
+   at the backing-store scale, shown as a child <canvas class="menu-picture"> of #menu; no DOM panel, no picture in CSS. */
+#menu { background: transparent; }
+.menu-picture { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; touch-action: none; }
+
+/* R2.0.20 (plan 05-14, D-42): « Nouvelle version disponible » at the bottom of the stage, buttons ≥ 44 px (touch). */
+#update-toast { position: absolute; left: 50%; bottom: 3%; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border: 2px solid var(--panel-edge); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6); font-size: 15px; white-space: nowrap; }
+#update-toast[hidden] { display: none; }
+#update-toast button { min-height: 44px; min-width: 44px; padding: 0 14px; font: inherit; font-weight: bold; border-radius: 10px; border: 1px solid var(--panel-edge); background: #3a2812; color: var(--text); cursor: pointer; }
+#update-toast #update-apply { background: linear-gradient(#f0b429, #c98a12); color: #1a1004; }
+
+/* R2.0.20 (plan 05-14, D-38 §1): install guide card in the panel style (wood / gold), above the boot screen and the menu. */
+.install-overlay { z-index: 20; background: rgba(0, 0, 0, 0.7); }
+.install-card { position: relative; max-width: 80%; min-width: 0; text-align: center; font-size: 15px; line-height: 1.4; }
+.install-card h2 { margin-bottom: 10px; }
+.install-card p { margin: 0 0 12px; }
+.install-step { font-weight: bold; color: var(--accent); }
+.share-glyph { display: inline-block; vertical-align: -4px; color: #4ea3ff; }
+.install-close { position: absolute; top: 6px; right: 8px; min-width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--text); font-size: 26px; line-height: 1; cursor: pointer; }
+.install-action, .install-play { display: block; margin: 0 auto 10px; min-height: 44px; padding: 0 22px; font: inherit; font-weight: bold; border-radius: 10px; border: 1px solid var(--panel-edge); cursor: pointer; }
+.install-action { background: linear-gradient(#f0b429, #c98a12); color: #1a1004; }
+.install-play { background: #3a2812; color: var(--text); }
+.install-action[hidden], .install-step[hidden] { display: none; }
+
+/* R2.0.20 (D-38): iPhone / iPad. The body pads the safe areas (notch, home indicator; viewport-fit=cover) and centres
+   the 4:3 stage in what is left (main.ts fits it there); nothing on the stage is selectable, called out, highlighted
+   or zoomable; « Tournez votre appareil » covers the stage while a phone is held in portrait. */
+:root { --safe-top: env(safe-area-inset-top, 0px); --safe-right: env(safe-area-inset-right, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); --safe-left: env(safe-area-inset-left, 0px); }
+body { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); -webkit-text-size-adjust: 100%; }
+.stage, #game { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+.rotate-overlay { position: fixed; z-index: 40; background: var(--bg); color: var(--accent); }
+.rotate-box { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; font-size: 20px; font-weight: bold; letter-spacing: 0.04em; }
+.rotate-box p { margin: 0; }
