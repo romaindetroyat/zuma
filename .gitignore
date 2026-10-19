@@ -6,6 +6,8 @@ standalone/
 *.exe
 *.ogg
 *.mo3
+*.cab
+*.dat
 *.pack.json
 *.zip
 .DS_Store
