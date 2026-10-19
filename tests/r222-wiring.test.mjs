@@ -140,25 +140,8 @@ test('D-08: first successful exchange imports the local scores named like the pl
   assert.equal(rows('scores').length, 1);
 });
 
-test('deux joueurs (two players): Bruno beats the time of Alice → STATS of Alice shows Bruno 80 and her own 83', async () => {
-  const { syncRecords, queueScore, queueTime, levelRecord, scoresView, rankOf } = await R();
-  const { browser } = server();
-  const alice = await device();
-  const bruno = await device();
-  alice.access.set({ ...queueTime(queueScore(alice.access.get(), { score: 5000, stage: 0, level: 2, day: '' }, alice.makeId()), 'spiral', 83), migrated: true });
-  assert.equal(await syncRecords(alice.access, browser(ALICE), noMigration, alice.makeId), true);
-  bruno.access.set({ ...queueTime(queueScore(bruno.access.get(), { score: 7000, stage: 1, level: 0, day: '' }, bruno.makeId()), 'spiral', 80), migrated: true });
-  assert.equal(await syncRecords(bruno.access, browser(BRUNO), noMigration, bruno.makeId), true);
-  assert.equal(await syncRecords(alice.access, browser(ALICE), noMigration, alice.makeId), true);
-  const store = alice.reload();
-  assert.deepEqual(levelRecord(store, 'spiral', 83, 'Alice'), { best: { seconds: 80, name: 'Bruno' }, personal: 83 });
-  assert.deepEqual(levelRecord(bruno.reload(), 'spiral', 80, 'Bruno'), { best: { seconds: 80, name: 'Bruno' }, personal: null });
-  // The shared / personal tables and the run's rank as the adventure and ending screens compute them.
-  const shared = scoresView(store, 'shared', [], 'Alice');
-  assert.deepEqual(shared.map(r => [r.name, r.score]), [['Bruno', 7000], ['Alice', 5000]]);
-  assert.deepEqual(scoresView(store, 'mine', [], 'Alice').map(r => [r.name, r.score]), [['Alice', 5000]]);
-  assert.equal(rankOf(shared, 'Alice', 5000), 1);
-});
+// R2.0.28: records personnels (demande utilisateur) — the « deux joueurs » test (Alice's STATS showing Bruno's time
+// with his name, shared table and rank) is replaced by the personal end-to-end test of r228-personal-records.
 
 test('hors ligne (offline) then back: the queue stays persisted while fetch rejects, then leaves', async () => {
   const { syncRecords, queueScore, queueTime } = await R();
@@ -188,10 +171,12 @@ test('hors ligne (offline) then back: the queue stays persisted while fetch reje
 
 const MAIN = fs.readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 
-test('main.ts wiring: records functions, online listener, plaque hit tests, record label, random ids', () => {
+test('main.ts wiring: records functions, online listener, random ids', () => {
+  // R2.0.28: records personnels (demande utilisateur) — levelRecord(, the plaque hit tests, recordLabel( and
+  // RECORD_SCOPE_LABEL[ are gone (r228 locks their absence and personalTime().
   for (const needle of [
-    'recordsEnabled(', 'syncRecords(', "addEventListener('online'", 'queueScore(', 'queueTime(', 'levelRecord(', 'scoresView(',
-    'advPlaqueAt(', 'endingPlaqueAt(', 'recordLabel(', 'getRandomValues', 'rankOf(', 'RECORD_SCOPE_LABEL[', 'migrationItems(',
+    'recordsEnabled(', 'syncRecords(', "addEventListener('online'", 'queueScore(', 'queueTime(', 'scoresView(',
+    'getRandomValues', 'rankOf(', 'migrationItems(',
     "case 'record-score'",
   ]) {
     assert.ok(MAIN.includes(needle), `main.ts contains ${needle}`);

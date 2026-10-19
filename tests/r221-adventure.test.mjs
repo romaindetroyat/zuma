@@ -236,8 +236,7 @@ function fakeAdvKit(k = 1, fonts = false) {
     dialog: null, pixelScale: k,
   };
 }
-// R2.0.22: `scope` (shared records, plan 06.1-04) is null here — nothing drawn, the R2.0.21 screen.
-const advView = { c: 8, maxStage: 4, selected: 4, hover: 3, button: { hover: 'play', pressed: null }, focus: null, reveal: null, shake: [0, 0, 0, 0], scores: [], strings: null, scope: null };
+const advView = { c: 8, maxStage: 4, selected: 4, hover: 3, button: { hover: 'play', pressed: null }, focus: null, reveal: null, shake: [0, 0, 0, 0], scores: [], strings: null };
 const imgs = ctx => ctx.calls.filter(c => c.op === 'drawImage');
 
 test('drawAdventure: 0x441b50 order — sky ×3 before advback, title, plaque, temples with their doors (cel from doorCel), stage plaque, buttons', async () => {
@@ -356,7 +355,7 @@ test('ending: endingWidgets one « OK » inside the table frame; drawEnding happ
   kit.dialog = { frame: pic('dialogbox', 243, 242), head: null, button: pic('dialogbutton', 360, 48), fonts: { title: fakeFont('t'), text: fakeFont('x'), tip: null, tipSmall: null }, strings: {}, pixelScale: 1 };
   const scores = Array.from({ length: 10 }, (_, i) => ({ name: `N${i}`, score: 90000 - i * 5000, stage: 12, level: 0, date: '' }));
   const ctx = recorder();
-  drawEnding(ctx, kit, { score: 80000, rank: 2, scores, hover: false, pressed: false, strings: { CONGRATULATIONS: 'FÉLICITATIONS !', SCORE: 'Score :' }, scope: null }); // R2.0.22: scope null
+  drawEnding(ctx, kit, { score: 80000, rank: 2, scores, hover: false, pressed: false, strings: { CONGRATULATIONS: 'FÉLICITATIONS !', SCORE: 'Score :' } });
   const first = imgs(ctx)[0];
   assert.deepEqual([first.args[0].name, first.args[1], first.args[2]], ['happyending', 0, 0]);
   assert.ok(imgs(ctx).some(c => c.args[0].name === 'advhighscore'), 'the plaque heads the table');
@@ -367,7 +366,7 @@ test('ending: endingWidgets one « OK » inside the table frame; drawEnding happ
   assert.equal(rowsOf('N2')[0].options.tint, '#ffff4c', 'the run’s row is highlighted');
   assert.equal(rowsOf('N3')[0].options.tint, '#ffffff');
   assert.equal(fonts.filter(c => /^N\d$/.test(c.text)).length, 10, 'ten rows');
-  assert.doesNotThrow(() => drawEnding(recorder(), null, { score: 5, rank: null, scores: [], hover: true, pressed: true, strings: null, scope: null }));
+  assert.doesNotThrow(() => drawEnding(recorder(), null, { score: 5, rank: null, scores: [], hover: true, pressed: true, strings: null }));
 });
 
 test('source locks: adventure.js draws doors through doorCel(, the plaque through scoreRows(, the ending through CONGRATULATIONS; no innerHTML; names only from progress.ts', () => {

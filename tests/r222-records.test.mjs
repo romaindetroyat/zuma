@@ -30,7 +30,7 @@ test('RECORD_BOUNDS: the exact values shared with the worker (tools/recordsapi.m
     scoresPerPost: 10, timesPerPost: 40, listMax: 10, nameMax: 20, bodyMax: 4096,
   });
   assert.equal(R.RECORDS_KEY, 'zuma.records.v1');
-  assert.deepEqual(R.RECORD_SCOPE_LABEL, { shared: 'TOUS', mine: 'MOI' });
+  // R2.0.28: records personnels (demande utilisateur) — RECORD_SCOPE_LABEL (« TOUS » / « MOI ») removed, see r228.
 });
 
 test('recordLevelId: the local best-time key without « zuma.best. » (same level id on both sides)', () => {
@@ -260,57 +260,10 @@ test('migrationItems: local entries named after the player (no demo, no other na
   assert.deepEqual(R.migrationItems(defaultScores(), {}, 'Zuma'), { scores: [], times: {} }, 'demo entries never sent, even under that name');
 });
 
-// ------------------------------------------------------------ vues « Tous » / « Moi » (D-09)
+// ------------------------------------------------------------ vues (D-09)
 
-test('scoresView with a server copy: server list ∪ pending (named after the player), sorted, ≤ 10, date = day', () => {
-  const cache = state({
-    shared: { scores: [rs('Bruno', 9000, { day: '2026-10-10' }), rs('Alice', 5000), rs('Bruno', 4000)], times: {} },
-    mine: { scores: [rs('Alice', 5000)], times: {} },
-  });
-  let s = withCache(cache);
-  s = R.queueScore(s, S(5000, { stage: 2, level: 1, day: '2026-10-11' }), ID(1));
-  s = R.queueScore(s, S(6000), ID(2));
-  const all = R.scoresView(s, 'shared', defaultScores(), 'Alice');
-  assert.deepEqual(all, [
-    hs('Bruno', 9000, { date: '2026-10-10' }), hs('Alice', 6000), hs('Alice', 5000),
-    hs('Alice', 5000, { stage: 2, level: 1, date: '2026-10-11' }), hs('Bruno', 4000),
-  ], 'server entries before pending ones on equal scores');
-  const mine = R.scoresView(s, 'mine', defaultScores(), 'Alice');
-  assert.deepEqual(mine, [hs('Alice', 6000), hs('Alice', 5000), hs('Alice', 5000, { stage: 2, level: 1, date: '2026-10-11' })]);
-  const full = withCache(state({ shared: { scores: Array.from({ length: 10 }, (_, i) => rs('Bruno', 10000 - i * 100)), times: {} } }));
-  const view = R.scoresView(R.queueScore(full, S(9950), ID(3)), 'shared', [], 'Alice');
-  assert.equal(view.length, 10);
-  assert.deepEqual(view[1], hs('Alice', 9950));
-  assert.equal(view[9].score, 9200);
-});
-
-test('scoresView without a server copy: « Tous » = the local table as is, « Moi » = local non-demo entries of the player', () => {
-  const local = [hs('Alice', 23000), ...defaultScores(), hs('Bruno', 7000), hs('Alice', 300)];
-  const store = R.emptyRecordsStore();
-  const all = R.scoresView(store, 'shared', local, 'Alice');
-  assert.deepEqual(all, local);
-  assert.notEqual(all, local, 'a copy');
-  assert.deepEqual(R.scoresView(store, 'mine', local, 'Alice'), [hs('Alice', 23000), hs('Alice', 300)]);
-  assert.deepEqual(R.scoresView(R.queueScore(store, S(500), ID(1)), 'mine', local, 'Alice'), [hs('Alice', 23000), hs('Alice', 300)],
-    'the pending score is already in the local table');
-});
-
-test('levelRecord: the best time with its holder, the personal best only when it differs', () => {
-  const cache = state({ shared: { times: { spiral: { seconds: 60, name: 'Bruno' } } }, mine: { times: { spiral: 75 } } });
-  const s = withCache(cache);
-  assert.deepEqual(R.levelRecord(s, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 75 });
-  assert.deepEqual(R.levelRecord(s, 'spiral', 55, 'Alice'), { best: { seconds: 55, name: 'Alice' }, personal: null });
-  assert.deepEqual(R.levelRecord(s, 'spiral', 90, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 75 });
-  const tie = withCache(state({ shared: { times: { spiral: { seconds: 60, name: 'Bruno' } } }, mine: { times: { spiral: 60 } } }));
-  assert.deepEqual(R.levelRecord(tie, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: null });
-  assert.deepEqual(R.levelRecord(R.emptyRecordsStore(), 'spiral', 83, 'Alice'), { best: { seconds: 83, name: 'Alice' }, personal: null }, 'standalone');
-  assert.deepEqual(R.levelRecord(R.emptyRecordsStore(), 'spiral', null, 'Alice'), { best: null, personal: null });
-  assert.deepEqual(R.levelRecord(s, 'loop-3', null, 'Alice'), { best: null, personal: null });
-  const queued = R.queueTime(s, 'spiral', 70);
-  assert.deepEqual(R.levelRecord(queued, 'spiral', null, 'Alice'), { best: { seconds: 60, name: 'Bruno' }, personal: 70 }, 'a pending time counts as personal');
-  assert.deepEqual(R.levelRecord(R.queueTime(s, 'spiral', 50), 'spiral', 52, 'Alice'), { best: { seconds: 50, name: 'Alice' }, personal: null });
-  assert.deepEqual(R.levelRecord(s, 'constructor', null, 'Alice'), { best: null, personal: null }, 'never an inherited member');
-});
+// R2.0.28: records personnels (demande utilisateur) — the « Tous » / « Moi » scoresView tests and the levelRecord test
+// (best time with its holder) are replaced by the personal scoresView / personalTime locks of r228-personal-records.
 
 test('rankOf: 0-based row of the first entry with that name and score, else null', () => {
   const list = [hs('Bruno', 9000), hs('Alice', 5000), hs('Alice', 5000), hs('Alice', 300)];

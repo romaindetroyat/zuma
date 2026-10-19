@@ -150,24 +150,6 @@ export function advButtonAt(x: number, y: number): AdvButtonId | null {
   return null;
 }
 
-/**
- * Scope of the shared records (phase 6.1, D-09: « TOUS » / « MOI ») under the painted RECORDS word. Adventure: the
- * `advhighscore` plaque (456, 0, 184 × 65) carries the word at ≈ x 497–602, y 16–46 and the first score row starts
- * near y 61, so the scope is centred on the plaque (x 548) on baseline 58 (band y 47–60) in the plaque font. Ending:
- * the same picture at (228, 84), scope centred on 320 on baseline 162, between the plaque (bottom 149) and the first
- * table row (178), in the table font. DPR 2 capture of plan 06.1-05: ending 164 → 162 (the label sat 8 px under the
- * frame's inner edge, ≈ 144, but only 3.5 px over the first row's glyph top, 166; 162 balances both gaps at ≈ 6 / 5.5
- * px); adventure 58 kept (the outlined label fills the 47–58 band, centred, touching neither the word nor the row).
- */
-export const ADV_SCOPE = { adventure: { cx: 548, baseline: 58 }, ending: { cx: 320, baseline: 162 } };
-
-/** Point inside the RECORDS plaque of the adventure screen (ADV.plaque); left / top included, right / bottom excluded. */
-export function advPlaqueAt(x: number, y: number): boolean {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-  const r = ADV.plaque;
-  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
-}
-
 /** Plaque rows: the first three entries, name as stored, score « %d », baseline 70 + i × lineHeight. */
 export function scoreRows(scores: readonly HighScore[], lineHeight: number): Array<{ name: string; score: string; baseline: number }> {
   const h = Number.isFinite(lineHeight) ? lineHeight : 0;
@@ -386,8 +368,6 @@ export interface AdventureView {
   shake: readonly number[];
   scores: readonly HighScore[];
   strings: Record<string, string> | null;
-  /** Shared records scope shown under RECORDS (phase 6.1, D-09): 'TOUS' | 'MOI'; null or empty → nothing drawn (R2.0.21). */
-  scope: string | null;
 }
 
 const ADV_W = 640;
@@ -504,8 +484,6 @@ function advTexts(ctx: CanvasRenderingContext2D, kit: AdventureKit | null, view:
   ctx.clip();
   for (const row of rows) advWrite(ctx, f?.score ?? null, row.name, C.nameX, row.baseline, C.color, 'left', 10, true);
   ctx.restore();
-  // Shared records scope under the RECORDS word (phase 6.1, D-09), in the plaque font with its outline.
-  if (view.scope) advWrite(ctx, f?.score ?? null, view.scope, ADV_SCOPE.adventure.cx, ADV_SCOPE.adventure.baseline, C.color, 'center', 10, true);
   const H = ADV.hint;
   const hint = advHint(view.hover, view.selected, view.strings);
   const font = f?.score ?? null;
@@ -616,15 +594,7 @@ export function endingWidgets(): Array<{ id: 'ending-ok'; rect: Rect; label: str
   return [{ id: 'ending-ok', rect: { ...ADV_ENDING.ok }, label: 'OK' }];
 }
 
-/** `scope`: shared records scope under the plaque (phase 6.1, D-09), 'TOUS' | 'MOI'; null or empty → nothing drawn. */
-export interface EndingView { score: number; rank: number | null; scores: readonly HighScore[]; hover: boolean; pressed: boolean; strings: Record<string, string> | null; scope: string | null }
-
-/** Point inside the RECORDS plaque of the ending screen (ADV_ENDING.plaque, `advhighscore` size 184 × 65), like advPlaqueAt. */
-export function endingPlaqueAt(x: number, y: number): boolean {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-  const p = ADV_ENDING.plaque;
-  return x >= p.x && x < p.x + ADV.plaque.w && y >= p.y && y < p.y + ADV.plaque.h;
-}
+export interface EndingView { score: number; rank: number | null; scores: readonly HighScore[]; hover: boolean; pressed: boolean; strings: Record<string, string> | null }
 
 /**
  * Ending screen: `happyending` full screen at (0, 0), CONGRATULATIONS (« FÉLICITATIONS ! ») in NativeAlien48 when it
@@ -659,8 +629,6 @@ export function drawEnding(ctx: CanvasRenderingContext2D, kit: AdventureKit | nu
   else advText(ctx, 'RECORDS', 320, E.plaque.y + 40, '#f0c040', 22, 'center');
   const R = E.rows;
   const font = dialog?.fonts.text ?? null;
-  // Shared records scope under the plaque (phase 6.1, D-09), in the table font and the highlight colour.
-  if (view.scope) advWrite(ctx, font, view.scope, ADV_SCOPE.ending.cx, ADV_SCOPE.ending.baseline, E.highlight, 'center', 14);
   view.scores.slice(0, 10).forEach((entry, i) => {
     const y = R.first + i * R.lineHeight;
     const color = i === view.rank ? E.highlight : E.text;

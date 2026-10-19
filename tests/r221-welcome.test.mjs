@@ -471,12 +471,8 @@ test('main.js: OPTIONS out of game from the welcome, hover sounds choral at 0.2 
 test('main.js: the profile name is never injected into the DOM — hidden input read through sanitizeName only, canvas rendering', () => {
   const main = read('.compiled/main.js');
   assert.doesNotMatch(main, /innerHTML/);
-  // R2.0.22 (06.1-05, D-09): the single exception is the STATS vector cell #result-record, « 1:23 (Alice) » written by
-  // textContent through recordLabel (holder of the best time); every other line keeps the R2.0.21 rule.
-  const records = main.split('\n').filter(l => /textContent\s*=\s*recordLabel\(values\.record, this\.statsRecord\.name\)/.test(l));
-  assert.equal(records.length, 1, 'one #result-record write');
-  const rest = main.split('\n').filter(l => !records.includes(l)).join('\n');
-  assert.doesNotMatch(rest, /textContent\s*=[^;\n]*(profile|name|prompt)/i);
+  // R2.0.28: records personnels (demande utilisateur) — the R2.0.22 #result-record exception (holder's name) is gone.
+  assert.doesNotMatch(main, /textContent\s*=[^;\n]*(profile|name|prompt)/i);
   assert.match(main, /maxLength = 16/);
   assert.match(main, /sanitizeName\([^)]*\.value\)/);
   assert.match(main, /drawNameDialog\(/);

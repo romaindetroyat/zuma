@@ -183,54 +183,6 @@ export function statsValues(input: StatsInput): StatsValues {
   };
 }
 
-/**
- * Extra record cells of the STATS (phase 6.1, D-09): `name` = first name of the holder of the best time shown in the
- * RECORD row, `personal` = the player's own best (already formatted) when it differs from it. Null → nothing drawn.
- */
-export interface StatsRecordCells { name: string | null; personal: string | null }
-
-/** Vector / DOM panel text of the RECORD row: « 1:23 (Sophie) », or the time alone when the name is null or blank. */
-export function recordLabel(time: string, name: string | null): string {
-  const n = (name ?? '').trim();
-  return n ? `${time} (${n})` : time;
-}
-
-/** One row of the sixth right-column line (layoutRecordRow). */
-export interface StatsRecordRow {
-  personal: { label: string; labelX: number; value: string; valueX: number } | null;
-  name: { text: string; right: number } | null;
-}
-
-/**
- * Sixth row of the right column of the STATS (phase 6.1, D-09), aligned on COMBO MAX. and empty in the original. The
- * R2.0.20 capture (3.125 px per logical pixel) gives 154 px between the label (x 335) and the right edge of the values
- * (x 489), « RECORD » ≈ 69 px and ≈ 9.6 px per capital: « 1:23 (SOPHIE) » cannot sit beside the RECORD label and must
- * not replace it, so the RECORD row keeps the time and this row carries « (NAME) » right-aligned on x 489 under it.
- * When the personal best differs, `personalLabel` sits at x 335 and the personal time 6 px after it; the name then
- * takes what is left (≥ 8 px gap), code points cut from its end and « . » appended until it fits, one letter + « . »
- * at least. Names are drawn in capitals like every text of the dialog. `measure` = width in the text font.
- */
-export function layoutRecordRow(cells: StatsRecordCells, measure: (s: string) => number, personalLabel = 'MOI'): StatsRecordRow {
-  const R = STATS_LAYOUT.right;
-  const value = (cells.personal ?? '').trim();
-  const personal = value ? { label: personalLabel, labelX: R.labelX, value, valueX: R.labelX + measure(personalLabel) + 6 } : null;
-  const raw = (cells.name ?? '').trim().toUpperCase();
-  if (!raw) return { personal, name: null };
-  const left = personal ? personal.valueX + measure(personal.value) + 8 : R.labelX;
-  const room = R.valueRight - left;
-  let text = `(${raw})`;
-  if (measure(text) > room) {
-    const points = [...raw];
-    let n = points.length - 1;
-    text = `(${points.slice(0, Math.max(1, n)).join('')}.)`;
-    while (n > 1 && measure(text) > room) {
-      n--;
-      text = `(${points.slice(0, n).join('')}.)`;
-    }
-  }
-  return { personal, name: { text, right: R.valueRight } };
-}
-
 /** `localStorage` key of a level's best time; the id is lower-cased and reduced to `[a-z0-9-]` (T-05-08). */
 export function bestTimeKey(levelId: string): string {
   return 'zuma.best.' + String(levelId).toLowerCase().replace(/[^a-z0-9-]/g, '-');
@@ -388,8 +340,7 @@ export function upscaleStatsKit(kit: StatsKit): StatsKit {
 // ------------------------------------------------------------------ composing
 
 export type ButtonState = 'normal' | 'hover' | 'pressed';
-/** `record` (phase 6.1): holder's name of the best time and differing personal best, drawn on the sixth right row. */
-export interface ComposeOptions { revealed: number; button: ButtonState; tip: string; record?: StatsRecordCells }
+export interface ComposeOptions { revealed: number; button: ButtonState; tip: string }
 
 export const STAGE_WIDTH = 640;
 export const STAGE_HEIGHT = 480;
@@ -455,18 +406,6 @@ export function composeStatsDialog(kit: StatsKit, values: StatsValues, options: 
     if (!shown || fits) text.draw(ctx, row.label, row.labelX, row.baseline, { tint: C.label });
     if (shown) text.draw(ctx, value, row.right, row.baseline, { tint: row.color, align: 'right' });
   });
-
-  // Shared records (phase 6.1, D-09): the holder of the best time and the differing personal best on the sixth right
-  // row, revealed with the RECORD value; nothing at all without them (the R2.0.21 dialog).
-  if (options.record && revealed >= STATS_ORDER.length) {
-    const extra = layoutRecordRow(options.record, s => text.measure(s));
-    const baseline = statsRows(lineHeight, L.right.first).left[5];
-    if (extra.personal) {
-      text.draw(ctx, extra.personal.label, extra.personal.labelX, baseline, { tint: C.label });
-      text.draw(ctx, extra.personal.value, extra.personal.valueX, baseline, { tint: C.record });
-    }
-    if (extra.name) text.draw(ctx, extra.name.text, extra.name.right, baseline, { tint: C.record, align: 'right' });
-  }
 
   // Tip inset (a darker band as in the reference): « ASTUCE : » then the text left-aligned after it on two
   // lines (D-20), else run in under the label on three lines in the same font; the smaller font and the

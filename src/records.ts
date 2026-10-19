@@ -1,16 +1,19 @@
 /**
- * Shared records of the hosted build (phase 6.1, 06.1-CONTEXT D-02..D-10): client rules, pure and tested under Node.
+ * Records of the hosted build (phase 6.1, 06.1-CONTEXT D-03..D-10; personal only since R2.0.28): client rules, pure and
+ * tested under Node.
  *
- * Two scopes (D-02): « Tous les joueurs » (`shared`, common to every allowed address) and « Mes records » (`mine`, per
- * Access identity). Data (D-03): the 10 best adventure scores of each scope and the best time of each level (the
- * shared one with its holder's first name, the personal one). The device storage stays the truth of the device (D-07):
- * `zuma.highscores.v1` and `zuma.best.<id>` are still written by main.ts; this module only describes the last server
- * copy, the queue of pending sends and the one-time import of the existing local records (D-08), all in
- * `zuma.records.v1`. The worker contract (GET / POST `api/records`, same bounds) lives in `tools/recordsapi.mjs`.
+ * R2.0.28 (user request: « Il faudrait que les temps records affichés soient les temps des joueurs. Pas la peine de
+ * mutualiser les records »): every record shown is the player's own — the 10 best adventure scores and the best time
+ * of each level of the « mine » part of api/records, the same on every device of the player (Access identity). The
+ * worker still answers a `shared` part (unchanged contract); it is parsed defensively and never displayed. The device
+ * storage stays the truth of the device (D-07): `zuma.highscores.v1` and `zuma.best.<id>` are still written by main.ts;
+ * this module only describes the last server copy, the queue of pending sends and the one-time import of the existing
+ * local records (D-08), all in `zuma.records.v1`. The worker contract (GET / POST `api/records`, same bounds) lives in
+ * `tools/recordsapi.mjs`.
  *
  * No DOM, no storage, no page address and no global network call here: the caller passes everything in. Names received from
- * the server are untrusted data: bounded, sanitised and only ever drawn on the canvas. The client never sends a name
- * (D-04): the server stamps the first name from the Access identity.
+ * the server are untrusted data: bounded, sanitised and never displayed. The client never sends a name (D-04): the
+ * server stamps the first name from the Access identity.
  */
 
 import { defaultScores, type HighScore } from './progress.js';
@@ -27,11 +30,6 @@ export const RECORD_BOUNDS = {
   levelId: '^[a-z0-9-]{1,40}$', sid: '^[0-9a-f]{16}$', day: '^(\\d{4}-\\d{2}-\\d{2})?$',
   scoresPerPost: 10, timesPerPost: 40, listMax: 10, nameMax: 20, bodyMax: 4096,
 } as const;
-
-export type RecordScope = 'shared' | 'mine';
-
-/** Labels of the « Tous » / « Moi » switch (capitals: drawn with the bitmap fonts of the pack). */
-export const RECORD_SCOPE_LABEL: Readonly<Record<RecordScope, string>> = { shared: 'TOUS', mine: 'MOI' };
 
 export interface RecordScore { name: string; score: number; stage: number; level: number; day: string }
 export interface SharedTime { seconds: number; name: string }
@@ -264,37 +262,30 @@ export function migrationItems(
 }
 
 /**
- * Table to draw for `scope` (HighScore shape, date = day): server copy ∪ pending (named `myName`), sorted (server
- * entries first on equal scores, as insertScore), ≤ 10; without a server copy: 'shared' → `local` as is, 'mine' → the
- * local non-demo entries named `myName` (pending scores are already in the local table).
+ * The player's own table (HighScore shape, date = day), R2.0.28: server « mine » copy ∪ pending, every row under
+ * `myName` (the server may have stamped another first name, « Joueur » for an address without one), sorted (server
+ * entries first on equal scores, as insertScore), ≤ 10; without a server copy, the local non-demo entries named
+ * `myName` (pending scores are already in the local table).
  */
-export function scoresView(store: RecordsStore, scope: RecordScope, local: readonly HighScore[], myName: string): HighScore[] {
-  if (!store.cache) {
-    const rows = scope === 'shared' ? local : local.filter(e => e.name === myName && !isDemoScore(e));
-    return rows.map(e => ({ ...e }));
-  }
-  const server = store.cache[scope].scores.map(e => ({ name: e.name, score: e.score, stage: e.stage, level: e.level, date: e.day }));
+export function scoresView(store: RecordsStore, local: readonly HighScore[], myName: string): HighScore[] {
+  if (!store.cache) return local.filter(e => e.name === myName && !isDemoScore(e)).map(e => ({ ...e }));
+  const server = store.cache.mine.scores.map(e => ({ name: myName, score: e.score, stage: e.stage, level: e.level, date: e.day }));
   const pending = store.pending.scores.map(e => ({ name: myName, score: e.score, stage: e.stage, level: e.level, date: e.day }));
   return recordsSorted([...server, ...pending], RECORD_BOUNDS.listMax);
 }
 
 /**
- * Best time of `level` with its holder, and the personal best when it differs (else null). `local` = this device's
- * best (zuma.best.<id>, the win just made included) or null. Personal = min(server « mine », pending, local); the
- * shared holder keeps the record on a tie.
+ * The player's own best time of `level` (R2.0.28): min(server « mine », pending, `local`), or null without any.
+ * `local` = this device's best (zuma.best.<id>, the win just made included) or null; the shared best is never used.
  */
-export function levelRecord(store: RecordsStore, level: string, local: number | null, myName: string): { best: SharedTime | null; personal: number | null } {
+export function personalTime(store: RecordsStore, level: string, local: number | null): number | null {
   const id = recordLevelId(level);
-  const shared = store.cache ? recordsOwn(store.cache.shared.times, id) ?? null : null;
   const mine = [
     store.cache ? recordsOwn(store.cache.mine.times, id) : undefined,
     recordsOwn(store.pending.times, id),
     local,
   ].filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
-  const personal = mine.length > 0 ? Math.min(...mine) : null;
-  if (personal === null) return { best: shared ? { ...shared } : null, personal: null };
-  if (!shared || personal < shared.seconds) return { best: { seconds: personal, name: myName }, personal: null };
-  return { best: { ...shared }, personal: personal === shared.seconds ? null : personal };
+  return mine.length > 0 ? Math.min(...mine) : null;
 }
 
 /** 0-based row of the first entry named `name` with `score`, or null. */
@@ -303,7 +294,7 @@ export function rankOf(list: readonly HighScore[], name: string, score: number):
   return at < 0 ? null : at;
 }
 
-/** Shared records only on the hosted build (D-01): http(s), not a loopback host, pack present. */
+/** Synchronised records only on the hosted build (D-01): http(s), not a loopback host, pack present. */
 export function recordsEnabled(where: { protocol: string; hostname: string; hasPack: boolean }): boolean {
   return (where.protocol === 'http:' || where.protocol === 'https:') && !RECORDS_LOOPBACK.includes(where.hostname) && where.hasPack === true;
 }
