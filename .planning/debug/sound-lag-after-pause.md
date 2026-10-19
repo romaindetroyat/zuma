@@ -1,5 +1,5 @@
 ---
-status: awaiting_human_verify
+status: resolved (user confirmed on Mac / iPhone with R2.0.26+, 2026-10-19)
 trigger: "Quand on met le jeu en pause en appuyant sur Menu, et qu'on reprend le jeu, le son est décalé des actions. C'est vrai sur Mac et sur iphone. Corrige ça pour que le son ne se décale pas en cas de pause"
 created: 2026-10-12T00:00:00Z
 updated: 2026-10-13T05:40:00Z
