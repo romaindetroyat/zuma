@@ -15,7 +15,7 @@ Baseline : **R2.0.22**.
 | `src/render.ts` | Rendu canvas 640×480, HUD natif, pièce, messages et textes flottants en polices bitmap. |
 | `src/bitmapfont.ts`, `src/statsdialog.ts`, `src/menudialog.ts` | Polices bitmap PopCap, composition de l'écran STATS natif et du menu de jeu (dialogue OPTIONS en jeu ou hors partie). |
 | `src/progress.ts` | Règles pures de la progression : étages, temples, portes, textes du dieu, meilleurs scores, profil, sauvegarde de partie, machine d'états des écrans (accueil, aventure, niveau, temple, fin). |
-| `src/records.ts` | Règles pures des records partagés de la version hébergée : file d'envoi « le meilleur gagne », bornes, vues « TOUS » / « MOI », reprise des records locaux, échange avec `api/records` sans jamais bloquer. |
+| `src/records.ts` | Règles pures des records synchronisés de la version hébergée : file d'envoi « le meilleur gagne », bornes, vues personnelles (vos scores, votre meilleur temps), reprise des records locaux, échange avec `api/records` sans jamais bloquer. |
 | `src/welcome.ts` | Menu principal original (ciel, soleil, yeux, pierres, OVNI), dialogues de nom et de reprise. |
 | `src/adventure.ts` | Écran d'aventure original (temples, portes, plaque des scores, arrivée d'un temple), dialogue du dieu, écran de fin. |
 | `src/audio.ts` | Sons originaux si disponibles, synthèse WebAudio sinon. |
@@ -70,15 +70,14 @@ Depuis R2.0.21, le jeu suit le parcours de l'aventure de Zuma Deluxe, écran par
 
 **Meilleurs scores.** Le tableau garde les **dix meilleurs scores** de l'aventure (nom du profil et score), avec trois valeurs de démonstration au départ. Sur cet appareil, il est gardé localement ; effacer les données du site efface le profil, la sauvegarde et les scores. Clés `localStorage` : `zuma.profile.v1`, `zuma.save.v1`, `zuma.highscores.v1`, et `zuma.records.v1` sur la version hébergée.
 
-**Records** (depuis R2.0.22).
+**Records** (depuis R2.0.22 ; personnels depuis R2.0.28).
 
-- **Version hébergée** : les records sont communs à tous les invités **et** personnels.
-  - La plaque RECORDS de l'écran d'aventure et de l'écran de fin montre le **tableau commun** (« TOUS ») ; **toucher ou cliquer la plaque RECORDS** bascule sur **vos records** (« MOI »), les mêmes sur tous vos appareils. Chaque lancement repart sur « TOUS ».
-  - Le STATS de fin de niveau montre le **meilleur temps du niveau avec le prénom de son auteur** (« (PRÉNOM) » sous la ligne RECORD) et, s'il est différent, votre meilleur temps (« MOI »).
-  - Le prénom est celui de votre adresse de connexion (voir « Ajouter un joueur ») ; le jeu ne l'envoie jamais lui-même.
+- **Version hébergée** : chaque joueur voit **ses propres records**, les mêmes sur tous ses appareils (ils sont synchronisés par son adresse de connexion) ; les records des autres joueurs ne sont pas affichés.
+  - La plaque RECORDS de l'écran d'aventure et le tableau de l'écran de fin montrent **vos meilleurs scores**.
+  - La ligne RECORD du STATS de fin de niveau montre **votre meilleur temps** sur ce plateau.
   - **Hors ligne**, le jeu continue normalement : les records attendent sur l'appareil et partent au retour du réseau (au lancement suivant, ou dès que la connexion revient). Le jeu n'attend jamais le serveur.
-  - Au premier lancement de R2.0.22 sur un appareil, ses meilleurs temps et ses scores inscrits à votre prénom rejoignent les records partagés, une seule fois (jamais les valeurs de démonstration).
-- **Standalone et `npm run dev`** : records de cet appareil seulement, comme avant ; le STATS montre le nom du profil à côté du meilleur temps.
+  - Au premier lancement de R2.0.22 ou plus sur un appareil, ses meilleurs temps et ses scores inscrits à votre prénom rejoignent vos records, une seule fois (jamais les valeurs de démonstration).
+- **Standalone et `npm run dev`** : records de cet appareil seulement (tableau local, meilleur temps local).
 
 Pas encore de musique sur ces écrans (phase 7).
 
